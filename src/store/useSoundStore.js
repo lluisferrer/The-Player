@@ -15,6 +15,7 @@ const createEmptySlot = (id) => ({
   isPlaying: false,
   volume: 0.8,
   startedAt: 0,        // instant (audioContext.currentTime) en què va començar a sonar
+  pausedAt: null,      // posició (s dins el segment) on s'ha pausat (null = no pausat)
   loop: false,         // opció de reproducció: repeteix el mateix slot
   // Edició del slot (segons l'editor) — tot en segons
   startPoint: 0,       // punt d'inici dins el buffer
@@ -59,6 +60,7 @@ export const useSoundStore = create((set, get) => ({
   viewMode: 'grid',        // 'grid' (botonera 8×4) | 'list' (llista de files)
   editingSlot: null,       // id del slot obert a l'editor (o null)
   dragOverSlot: null,      // id del slot sota un drag&drop natiu (o null)
+  selectedSlot: 1,         // slot seleccionat (cursor de teclat per al transport)
   activeSlot: null,
   audioDevices: [],
   selectedDeviceId: 'default',
@@ -192,6 +194,7 @@ export const useSoundStore = create((set, get) => ({
   playSlot: (slotId) => {
     const { slots, mode, activeSlot, audioContext } = get();
     const ctx = audioContext || get().initAudioContext();
+    if (ctx.state === 'suspended') ctx.resume();
     const slot = slots.find((s) => s.id === slotId);
     if (!slot || !slot.audioBuffer) return;
 
@@ -253,9 +256,139 @@ export const useSoundStore = create((set, get) => ({
 
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, sourceNode: source, isPlaying: true, startedAt } : s
+        s.id === slotId ? { ...s, sourceNode: source, isPlaying: true, startedAt, pausedAt: null } : s
       ),
       activeSlot: slotId,
+    }));
+  },
+
+  // Re-dispara un slot des de l'inici (per la tecla del teclat)
+  triggerSlot: (slotId) => {
+    const slot = get().slots.find((s) => s.id === slotId);
+    if (!slot || !slot.audioBuffer) return;
+    if (slot.isPlaying) get().stopSlot(slotId);
+    set((state) => ({
+      slots: state.slots.map((s) => (s.id === slotId ? { ...s, pausedAt: null } : s)),
+      selectedSlot: slotId,
+    }));
+    get().playSlot(slotId);
+  },
+
+  // Pausa: atura recordant la posició dins el segment
+  pauseSlot: (slotId) => {
+    const { slots, audioContext } = get();
+    const ctx = audioContext;
+    const slot = slots.find((s) => s.id === slotId);
+    if (!slot || !slot.isPlaying || !ctx) return;
+
+    const total = slot.audioBuffer.duration;
+    const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
+    const stopPoint = Math.min(slot.stopPoint ?? total, total);
+    const segDur = Math.max(0.02, stopPoint - startPoint);
+    let pos = ctx.currentTime - slot.startedAt;
+    if (slot.loop) pos = pos % segDur;
+    pos = Math.max(0, Math.min(pos, segDur));
+
+    if (slot.sourceNode) {
+      try { slot.sourceNode.onended = null; slot.sourceNode.stop(); } catch { /* ja aturat */ }
+    }
+    set((state) => ({
+      slots: state.slots.map((s) =>
+        s.id === slotId ? { ...s, sourceNode: null, isPlaying: false, pausedAt: pos } : s
+      ),
+    }));
+  },
+
+  // Reprèn la reproducció des de la posició pausada
+  resumeSlot: (slotId) => {
+    const { slots, audioContext } = get();
+    const ctx = audioContext || get().initAudioContext();
+    const slot = slots.find((s) => s.id === slotId);
+    if (!slot || !slot.audioBuffer || slot.pausedAt == null) return;
+
+    const total = slot.audioBuffer.duration;
+    const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
+    const stopPoint = Math.min(slot.stopPoint ?? total, total);
+    const segDur = Math.max(0.02, stopPoint - startPoint);
+    const pos = Math.max(0, Math.min(slot.pausedAt, segDur));
+    const offset = startPoint + pos;
+    const remaining = Math.max(0.02, stopPoint - offset);
+
+    const source = ctx.createBufferSource();
+    source.buffer = slot.audioBuffer;
+    source.connect(slot.fadeGainNode || slot.gainNode);
+
+    const now = ctx.currentTime;
+    const fg = slot.fadeGainNode;
+    if (fg) {
+      fg.gain.cancelScheduledValues(now);
+      fg.gain.setValueAtTime(1, now); // sense fade in en reprendre
+      const fadeOut = Math.max(0, Math.min(slot.fadeOut || 0, segDur));
+      if (!slot.loop && fadeOut > 0 && remaining > fadeOut) {
+        fg.gain.setValueAtTime(1, now + remaining - fadeOut);
+        fg.gain.linearRampToValueAtTime(0, now + remaining);
+      }
+    }
+
+    source.onended = () => get().handleEnded(slotId);
+    if (slot.loop) {
+      source.loop = true;
+      source.loopStart = startPoint;
+      source.loopEnd = stopPoint;
+      source.start(0, offset);
+    } else {
+      source.start(0, offset, remaining);
+    }
+    const startedAt = now - pos;
+
+    set((state) => ({
+      slots: state.slots.map((s) =>
+        s.id === slotId ? { ...s, sourceNode: source, isPlaying: true, startedAt, pausedAt: null } : s
+      ),
+      activeSlot: slotId,
+    }));
+  },
+
+  setSelectedSlot: (slotId) => set({ selectedSlot: slotId }),
+
+  // Mou el cursor de selecció amb les fletxes (segons graella o llista)
+  moveSelection: (dir) => {
+    const { selectedSlot, viewMode } = get();
+    let id = selectedSlot || 1;
+    if (viewMode === 'list') {
+      if (dir === 'up' || dir === 'left') id = Math.max(1, id - 1);
+      if (dir === 'down' || dir === 'right') id = Math.min(32, id + 1);
+    } else {
+      const col = (id - 1) % 8;
+      const row = Math.floor((id - 1) / 8);
+      if (dir === 'left' && col > 0) id -= 1;
+      if (dir === 'right' && col < 7) id += 1;
+      if (dir === 'up' && row > 0) id -= 8;
+      if (dir === 'down' && row < 3) id += 8;
+    }
+    set({ selectedSlot: id });
+  },
+
+  // Transport sobre un slot: play si aturat, pausa si sona, reprèn si pausat
+  togglePlayPause: (slotId) => {
+    const slot = get().slots.find((s) => s.id === slotId);
+    if (!slot || !slot.audioBuffer) return;
+    if (slot.isPlaying) get().pauseSlot(slotId);
+    else if (slot.pausedAt != null) get().resumeSlot(slotId);
+    else get().triggerSlot(slotId);
+  },
+
+  // Parada d'emergència: atura TOTS els slots
+  stopAll: () => {
+    const { slots } = get();
+    slots.forEach((s) => {
+      if (s.sourceNode) {
+        try { s.sourceNode.onended = null; s.sourceNode.stop(); } catch { /* res */ }
+      }
+    });
+    set((state) => ({
+      slots: state.slots.map((s) => ({ ...s, sourceNode: null, isPlaying: false, pausedAt: null })),
+      activeSlot: null,
     }));
   },
 
@@ -375,18 +508,21 @@ export const useSoundStore = create((set, get) => ({
   stopSlot: (slotId) => {
     const { slots } = get();
     const slot = slots.find((s) => s.id === slotId);
-    if (!slot || !slot.sourceNode) return;
+    // Res a fer si ja està del tot aturat (sense source ni pausa)
+    if (!slot || (!slot.sourceNode && slot.pausedAt == null && !slot.isPlaying)) return;
 
     try {
-      slot.sourceNode.onended = null;
-      slot.sourceNode.stop();
+      if (slot.sourceNode) {
+        slot.sourceNode.onended = null;
+        slot.sourceNode.stop();
+      }
     } catch {
       // ja aturat
     }
 
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, sourceNode: null, isPlaying: false } : s
+        s.id === slotId ? { ...s, sourceNode: null, isPlaying: false, pausedAt: null } : s
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));

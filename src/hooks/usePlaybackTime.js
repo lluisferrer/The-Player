@@ -14,11 +14,18 @@ export function usePlaybackTime(slot) {
   const duration = Math.max(0, stopPoint - startPoint);
   const isPlaying = Boolean(slot && slot.isPlaying);
   const startedAt = (slot && slot.startedAt) || 0;
+  const pausedAt = slot && slot.pausedAt != null ? slot.pausedAt : null;
   const [state, setState] = useState({ elapsed: 0, duration, progress: 0 });
 
   useEffect(() => {
     if (!isPlaying || !audioContext || !duration) {
-      setState({ elapsed: 0, duration, progress: 0 });
+      // En pausa, mostra la posició congelada; aturat, a zero
+      if (pausedAt != null && duration) {
+        const p = Math.min(pausedAt, duration);
+        setState({ elapsed: p, duration, progress: p / duration });
+      } else {
+        setState({ elapsed: 0, duration, progress: 0 });
+      }
       return;
     }
 
@@ -32,7 +39,7 @@ export function usePlaybackTime(slot) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isPlaying, startedAt, audioContext, duration]);
+  }, [isPlaying, startedAt, audioContext, duration, pausedAt]);
 
   return state;
 }

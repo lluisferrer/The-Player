@@ -5,6 +5,7 @@ import { useAudioEngine } from './hooks/useAudioEngine';
 import { SoundBoard } from './components/SoundBoard';
 import { SlotEditor } from './components/SlotEditor';
 import { Library } from './components/Library';
+import { NativeDiagnostic } from './components/NativeDiagnostic';
 import { slotForKey } from './lib/keyMap';
 import './App.css';
 
@@ -33,6 +34,7 @@ export default function App() {
   const { loadFromPath }  = useAudioEngine();
 
   const [showLibrary, setShowLibrary] = useState(false);
+  const [showDiag, setShowDiag] = useState(false);
 
   useEffect(() => {
     const loadDevices = async () => {
@@ -59,15 +61,28 @@ export default function App() {
       const tag = el && el.tagName;
       // Ignora si s'escriu en un camp o si l'editor és obert
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (useSoundStore.getState().editingSlot) return;
+      const store = useSoundStore.getState();
+      if (store.editingSlot) return;
 
+      // Fletxes: mou el slot seleccionat
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); store.moveSelection('left');  return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); store.moveSelection('right'); return; }
+      if (e.key === 'ArrowUp')    { e.preventDefault(); store.moveSelection('up');    return; }
+      if (e.key === 'ArrowDown')  { e.preventDefault(); store.moveSelection('down');  return; }
+
+      // Transport sobre el slot SELECCIONAT:
+      // espai = play/pausa/reprèn · enter = stop · esc = stop tot
+      if (e.key === ' ')      { e.preventDefault(); store.togglePlayPause(store.selectedSlot); return; }
+      if (e.key === 'Enter')  { e.preventDefault(); store.stopSlot(store.selectedSlot); return; }
+      if (e.key === 'Escape') { e.preventDefault(); store.stopAll(); return; }
+
+      // Tecla de slot → play (re-dispara des de l'inici)
       const slotId = slotForKey(e.key);
       if (!slotId) return;
-      const { slots, playSlot } = useSoundStore.getState();
-      const slot = slots.find((s) => s.id === slotId);
+      const slot = store.slots.find((s) => s.id === slotId);
       if (slot && slot.audioBuffer) {
         e.preventDefault();
-        playSlot(slotId);
+        store.triggerSlot(slotId);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -148,14 +163,13 @@ export default function App() {
             </button>
           </div>
 
-          <div
+          <button
             className={`channel-info ${outputChannels > 2 ? 'multi' : ''}`}
-            title={outputChannels > 2
-              ? `El dispositiu exposa ${outputChannels} canals: routing multicanal i cue possibles via Web Audio`
-              : 'El dispositiu només exposa estèreo (2 canals)'}
+            onClick={() => setShowDiag(true)}
+            title="Obre el diagnòstic d'àudio natiu (canals reals via cpal/WASAPI)"
           >
             {outputChannels} CH {outputChannels > 2 ? '· multicanal' : '· estèreo'}
-          </div>
+          </button>
 
           <button className="library-btn" onClick={() => setShowLibrary(true)}>
             LIBRARY
@@ -186,6 +200,7 @@ export default function App() {
 
       <SlotEditor />
       {showLibrary && <Library onClose={() => setShowLibrary(false)} />}
+      {showDiag && <NativeDiagnostic onClose={() => setShowDiag(false)} />}
     </div>
   );
 }

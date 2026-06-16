@@ -15,7 +15,9 @@ export function SoundButton({ slotId }) {
   const clearSlot      = useSoundStore((s) => s.clearSlot);
   const setLoop        = useSoundStore((s) => s.setLoop);
   const setEditingSlot = useSoundStore((s) => s.setEditingSlot);
+  const setSelectedSlot = useSoundStore((s) => s.setSelectedSlot);
   const isDragOver     = useSoundStore((s) => s.dragOverSlot === slotId);
+  const isSelected     = useSoundStore((s) => s.selectedSlot === slotId);
   const { loadFromPath } = useAudioEngine();
 
   const [showHover, setShowHover]   = useState(false);
@@ -76,6 +78,7 @@ export function SoundButton({ slotId }) {
   const handleClick = () => {
     // Ignora el click immediatament posterior a arrossegar el playhead
     if (suppressClickRef.current) return;
+    setSelectedSlot(slotId);
     if (slot.audioBuffer) playSlot(slotId);
   };
 
@@ -122,13 +125,15 @@ export function SoundButton({ slotId }) {
     setSeeking(true);
   };
 
-  // Mentre sona mostra el temps transcorregut; aturat, la durada total
-  const timeLabel = hasAudio ? fmtTime(isPlaying ? elapsed : duration) : '';
+  const paused = hasAudio && slot.pausedAt != null;
+  // Reproduint o pausat: temps transcorregut; aturat: durada total
+  const timeLabel = hasAudio ? fmtTime((isPlaying || paused) ? elapsed : duration) : '';
 
   const occupied = hasAudio || Boolean(slot.label);
 
   let stateClass = 'slot-empty';
-  if (hasAudio && !isPlaying) stateClass = 'slot-loaded';
+  if (hasAudio) stateClass = 'slot-loaded';
+  if (paused) stateClass = 'slot-paused';
   if (isPlaying) stateClass = 'slot-playing';
 
   const truncatedLabel = slot.label ? slot.label.replace(/\.[^/.]+$/, '') : '';
@@ -136,7 +141,7 @@ export function SoundButton({ slotId }) {
 
   return (
     <div
-      className={`sound-button ${stateClass} ${isDragOver ? 'drag-over' : ''}`}
+      className={`sound-button ${stateClass} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''}`}
       data-slot-id={slotId}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
@@ -181,8 +186,8 @@ export function SoundButton({ slotId }) {
               />
               {/* Visualitzador de temps (dalt-dreta) */}
               <span className="slot-time">{timeLabel}</span>
-              {/* Playhead interactiu (apareix mentre sona) */}
-              {isPlaying && (
+              {/* Playhead interactiu (mentre sona o en pausa) */}
+              {(isPlaying || paused) && (
                 <div
                   className="slot-playhead"
                   style={{ left: `${playheadPct}%` }}

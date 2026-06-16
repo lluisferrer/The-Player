@@ -188,10 +188,26 @@ body {
   background: rgba(59, 130, 246, 0.1);
 }
 
+/* Slot seleccionat (cursor de teclat): contorn clar, conviu amb el glow */
+.sound-button.selected {
+  outline: 2px solid rgba(244, 244, 245, 0.85);
+  outline-offset: -2px;
+}
+
 .sound-button.slot-playing {
   border-color: var(--accent);
   box-shadow: 0 0 12px var(--accent-glow), inset 0 0 8px rgba(59, 130, 246, 0.08);
   animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+/* Pausat: vora accent fixa, sense pulsació */
+.sound-button.slot-paused {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 8px rgba(59, 130, 246, 0.08);
+}
+
+.sound-button.slot-paused .slot-playhead {
+  background: var(--accent);
 }
 
 @keyframes pulse-glow {
@@ -799,20 +815,111 @@ body {
 /* ─── SET LIBRARY ─── */
 
 .channel-info {
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;
   color: var(--text-secondary);
+  background: var(--bg-button);
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 5px 9px;
   white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.channel-info:hover {
+  background: var(--bg-button-hover);
+  border-color: var(--accent);
 }
 
 .channel-info.multi {
   color: var(--vu-green);
   border-color: rgba(34, 197, 94, 0.4);
+}
+
+/* ─── DIAGNÒSTIC NATIU ─── */
+
+.diag-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-button);
+}
+
+.diag-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.diag-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-ch {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.diag-ch.multi {
+  color: var(--vu-green);
+  font-weight: 600;
+}
+
+.diag-tones {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.diag-tones-label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-right: 4px;
+}
+
+.diag-tone-btn {
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diag-tone-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.diag-note {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.diag-error {
+  font-size: 12px;
+  color: var(--vu-red);
+  padding: 4px 0;
 }
 
 .library-btn {
