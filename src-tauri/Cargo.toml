@@ -12,7 +12,10 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "tauri_app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Només "rlib" per a desktop: el binari de l'app enllaça aquesta lib.
+# Els tipus "staticlib"/"cdylib" només calen per a mòbil (iOS/Android) i,
+# amb el toolchain GNU a Windows, el cdylib provoca "export ordinal too large".
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
