@@ -1,0 +1,286 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-primary:       #0f0f0f;
+  --bg-button:        #1c1c1e;
+  --bg-button-hover:  #2a2a2e;
+  --accent:           #3b82f6;
+  --accent-glow:      rgba(59, 130, 246, 0.4);
+  --text-primary:     #f4f4f5;
+  --text-secondary:   #71717a;
+  --border:           #27272a;
+  --vu-green:         #22c55e;
+  --vu-yellow:        #eab308;
+  --vu-red:           #ef4444;
+
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-primary);
+  min-width: 900px;
+  overflow-x: auto;
+}
+
+/* ─── APP LAYOUT ─── */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-width: 900px;
+}
+
+/* ─── HEADER ─── */
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  background-color: #111113;
+  flex-shrink: 0;
+}
+
+.app-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: var(--text-primary);
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+/* ─── MODE TOGGLE ─── */
+
+.mode-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-button);
+  border-radius: 6px;
+  padding: 3px;
+}
+
+.mode-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.mode-btn:hover:not(.active) {
+  background: var(--bg-button-hover);
+  color: var(--text-primary);
+}
+
+/* ─── DEVICE SELECTOR ─── */
+
+.device-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-selector label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+}
+
+.device-selector select {
+  background: var(--bg-button);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+  max-width: 200px;
+}
+
+.device-selector select:hover {
+  border-color: var(--accent);
+}
+
+/* ─── MAIN ─── */
+
+.app-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+}
+
+/* ─── SOUNDBOARD ─── */
+
+.soundboard {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 8px;
+  width: 100%;
+  max-width: 1100px;
+}
+
+/* ─── SOUND BUTTON ─── */
+
+.sound-button {
+  position: relative;
+  background: var(--bg-button);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 8px;
+  cursor: pointer;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  user-select: none;
+  overflow: hidden;
+}
+
+.sound-button:hover {
+  background: var(--bg-button-hover);
+}
+
+.sound-button.drag-over {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.sound-button.slot-playing {
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow), inset 0 0 8px rgba(59, 130, 246, 0.08);
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 10px var(--accent-glow), inset 0 0 6px rgba(59,130,246,0.06); }
+  50%       { box-shadow: 0 0 20px var(--accent-glow), inset 0 0 12px rgba(59,130,246,0.12); }
+}
+
+/* ─── SLOT ID ─── */
+
+.slot-id {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  font-size: 9px;
+  color: var(--text-secondary);
+  opacity: 0.5;
+  font-weight: 500;
+}
+
+/* ─── SLOT LABEL ─── */
+
+.slot-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+  word-break: break-all;
+  line-height: 1.3;
+  width: 100%;
+  padding-right: 14px;
+}
+
+.slot-empty .slot-label,
+.slot-empty-label {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+/* ─── VU METER ─── */
+
+.slot-vu {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── VOLUME SLIDER ─── */
+
+.slot-volume {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  height: 18px;
+}
+
+.slot-volume.visible {
+  opacity: 1;
+}
+
+.slot-volume input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.slot-volume input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.slot-volume input[type='range']::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.volume-value {
+  font-size: 9px;
+  color: var(--text-secondary);
+  min-width: 28px;
+  text-align: right;
+}
