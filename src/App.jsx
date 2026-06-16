@@ -6,6 +6,8 @@ import './App.css';
 export default function App() {
   const mode              = useSoundStore((s) => s.mode);
   const setMode           = useSoundStore((s) => s.setMode);
+  const viewMode          = useSoundStore((s) => s.viewMode);
+  const setViewMode       = useSoundStore((s) => s.setViewMode);
   const audioDevices      = useSoundStore((s) => s.audioDevices);
   const selectedDeviceId  = useSoundStore((s) => s.selectedDeviceId);
   const setAudioDevices   = useSoundStore((s) => s.setAudioDevices);
@@ -56,6 +58,21 @@ export default function App() {
               onClick={() => handleModeChange('continuous')}
             >
               CONTINUOUS
+            </button>
+          </div>
+
+          <div className="mode-toggle">
+            <button
+              className={`mode-btn ${viewMode === 'grid' ? 'active' : ''}`}
+              onClick={() => setViewMode('grid')}
+            >
+              GRID
+            </button>
+            <button
+              className={`mode-btn ${viewMode === 'list' ? 'active' : ''}`}
+              onClick={() => setViewMode('list')}
+            >
+              LLISTA
             </button>
           </div>
 

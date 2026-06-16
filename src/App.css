@@ -137,7 +137,7 @@ body {
 .app-main {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   padding: 16px;
   overflow: auto;
@@ -145,12 +145,20 @@ body {
 
 /* ─── SOUNDBOARD ─── */
 
-.soundboard {
+.soundboard.grid {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 8px;
   width: 100%;
   max-width: 1100px;
+}
+
+.soundboard.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 900px;
 }
 
 /* ─── SOUND BUTTON ─── */
@@ -392,4 +400,58 @@ body {
 
 .volume-value.visible {
   opacity: 1;
+}
+
+/* Contenidor dels dos sliders (posició + volum) */
+.slot-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+/* ─── MODE LLISTA ─── */
+
+.list .sound-button {
+  height: 60px;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+/* Capçalera com a bloc fix a l'esquerra, amb el número primer */
+.list .slot-header {
+  width: 190px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.list .slot-id {
+  order: -1;
+}
+
+.list .slot-name {
+  font-size: 12px;
+}
+
+/* Cos (waveform + meter) ocupa el centre */
+.list .slot-body {
+  height: 100%;
+}
+
+.list .slot-vu {
+  width: 12px;
+}
+
+/* Els dos sliders, apilats en una columna fixa a la dreta */
+.list .slot-controls {
+  width: 180px;
+  flex-shrink: 0;
+}
+
+.list .slot-empty-hint {
+  height: 100%;
 }

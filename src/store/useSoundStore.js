@@ -42,6 +42,7 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
 export const useSoundStore = create((set, get) => ({
   slots: initialSlots,
   mode: 'single',
+  viewMode: 'grid',        // 'grid' (botonera 8×4) | 'list' (llista de files)
   activeSlot: null,
   audioDevices: [],
   selectedDeviceId: 'default',
@@ -56,6 +57,8 @@ export const useSoundStore = create((set, get) => ({
   },
 
   setMode: (mode) => set({ mode }),
+
+  setViewMode: (viewMode) => set({ viewMode }),
 
   setAudioDevices: (devices) => set({ audioDevices: devices }),
 

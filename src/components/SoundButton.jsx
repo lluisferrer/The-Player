@@ -111,39 +111,41 @@ export function SoundButton({ slotId }) {
             </div>
           </div>
 
-          {/* Slider de posició de reproducció (només indicador, de moment) */}
-          <div className="slot-progress" onClick={(e) => e.stopPropagation()}>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.001"
-              value={progress}
-              readOnly
-              tabIndex={-1}
-              style={{
-                background: `linear-gradient(to right, var(--accent) ${progress * 100}%, var(--border) ${progress * 100}%)`,
-              }}
-            />
-          </div>
+          <div className="slot-controls">
+            {/* Slider de posició de reproducció (només indicador, de moment) */}
+            <div className="slot-progress" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.001"
+                value={progress}
+                readOnly
+                tabIndex={-1}
+                style={{
+                  background: `linear-gradient(to right, var(--accent) ${progress * 100}%, var(--border) ${progress * 100}%)`,
+                }}
+              />
+            </div>
 
-          {/* Slider de volum a la part inferior */}
-          <div className="slot-volume" onClick={(e) => e.stopPropagation()}>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={slot.volume}
-              onChange={handleVolumeChange}
-              title={`Volum: ${Math.round(slot.volume * 100)}%`}
-              style={{
-                background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)`,
-              }}
-            />
-            <span className={`volume-value ${showVolume ? 'visible' : ''}`}>
-              {Math.round(slot.volume * 100)}%
-            </span>
+            {/* Slider de volum */}
+            <div className="slot-volume" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={slot.volume}
+                onChange={handleVolumeChange}
+                title={`Volum: ${Math.round(slot.volume * 100)}%`}
+                style={{
+                  background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)`,
+                }}
+              />
+              <span className={`volume-value ${showVolume ? 'visible' : ''}`}>
+                {Math.round(slot.volume * 100)}%
+              </span>
+            </div>
           </div>
         </>
       ) : (
