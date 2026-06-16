@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useSoundStore } from './store/useSoundStore';
 import { SoundBoard } from './components/SoundBoard';
 import { SlotEditor } from './components/SlotEditor';
+import { slotForKey } from './lib/keyMap';
 import './App.css';
 
 export default function App() {
@@ -31,6 +32,29 @@ export default function App() {
     navigator.mediaDevices.addEventListener('devicechange', loadDevices);
     return () => navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
   }, [setAudioDevices]);
+
+  // Disparar slots des del teclat (graella QWERTY)
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
+      const el = document.activeElement;
+      const tag = el && el.tagName;
+      // Ignora si s'escriu en un camp o si l'editor és obert
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (useSoundStore.getState().editingSlot) return;
+
+      const slotId = slotForKey(e.key);
+      if (!slotId) return;
+      const { slots, playSlot } = useSoundStore.getState();
+      const slot = slots.find((s) => s.id === slotId);
+      if (slot && slot.audioBuffer) {
+        e.preventDefault();
+        playSlot(slotId);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const handleDeviceChange = (e) => {
     setSelectedDevice(e.target.value);

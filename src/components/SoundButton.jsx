@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSoundStore } from '../store/useSoundStore';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
+import { keyForSlot } from '../lib/keyMap';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
 
@@ -13,6 +14,7 @@ export function SoundButton({ slotId }) {
   const setVolume      = useSoundStore((s) => s.setVolume);
   const seekSlot       = useSoundStore((s) => s.seekSlot);
   const clearSlot      = useSoundStore((s) => s.clearSlot);
+  const setLoop        = useSoundStore((s) => s.setLoop);
   const setEditingSlot = useSoundStore((s) => s.setEditingSlot);
   const { decodeAndLoad } = useAudioEngine();
 
@@ -122,6 +124,11 @@ export function SoundButton({ slotId }) {
     clearSlot(slotId);
   };
 
+  const handleLoopToggle = (e) => {
+    e.stopPropagation();
+    setLoop(slotId, !slot.loop);
+  };
+
   const handlePlayheadDown = (e) => {
     e.stopPropagation();
     e.preventDefault();
@@ -141,6 +148,7 @@ export function SoundButton({ slotId }) {
   if (isPlaying) stateClass = 'slot-playing';
 
   const truncatedLabel = slot.label ? slot.label.replace(/\.[^/.]+$/, '') : '';
+  const keyLabel = keyForSlot(slotId).toUpperCase();
 
   return (
     <div
@@ -162,10 +170,18 @@ export function SoundButton({ slotId }) {
         onChange={handleFileChange}
       />
 
-      {/* Capçalera: nom (esq) + loop + eliminar + número (dre) */}
+      {/* Capçalera: nom (esq) + loop + eliminar + tecla + número (dre) */}
       <div className="slot-header">
         <span className="slot-name">{truncatedLabel}</span>
-        {hasAudio && slot.loop && <span className="slot-loop-ic" title="Loop actiu">⟳</span>}
+        {hasAudio && (
+          <button
+            className={`slot-loop-btn ${slot.loop ? 'active' : ''}`}
+            onClick={handleLoopToggle}
+            title="Loop (repeteix aquest slot)"
+          >
+            ⟳
+          </button>
+        )}
         {occupied && (
           <button
             className={`slot-del-btn ${showHover ? 'visible' : ''}`}
@@ -175,7 +191,7 @@ export function SoundButton({ slotId }) {
             ✕
           </button>
         )}
-        <span className="slot-id">{slotId}</span>
+        {keyLabel && <span className="slot-key" title={`Tecla: ${keyLabel}`}>{keyLabel}</span>}
       </div>
 
       {hasAudio ? (

@@ -221,18 +221,50 @@ body {
   min-width: 0;
 }
 
-.slot-id {
-  font-size: 9px;
-  font-weight: 500;
+/* Botó de loop (toggle) a la capçalera */
+.slot-loop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
   color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
   flex-shrink: 0;
+  opacity: 0.55;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
 }
 
-.slot-loop-ic {
-  font-size: 10px;
-  color: var(--accent);
+.slot-loop-btn:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+
+.slot-loop-btn.active {
+  opacity: 1;
+  color: #fff;
+  background: var(--accent);
+}
+
+/* Tecla assignada al slot */
+.slot-key {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 3px;
+  min-width: 13px;
+  text-align: center;
   flex-shrink: 0;
-  line-height: 1;
+  line-height: 1.4;
 }
 
 /* Botó d'eliminar clip (capçalera, apareix en hover) */
@@ -440,7 +472,7 @@ body {
   gap: 8px;
 }
 
-.list .slot-id {
+.list .slot-key {
   order: -1;
 }
 
