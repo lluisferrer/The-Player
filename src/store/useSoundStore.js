@@ -5,6 +5,7 @@ const NUM_SLOTS = 32;
 const createEmptySlot = (id) => ({
   id,
   label: '',
+  filePath: null,      // ruta absoluta del fitxer (per recarregar des de la Library)
   audioUrl: null,
   audioBuffer: null,
   gainNode: null,
@@ -40,8 +41,13 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
     return {
       ...base,
       label: savedSlots[i].label || '',
+      filePath: savedSlots[i].filePath ?? null,
       volume: savedSlots[i].volume ?? 0.8,
       loop: savedSlots[i].loop ?? false,
+      startPoint: savedSlots[i].startPoint ?? 0,
+      stopPoint: savedSlots[i].stopPoint ?? null,
+      fadeIn: savedSlots[i].fadeIn ?? 0,
+      fadeOut: savedSlots[i].fadeOut ?? 0,
     };
   }
   return base;
@@ -52,10 +58,12 @@ export const useSoundStore = create((set, get) => ({
   mode: 'single',
   viewMode: 'grid',        // 'grid' (botonera 8×4) | 'list' (llista de files)
   editingSlot: null,       // id del slot obert a l'editor (o null)
+  dragOverSlot: null,      // id del slot sota un drag&drop natiu (o null)
   activeSlot: null,
   audioDevices: [],
   selectedDeviceId: 'default',
   audioContext: null,
+  outputChannels: 2,       // canals màxims de sortida del dispositiu seleccionat
 
   initAudioContext: () => {
     const existing = get().audioContext;
@@ -70,6 +78,34 @@ export const useSoundStore = create((set, get) => ({
   setViewMode: (viewMode) => set({ viewMode }),
 
   setEditingSlot: (slotId) => set({ editingSlot: slotId }),
+
+  setDragOverSlot: (slotId) => set({ dragOverSlot: slotId }),
+
+  // Aplica una configuració desada a un slot (després de recarregar l'àudio)
+  applySlotConfig: (slotId, cfg) => {
+    const slot = get().slots.find((s) => s.id === slotId);
+    if (slot && slot.gainNode && cfg.volume != null) {
+      slot.gainNode.gain.value = cfg.volume;
+    }
+    set((state) => ({
+      slots: state.slots.map((s) =>
+        s.id === slotId
+          ? {
+              ...s,
+              label: cfg.label != null ? cfg.label : s.label,
+              filePath: cfg.filePath != null ? cfg.filePath : s.filePath,
+              volume: cfg.volume != null ? cfg.volume : s.volume,
+              startPoint: cfg.startPoint || 0,
+              stopPoint: cfg.stopPoint != null ? cfg.stopPoint : null,
+              fadeIn: cfg.fadeIn || 0,
+              fadeOut: cfg.fadeOut || 0,
+              loop: !!cfg.loop,
+            }
+          : s
+      ),
+    }));
+    get().persistSlots();
+  },
 
   // Actualitza els camps d'edició d'un slot (startPoint, stopPoint, fadeIn, fadeOut)
   updateSlotEdit: (slotId, patch) =>
@@ -91,9 +127,24 @@ export const useSoundStore = create((set, get) => ({
         console.warn('setSinkId no suportat:', e);
       }
     }
+    get().detectOutputChannels();
   },
 
-  loadAudio: (slotId, file, audioBuffer, audioUrl) => {
+  // Detecta quants canals de sortida exposa el dispositiu seleccionat.
+  // maxChannelCount > 2 vol dir que podem fer routing multicanal / cue
+  // via Web Audio (ChannelMergerNode). Si és 2, només estèreo.
+  detectOutputChannels: async () => {
+    const ctx = get().audioContext || get().initAudioContext();
+    const dev = get().selectedDeviceId;
+    if (ctx.setSinkId && dev && dev !== 'default') {
+      try { await ctx.setSinkId(dev); } catch { /* res */ }
+    }
+    const max = ctx.destination.maxChannelCount;
+    set({ outputChannels: max });
+    return max;
+  },
+
+  loadAudio: (slotId, file, audioBuffer, audioUrl, filePath = null) => {
     const { slots, audioContext } = get();
     const ctx = audioContext || get().initAudioContext();
 
@@ -117,6 +168,7 @@ export const useSoundStore = create((set, get) => ({
           ? {
               ...s,
               label: file.name,
+              filePath,
               audioUrl,
               audioBuffer,
               gainNode,
@@ -356,7 +408,16 @@ export const useSoundStore = create((set, get) => ({
 
   persistSlots: () => {
     const { slots } = get();
-    const data = slots.map((s) => ({ label: s.label, volume: s.volume, loop: s.loop }));
+    const data = slots.map((s) => ({
+      label: s.label,
+      filePath: s.filePath,
+      volume: s.volume,
+      loop: s.loop,
+      startPoint: s.startPoint,
+      stopPoint: s.stopPoint,
+      fadeIn: s.fadeIn,
+      fadeOut: s.fadeOut,
+    }));
     localStorage.setItem('the-player-slots', JSON.stringify(data));
   },
 }));

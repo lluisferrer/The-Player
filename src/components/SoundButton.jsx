@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { open } from '@tauri-apps/plugin-dialog';
 import { useSoundStore } from '../store/useSoundStore';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { keyForSlot } from '../lib/keyMap';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
-
-const ACCEPTED_TYPES = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/flac', 'audio/x-flac', 'audio/mp3'];
 
 export function SoundButton({ slotId }) {
   const slot           = useSoundStore((s) => s.slots.find((sl) => sl.id === slotId));
@@ -16,15 +15,14 @@ export function SoundButton({ slotId }) {
   const clearSlot      = useSoundStore((s) => s.clearSlot);
   const setLoop        = useSoundStore((s) => s.setLoop);
   const setEditingSlot = useSoundStore((s) => s.setEditingSlot);
-  const { decodeAndLoad } = useAudioEngine();
+  const isDragOver     = useSoundStore((s) => s.dragOverSlot === slotId);
+  const { loadFromPath } = useAudioEngine();
 
-  const [isDragOver, setIsDragOver] = useState(false);
   const [showHover, setShowHover]   = useState(false);
   const [scrub, setScrub]   = useState(null);  // posició (ratio dins segment) mentre s'arrossega el playhead
   const [seeking, setSeeking] = useState(false);
   const scrubRef = useRef(null);
   const suppressClickRef = useRef(false); // evita que el click post-drag faci play/stop
-  const fileInputRef = useRef(null);
   const waveRef = useRef(null);
 
   const hasAudio  = Boolean(slot.audioBuffer);
@@ -75,38 +73,24 @@ export function SoundButton({ slotId }) {
     };
   }, [seeking, segDur, total, startSec, slotId, seekSlot]);
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = () => setIsDragOver(false);
-
-  const handleDrop = async (e) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-    if (!ACCEPTED_TYPES.includes(file.type) && !file.name.match(/\.(mp3|wav|ogg|flac)$/i)) return;
-    await decodeAndLoad(slotId, file);
-  };
-
   const handleClick = () => {
     // Ignora el click immediatament posterior a arrossegar el playhead
     if (suppressClickRef.current) return;
     if (slot.audioBuffer) playSlot(slotId);
   };
 
-  const handleContextMenu = (e) => {
+  // Clic dret: obre el selector natiu de fitxers (retorna la ruta)
+  const handleContextMenu = async (e) => {
     e.preventDefault();
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    await decodeAndLoad(slotId, file);
-    e.target.value = '';
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: 'Àudio', extensions: ['mp3', 'wav', 'ogg', 'flac'] }],
+      });
+      if (path) await loadFromPath(slotId, path);
+    } catch (err) {
+      console.warn('No s\'ha pogut obrir el fitxer:', err);
+    }
   };
 
   const handleVolumeChange = (e) => {
@@ -153,24 +137,14 @@ export function SoundButton({ slotId }) {
   return (
     <div
       className={`sound-button ${stateClass} ${isDragOver ? 'drag-over' : ''}`}
+      data-slot-id={slotId}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
       onMouseEnter={() => setShowHover(true)}
       onMouseLeave={() => setShowHover(false)}
       title={hasAudio ? slot.label : 'Arrossega un fitxer d\'àudio o clic dret per obrir'}
     >
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".mp3,.wav,.ogg,.flac,audio/*"
-        style={{ display: 'none' }}
-        onChange={handleFileChange}
-      />
-
-      {/* Capçalera: nom (esq) + loop + eliminar + tecla + número (dre) */}
+      {/* Capçalera: nom (esq) + loop + eliminar + tecla (dre) */}
       <div className="slot-header">
         <span className="slot-name">{truncatedLabel}</span>
         {hasAudio && (
