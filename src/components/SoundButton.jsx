@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useSoundStore } from '../store/useSoundStore';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import { VuMeter } from './VuMeter';
+import { Waveform } from './Waveform';
 
 const ACCEPTED_TYPES = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/flac', 'audio/x-flac', 'audio/mp3'];
 
@@ -62,7 +63,7 @@ export function SoundButton({ slotId }) {
   if (isPlaying) stateClass = 'slot-playing';
 
   const truncatedLabel = slot.label
-    ? slot.label.replace(/\.[^/.]+$/, '').slice(0, 22)
+    ? slot.label.replace(/\.[^/.]+$/, '')
     : '';
 
   return (
@@ -85,20 +86,26 @@ export function SoundButton({ slotId }) {
         onChange={handleFileChange}
       />
 
-      <div className="slot-id">{slotId}</div>
+      {/* Capçalera: nom del fitxer (esquerra) + número de slot (dreta) */}
+      <div className="slot-header">
+        <span className="slot-name">{truncatedLabel}</span>
+        <span className="slot-id">{slotId}</span>
+      </div>
 
       {hasAudio ? (
         <>
-          <div className="slot-label">{truncatedLabel}</div>
-
-          <div className="slot-vu">
-            <VuMeter analyserNode={slot.analyserNode} isPlaying={isPlaying} />
+          {/* Cos: forma d'ona al centre + picòmetre vertical a la dreta */}
+          <div className="slot-body">
+            <div className="slot-waveform">
+              <Waveform audioBuffer={slot.audioBuffer} active={isPlaying} />
+            </div>
+            <div className="slot-vu">
+              <VuMeter analyserNode={slot.analyserNode} isPlaying={isPlaying} />
+            </div>
           </div>
 
-          <div
-            className={`slot-volume ${showVolume ? 'visible' : ''}`}
-            onClick={(e) => e.stopPropagation()}
-          >
+          {/* Slider de volum a la part inferior */}
+          <div className="slot-volume" onClick={(e) => e.stopPropagation()}>
             <input
               type="range"
               min="0"
@@ -108,13 +115,13 @@ export function SoundButton({ slotId }) {
               onChange={handleVolumeChange}
               title={`Volum: ${Math.round(slot.volume * 100)}%`}
             />
-            {showVolume && (
-              <span className="volume-value">{Math.round(slot.volume * 100)}%</span>
-            )}
+            <span className={`volume-value ${showVolume ? 'visible' : ''}`}>
+              {Math.round(slot.volume * 100)}%
+            </span>
           </div>
         </>
       ) : (
-        <div className="slot-empty-label">
+        <div className="slot-empty-hint">
           {isDragOver ? 'Deixa aquí' : ''}
         </div>
       )}

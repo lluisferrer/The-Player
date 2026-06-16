@@ -11,58 +11,69 @@ function levelColor(ratio) {
   return VU_GREEN;
 }
 
+// Picòmetre vertical (L + R) que omple el seu contenidor. Les barres creixen
+// de baix cap a dalt i s'animen via requestAnimationFrame mentre el slot sona.
 export function VuMeter({ analyserNode, isPlaying }) {
   const canvasRef = useRef(null);
+  const wrapRef   = useRef(null);
   const rafRef    = useRef(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const wrap   = wrapRef.current;
+    if (!canvas || !wrap) return;
     const ctx = canvas.getContext('2d');
+    const dataArray = analyserNode
+      ? new Uint8Array(analyserNode.frequencyBinCount)
+      : null;
 
     const draw = () => {
-      const { width, height } = canvas;
-      ctx.fillStyle = VU_BG;
-      ctx.fillRect(0, 0, width, height);
+      const dpr = window.devicePixelRatio || 1;
+      const w = wrap.clientWidth;
+      const h = wrap.clientHeight;
 
-      if (!analyserNode || !isPlaying) {
-        rafRef.current = requestAnimationFrame(draw);
-        return;
+      if (w > 0 && h > 0) {
+        const bw = Math.round(w * dpr);
+        const bh = Math.round(h * dpr);
+        if (canvas.width !== bw || canvas.height !== bh) {
+          canvas.width = bw;
+          canvas.height = bh;
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        ctx.fillStyle = VU_BG;
+        ctx.fillRect(0, 0, w, h);
+
+        if (analyserNode && isPlaying) {
+          analyserNode.getByteTimeDomainData(dataArray);
+          const n    = dataArray.length;
+          const half = Math.floor(n / 2);
+
+          // RMS com a proxy de L i R (mono → simulem dos canals)
+          let sumL = 0, sumR = 0;
+          for (let i = 0; i < half; i++) {
+            const v = (dataArray[i] - 128) / 128;
+            sumL += v * v;
+          }
+          for (let i = half; i < n; i++) {
+            const v = (dataArray[i] - 128) / 128;
+            sumR += v * v;
+          }
+          const fillL = Math.min(Math.sqrt(sumL / half) * 4, 1);
+          const fillR = Math.min(Math.sqrt(sumR / half) * 4, 1);
+
+          const gap  = 2;
+          const barW = (w - gap) / 2;
+          const hL   = fillL * h;
+          const hR   = fillR * h;
+
+          ctx.fillStyle = levelColor(fillL);
+          ctx.fillRect(0, h - hL, barW, hL);
+
+          ctx.fillStyle = levelColor(fillR);
+          ctx.fillRect(barW + gap, h - hR, barW, hR);
+        }
       }
-
-      const bufferLength = analyserNode.frequencyBinCount;
-      const dataArray    = new Uint8Array(bufferLength);
-      analyserNode.getByteTimeDomainData(dataArray);
-
-      // Calcula RMS com a proxy de L i R (mono — usem meitat del buffer per cada canal simulat)
-      const half = Math.floor(bufferLength / 2);
-
-      let sumL = 0, sumR = 0;
-      for (let i = 0; i < half; i++) {
-        const v = (dataArray[i] - 128) / 128;
-        sumL += v * v;
-      }
-      for (let i = half; i < bufferLength; i++) {
-        const v = (dataArray[i] - 128) / 128;
-        sumR += v * v;
-      }
-
-      const rmsL = Math.sqrt(sumL / half);
-      const rmsR = Math.sqrt(sumR / half);
-
-      const barW  = Math.floor(width / 2) - 2;
-      const fillL = Math.min(rmsL * 4, 1);
-      const fillR = Math.min(rmsR * 4, 1);
-
-      // Canal L
-      const hL = fillL * height;
-      ctx.fillStyle = levelColor(fillL);
-      ctx.fillRect(0, height - hL, barW, hL);
-
-      // Canal R
-      const hR = fillR * height;
-      ctx.fillStyle = levelColor(fillR);
-      ctx.fillRect(barW + 2, height - hR, barW, hR);
 
       rafRef.current = requestAnimationFrame(draw);
     };
@@ -72,11 +83,8 @@ export function VuMeter({ analyserNode, isPlaying }) {
   }, [analyserNode, isPlaying]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={36}
-      height={48}
-      style={{ display: 'block', borderRadius: 2 }}
-    />
+    <div ref={wrapRef} className="vu-wrap">
+      <canvas ref={canvasRef} className="vu-canvas" />
+    </div>
   );
 }
