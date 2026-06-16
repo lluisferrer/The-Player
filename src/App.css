@@ -170,7 +170,7 @@ body {
   border: 1px solid var(--border);
   padding: 6px;
   cursor: pointer;
-  height: 132px;
+  height: 120px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -228,6 +228,42 @@ body {
   flex-shrink: 0;
 }
 
+.slot-loop-ic {
+  font-size: 10px;
+  color: var(--accent);
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* Botó d'eliminar clip (capçalera, apareix en hover) */
+.slot-del-btn {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.slot-del-btn.visible {
+  opacity: 1;
+}
+
+.slot-del-btn:hover {
+  color: #fff;
+  background: var(--vu-red);
+}
+
 .slot-empty .slot-name {
   color: var(--text-secondary);
 }
@@ -268,6 +304,30 @@ body {
   color: var(--accent);
 }
 
+/* Playhead interactiu sobre la waveform del botó */
+.slot-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #f4f4f5;
+  box-shadow: 0 0 4px rgba(244, 244, 245, 0.5);
+  cursor: ew-resize;
+  z-index: 3;
+  touch-action: none;
+}
+
+/* Àrea de grip més ampla perquè sigui fàcil d'agafar */
+.slot-playhead::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
 .waveform-wrap,
 .vu-wrap {
   position: relative;
@@ -301,46 +361,6 @@ body {
   justify-content: center;
   color: var(--text-secondary);
   font-size: 10px;
-}
-
-/* ─── SLIDER DE POSICIÓ DE REPRODUCCIÓ ─── */
-
-.slot-progress {
-  position: relative;
-  width: 100%;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.slot-progress input[type='range'] {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--border);
-  outline: none;
-  pointer-events: none;   /* només indicador de moment (sense seek) */
-  cursor: default;
-}
-
-.slot-progress input[type='range']::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 10px;
-  height: 10px;
-  background: var(--accent);
-  border-radius: 50%;
-}
-
-.slot-progress input[type='range']::-moz-range-thumb {
-  width: 10px;
-  height: 10px;
-  background: var(--accent);
-  border: none;
-  border-radius: 50%;
 }
 
 /* ─── SLIDER DE VOLUM ─── */
@@ -402,15 +422,6 @@ body {
   opacity: 1;
 }
 
-/* Contenidor dels dos sliders (posició + volum) */
-.slot-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: 100%;
-  flex-shrink: 0;
-}
-
 /* ─── MODE LLISTA ─── */
 
 .list .sound-button {
@@ -446,12 +457,304 @@ body {
   width: 12px;
 }
 
-/* Els dos sliders, apilats en una columna fixa a la dreta */
-.list .slot-controls {
-  width: 180px;
+/* El slider de volum, en columna fixa a la dreta */
+.list .slot-volume {
+  width: 170px;
   flex-shrink: 0;
 }
 
 .list .slot-empty-hint {
   height: 100%;
+}
+
+/* ─── BOTÓ D'EDICIÓ DEL SLOT ─── */
+
+.slot-edit-btn {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  z-index: 3;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: rgba(10, 10, 12, 0.7);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.slot-edit-btn.visible {
+  opacity: 1;
+}
+
+.slot-edit-btn:hover {
+  color: var(--text-primary);
+  background: var(--accent);
+}
+
+/* ─── EDITOR (MODAL) ─── */
+
+.editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.editor-panel {
+  width: 100%;
+  max-width: 760px;
+  background: #161618;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.editor-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-close {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.editor-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-button-hover);
+}
+
+/* Barra de zoom */
+.editor-wave-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-zoom-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-right: auto;
+}
+
+.editor-zoom-btn {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-button);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.editor-zoom-btn:hover:not(:disabled) {
+  background: var(--bg-button-hover);
+}
+
+.editor-zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Contenidor amb scroll horitzontal per al zoom */
+.editor-wave-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 6px;
+  background: #141416;
+}
+
+.editor-wave-inner {
+  min-width: 100%;   /* l'amplada real (zoom·100%) ve per estil inline */
+}
+
+/* Regla de temps */
+.editor-ruler {
+  position: relative;
+  width: 100%;
+  height: 18px;
+}
+
+.editor-ruler-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.editor-wave {
+  position: relative;
+  width: 100%;
+  height: 170px;
+  overflow: hidden;
+  cursor: ew-resize;
+  background: #141416;
+}
+
+.editor-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Línia de playhead que segueix la reproducció (estil DAW), arrossegable */
+.editor-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #f4f4f5;
+  box-shadow: 0 0 6px rgba(244, 244, 245, 0.6);
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 2;
+}
+
+/* Àrea de grip més ampla per agafar el playhead */
+.editor-playhead::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  right: -5px;
+}
+
+.editor-times {
+  display: flex;
+  gap: 24px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.editor-times b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.editor-fades {
+  display: flex;
+  gap: 24px;
+}
+
+.editor-fades label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.editor-fades input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.editor-fades input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.editor-fades input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-actions-spacer {
+  flex: 1;
+}
+
+.editor-btn.toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.editor-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-button);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.editor-btn:hover {
+  background: var(--bg-button-hover);
+}
+
+.editor-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.editor-btn.primary:hover {
+  background: #2f6fe0;
 }

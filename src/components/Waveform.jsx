@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { drawWavePath } from '../lib/waveformDraw';
 
 // Colors de la forma d'ona
 const WAVE_COLOR        = '#52525b'; // gris en repòs
@@ -6,9 +7,9 @@ const WAVE_COLOR_ACTIVE = '#3b82f6'; // accent (blau) quan el slot sona
 const WAVE_BG           = '#141416';
 
 // Dibuixa la forma d'ona estàtica d'un AudioBuffer dins d'un canvas que
-// s'adapta a la mida del seu contenidor. Recalcula els pics per columna de
-// píxel, de manera que sempre es veu nítid encara que canviï la mida.
-export function Waveform({ audioBuffer, active }) {
+// s'adapta a la mida del seu contenidor. Si startRatio/stopRatio retallen el
+// tram (0..1), enfosqueix la part exterior i marca els límits.
+export function Waveform({ audioBuffer, active, startRatio = 0, stopRatio = 1 }) {
   const canvasRef = useRef(null);
   const wrapRef   = useRef(null);
 
@@ -28,42 +29,34 @@ export function Waveform({ audioBuffer, active }) {
       canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      // Fons
       ctx.fillStyle = WAVE_BG;
       ctx.fillRect(0, 0, w, h);
 
       if (!audioBuffer) return;
 
-      // Un pic (min/max) per columna de píxel
-      const buckets = Math.max(1, Math.floor(w));
       const channel = audioBuffer.getChannelData(0);
-      const step    = Math.max(1, Math.floor(channel.length / buckets));
-      const mid     = h / 2;
+      drawWavePath(ctx, channel, w, h, active ? WAVE_COLOR_ACTIVE : WAVE_COLOR);
 
-      ctx.strokeStyle = active ? WAVE_COLOR_ACTIVE : WAVE_COLOR;
-      ctx.lineWidth   = 1;
-      ctx.beginPath();
-      for (let i = 0; i < buckets; i++) {
-        let min = 1, max = -1;
-        const start = i * step;
-        const end   = Math.min(start + step, channel.length);
-        for (let j = start; j < end; j++) {
-          const v = channel[j];
-          if (v < min) min = v;
-          if (v > max) max = v;
-        }
-        const x = i + 0.5;
-        ctx.moveTo(x, mid - max * mid);
-        ctx.lineTo(x, mid - min * mid);
+      // Tram retallat: enfosqueix fora de [startRatio, stopRatio]
+      if (startRatio > 0 || stopRatio < 1) {
+        ctx.fillStyle = 'rgba(10, 10, 12, 0.55)';
+        if (startRatio > 0) ctx.fillRect(0, 0, startRatio * w, h);
+        if (stopRatio < 1)  ctx.fillRect(stopRatio * w, 0, (1 - stopRatio) * w, h);
+
+        ctx.strokeStyle = 'rgba(244, 244, 245, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(startRatio * w, 0); ctx.lineTo(startRatio * w, h);
+        ctx.moveTo(stopRatio * w, 0);  ctx.lineTo(stopRatio * w, h);
+        ctx.stroke();
       }
-      ctx.stroke();
     };
 
     draw();
     const ro = new ResizeObserver(draw);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [audioBuffer, active]);
+  }, [audioBuffer, active, startRatio, stopRatio]);
 
   return (
     <div ref={wrapRef} className="waveform-wrap">

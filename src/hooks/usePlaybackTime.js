@@ -7,18 +7,24 @@ import { useSoundStore } from '../store/useSoundStore';
 // En mode continu (loop) el temps es plega amb el mòdul de la durada.
 export function usePlaybackTime(slot) {
   const audioContext = useSoundStore((s) => s.audioContext);
-  const duration = slot.audioBuffer ? slot.audioBuffer.duration : 0;
+  // Durada del segment efectiu (punt d'inici → stop), no del fitxer sencer
+  const total = slot && slot.audioBuffer ? slot.audioBuffer.duration : 0;
+  const startPoint = (slot && slot.startPoint) || 0;
+  const stopPoint = (slot && slot.stopPoint != null) ? slot.stopPoint : total;
+  const duration = Math.max(0, stopPoint - startPoint);
+  const isPlaying = Boolean(slot && slot.isPlaying);
+  const startedAt = (slot && slot.startedAt) || 0;
   const [state, setState] = useState({ elapsed: 0, duration, progress: 0 });
 
   useEffect(() => {
-    if (!slot.isPlaying || !audioContext || !duration) {
+    if (!isPlaying || !audioContext || !duration) {
       setState({ elapsed: 0, duration, progress: 0 });
       return;
     }
 
     let raf;
     const tick = () => {
-      let elapsed = audioContext.currentTime - slot.startedAt;
+      let elapsed = audioContext.currentTime - startedAt;
       if (elapsed < 0) elapsed = 0;
       const e = elapsed % duration;              // plega en loop
       setState({ elapsed: e, duration, progress: e / duration });
@@ -26,7 +32,7 @@ export function usePlaybackTime(slot) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [slot.isPlaying, slot.startedAt, audioContext, duration]);
+  }, [isPlaying, startedAt, audioContext, duration]);
 
   return state;
 }

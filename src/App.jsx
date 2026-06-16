@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useSoundStore } from './store/useSoundStore';
 import { SoundBoard } from './components/SoundBoard';
+import { SlotEditor } from './components/SlotEditor';
 import './App.css';
 
 export default function App() {
@@ -98,6 +99,8 @@ export default function App() {
       <main className="app-main">
         <SoundBoard />
       </main>
+
+      <SlotEditor />
     </div>
   );
 }
