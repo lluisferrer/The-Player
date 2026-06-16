@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { useSoundStore } from '../store/useSoundStore';
 import { useAudioEngine } from '../hooks/useAudioEngine';
+import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
 
@@ -58,6 +59,10 @@ export function SoundButton({ slotId }) {
   const hasAudio  = Boolean(slot.audioBuffer);
   const isPlaying = slot.isPlaying;
 
+  const { elapsed, duration, progress } = usePlaybackTime(slot);
+  // Mentre sona mostra el temps transcorregut; aturat, la durada total
+  const timeLabel = hasAudio ? fmtTime(isPlaying ? elapsed : duration) : '';
+
   let stateClass = 'slot-empty';
   if (hasAudio && !isPlaying) stateClass = 'slot-loaded';
   if (isPlaying) stateClass = 'slot-playing';
@@ -98,10 +103,28 @@ export function SoundButton({ slotId }) {
           <div className="slot-body">
             <div className="slot-waveform">
               <Waveform audioBuffer={slot.audioBuffer} active={isPlaying} />
+              {/* Visualitzador de temps (dalt-dreta sobre la waveform) */}
+              <span className="slot-time">{timeLabel}</span>
             </div>
             <div className="slot-vu">
               <VuMeter analyserNode={slot.analyserNode} isPlaying={isPlaying} />
             </div>
+          </div>
+
+          {/* Slider de posició de reproducció (només indicador, de moment) */}
+          <div className="slot-progress" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.001"
+              value={progress}
+              readOnly
+              tabIndex={-1}
+              style={{
+                background: `linear-gradient(to right, var(--accent) ${progress * 100}%, var(--border) ${progress * 100}%)`,
+              }}
+            />
           </div>
 
           {/* Slider de volum a la part inferior */}
@@ -114,6 +137,9 @@ export function SoundButton({ slotId }) {
               value={slot.volume}
               onChange={handleVolumeChange}
               title={`Volum: ${Math.round(slot.volume * 100)}%`}
+              style={{
+                background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)`,
+              }}
             />
             <span className={`volume-value ${showVolume ? 'visible' : ''}`}>
               {Math.round(slot.volume * 100)}%

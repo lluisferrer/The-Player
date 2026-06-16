@@ -12,6 +12,7 @@ const createEmptySlot = (id) => ({
   sourceNode: null,
   isPlaying: false,
   volume: 0.8,
+  startedAt: 0,        // instant (audioContext.currentTime) en què va començar a sonar
 });
 
 const loadPersistedSlots = () => {
@@ -142,10 +143,11 @@ export const useSoundStore = create((set, get) => ({
     };
 
     source.start(0);
+    const startedAt = ctx.currentTime;
 
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, sourceNode: source, isPlaying: true } : s
+        s.id === slotId ? { ...s, sourceNode: source, isPlaying: true, startedAt } : s
       ),
       activeSlot: slotId,
     }));
