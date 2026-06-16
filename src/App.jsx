@@ -20,8 +20,9 @@ function slotAtPosition(position) {
 }
 
 export default function App() {
-  const mode              = useSoundStore((s) => s.mode);
-  const setMode           = useSoundStore((s) => s.setMode);
+  const globalFadeIn      = useSoundStore((s) => s.globalFadeIn);
+  const globalFadeOut     = useSoundStore((s) => s.globalFadeOut);
+  const setGlobalFades    = useSoundStore((s) => s.setGlobalFades);
   const viewMode          = useSoundStore((s) => s.viewMode);
   const setViewMode       = useSoundStore((s) => s.setViewMode);
   const audioDevices      = useSoundStore((s) => s.audioDevices);
@@ -70,9 +71,9 @@ export default function App() {
       if (e.key === 'ArrowUp')    { e.preventDefault(); store.moveSelection('up');    return; }
       if (e.key === 'ArrowDown')  { e.preventDefault(); store.moveSelection('down');  return; }
 
-      // Transport sobre el slot SELECCIONAT:
-      // espai = play/pausa/reprèn · enter = stop · esc = stop tot
-      if (e.key === ' ')      { e.preventDefault(); store.togglePlayPause(store.selectedSlot); return; }
+      // Transport: espai = GO (dispara seleccionat + avança) ·
+      // enter = stop seleccionat · esc = stop tot
+      if (e.key === ' ')      { e.preventDefault(); store.go(); return; }
       if (e.key === 'Enter')  { e.preventDefault(); store.stopSlot(store.selectedSlot); return; }
       if (e.key === 'Escape') { e.preventDefault(); store.stopAll(); return; }
 
@@ -122,30 +123,28 @@ export default function App() {
     setSelectedDevice(e.target.value);
   };
 
-  const handleModeChange = (newMode) => {
-    initAudioContext();
-    setMode(newMode);
-  };
-
   return (
     <div className="app">
       <header className="app-header">
         <h1 className="app-title">THE PLAYER</h1>
 
         <div className="header-controls">
-          <div className="mode-toggle">
-            <button
-              className={`mode-btn ${mode === 'single' ? 'active' : ''}`}
-              onClick={() => handleModeChange('single')}
-            >
-              SINGLE
-            </button>
-            <button
-              className={`mode-btn ${mode === 'continuous' ? 'active' : ''}`}
-              onClick={() => handleModeChange('continuous')}
-            >
-              CONTINUOUS
-            </button>
+          <div className="global-fades" title="Fades per defecte de tots els cues (el cue pot fer override)">
+            <span className="gf-label">FADES</span>
+            <label>in
+              <input
+                type="number" min="0" max="30" step="0.1"
+                value={globalFadeIn}
+                onChange={(e) => setGlobalFades({ globalFadeIn: Math.max(0, parseFloat(e.target.value) || 0) })}
+              />
+            </label>
+            <label>out
+              <input
+                type="number" min="0" max="30" step="0.1"
+                value={globalFadeOut}
+                onChange={(e) => setGlobalFades({ globalFadeOut: Math.max(0, parseFloat(e.target.value) || 0) })}
+              />
+            </label>
           </div>
 
           <div className="mode-toggle">

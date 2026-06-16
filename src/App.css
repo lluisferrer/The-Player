@@ -100,6 +100,45 @@ body {
   color: var(--text-primary);
 }
 
+/* ─── FADES GLOBALS ─── */
+
+.global-fades {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gf-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+}
+
+.global-fades label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.global-fades input {
+  width: 46px;
+  background: var(--bg-button);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  outline: none;
+}
+
+.global-fades input:focus {
+  border-color: var(--accent);
+}
+
 /* ─── DEVICE SELECTOR ─── */
 
 .device-selector {
@@ -720,9 +759,38 @@ body {
   font-weight: 600;
 }
 
+.editor-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.editor-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.editor-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .editor-fades {
   display: flex;
   gap: 24px;
+  min-height: 38px;
+}
+
+.editor-fades-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  align-self: center;
 }
 
 .editor-fades label {

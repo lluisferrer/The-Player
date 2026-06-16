@@ -160,6 +160,7 @@ export function SlotEditor() {
   // ─── Accions i conversió (funcions normals, no hooks) ───
   const handleClose = () => {
     stopSlot(editingSlot);
+    useSoundStore.getState().persistSlots(); // desa les edicions del cue
     setEditingSlot(null);
   };
 
@@ -304,23 +305,50 @@ export function SlotEditor() {
           <span>Durada: <b>{fmtTime(segDur)}</b></span>
         </div>
 
+        <div className="editor-options">
+          <label className="editor-check">
+            <input
+              type="checkbox"
+              checked={!!slot.stopOthers}
+              onChange={(e) => updateSlotEdit(editingSlot, { stopOthers: e.target.checked })}
+            />
+            Stop others (talla la resta de cues en disparar)
+          </label>
+          <label className="editor-check">
+            <input
+              type="checkbox"
+              checked={!slot.useGlobalFades}
+              onChange={(e) => updateSlotEdit(editingSlot, { useGlobalFades: !e.target.checked })}
+            />
+            Fades propis (override dels globals)
+          </label>
+        </div>
+
         <div className="editor-fades">
-          <label>
-            <span>Fade in: {fadeIn.toFixed(2)}s</span>
-            <input
-              type="range" min="0" max={Math.max(0.1, segDur)} step="0.05"
-              value={Math.min(fadeIn, segDur)}
-              onChange={(e) => updateSlotEdit(editingSlot, { fadeIn: parseFloat(e.target.value) })}
-            />
-          </label>
-          <label>
-            <span>Fade out: {fadeOut.toFixed(2)}s</span>
-            <input
-              type="range" min="0" max={Math.max(0.1, segDur)} step="0.05"
-              value={Math.min(fadeOut, segDur)}
-              onChange={(e) => updateSlotEdit(editingSlot, { fadeOut: parseFloat(e.target.value) })}
-            />
-          </label>
+          {slot.useGlobalFades ? (
+            <div className="editor-fades-note">
+              Usant els <b>fades globals</b>. Activa «Fades propis» per definir-los aquí.
+            </div>
+          ) : (
+            <>
+              <label>
+                <span>Fade in: {fadeIn.toFixed(2)}s</span>
+                <input
+                  type="range" min="0" max={Math.max(0.1, segDur)} step="0.05"
+                  value={Math.min(fadeIn, segDur)}
+                  onChange={(e) => updateSlotEdit(editingSlot, { fadeIn: parseFloat(e.target.value) })}
+                />
+              </label>
+              <label>
+                <span>Fade out: {fadeOut.toFixed(2)}s</span>
+                <input
+                  type="range" min="0" max={Math.max(0.1, segDur)} step="0.05"
+                  value={Math.min(fadeOut, segDur)}
+                  onChange={(e) => updateSlotEdit(editingSlot, { fadeOut: parseFloat(e.target.value) })}
+                />
+              </label>
+            </>
+          )}
         </div>
 
         <div className="editor-actions">

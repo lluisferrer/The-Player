@@ -31,6 +31,8 @@ export function useLibrary() {
         fadeIn: s.fadeIn,
         fadeOut: s.fadeOut,
         loop: s.loop,
+        stopOthers: s.stopOthers,
+        useGlobalFades: s.useGlobalFades,
       }))
       .filter((s) => s.filePath || s.label); // només slots ocupats
     const all = readSets();

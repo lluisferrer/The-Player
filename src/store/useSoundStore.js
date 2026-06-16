@@ -17,11 +17,13 @@ const createEmptySlot = (id) => ({
   startedAt: 0,        // instant (audioContext.currentTime) en què va començar a sonar
   pausedAt: null,      // posició (s dins el segment) on s'ha pausat (null = no pausat)
   loop: false,         // opció de reproducció: repeteix el mateix slot
+  stopOthers: false,   // en disparar, atura la resta de cues (QLab)
+  useGlobalFades: true,// usa els fades globals per defecte (override si false)
   // Edició del slot (segons l'editor) — tot en segons
   startPoint: 0,       // punt d'inici dins el buffer
   stopPoint: null,     // punt de stop (null = final del buffer)
-  fadeIn: 0,           // durada del fade in
-  fadeOut: 0,          // durada del fade out
+  fadeIn: 0,           // durada del fade in (override propi)
+  fadeOut: 0,          // durada del fade out (override propi)
 });
 
 const loadPersistedSlots = () => {
@@ -36,6 +38,12 @@ const loadPersistedSlots = () => {
 
 const savedSlots = loadPersistedSlots();
 
+const loadGlobals = () => {
+  try { return JSON.parse(localStorage.getItem('the-player-globals')) || {}; }
+  catch { return {}; }
+};
+const savedGlobals = loadGlobals();
+
 const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
   const base = createEmptySlot(i + 1);
   if (savedSlots && savedSlots[i]) {
@@ -45,6 +53,8 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
       filePath: savedSlots[i].filePath ?? null,
       volume: savedSlots[i].volume ?? 0.8,
       loop: savedSlots[i].loop ?? false,
+      stopOthers: savedSlots[i].stopOthers ?? false,
+      useGlobalFades: savedSlots[i].useGlobalFades ?? true,
       startPoint: savedSlots[i].startPoint ?? 0,
       stopPoint: savedSlots[i].stopPoint ?? null,
       fadeIn: savedSlots[i].fadeIn ?? 0,
@@ -56,7 +66,8 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
 
 export const useSoundStore = create((set, get) => ({
   slots: initialSlots,
-  mode: 'single',
+  globalFadeIn: savedGlobals.globalFadeIn ?? 0,   // fades per defecte de tots els cues
+  globalFadeOut: savedGlobals.globalFadeOut ?? 0,
   viewMode: 'grid',        // 'grid' (botonera 8×4) | 'list' (llista de files)
   editingSlot: null,       // id del slot obert a l'editor (o null)
   dragOverSlot: null,      // id del slot sota un drag&drop natiu (o null)
@@ -75,7 +86,11 @@ export const useSoundStore = create((set, get) => ({
     return ctx;
   },
 
-  setMode: (mode) => set({ mode }),
+  setGlobalFades: (patch) => {
+    set(patch);
+    const { globalFadeIn, globalFadeOut } = get();
+    localStorage.setItem('the-player-globals', JSON.stringify({ globalFadeIn, globalFadeOut }));
+  },
 
   setViewMode: (viewMode) => set({ viewMode }),
 
@@ -102,6 +117,8 @@ export const useSoundStore = create((set, get) => ({
               fadeIn: cfg.fadeIn || 0,
               fadeOut: cfg.fadeOut || 0,
               loop: !!cfg.loop,
+              stopOthers: !!cfg.stopOthers,
+              useGlobalFades: cfg.useGlobalFades != null ? cfg.useGlobalFades : true,
             }
           : s
       ),
@@ -192,21 +209,23 @@ export const useSoundStore = create((set, get) => ({
   },
 
   playSlot: (slotId) => {
-    const { slots, mode, activeSlot, audioContext } = get();
+    const { slots, audioContext, globalFadeIn, globalFadeOut } = get();
     const ctx = audioContext || get().initAudioContext();
     if (ctx.state === 'suspended') ctx.resume();
     const slot = slots.find((s) => s.id === slotId);
     if (!slot || !slot.audioBuffer) return;
 
-    // En mode single, atura l'actiu
-    if (mode === 'single' && activeSlot && activeSlot !== slotId) {
-      get().stopSlot(activeSlot);
-    }
-
-    // En mode continuous, si ja sona el togglam
+    // Si ja sona, el togglam (atura)
     if (slot.isPlaying) {
       get().stopSlot(slotId);
       return;
+    }
+
+    // "Stop others" per cue: atura la resta de cues que sonin
+    if (slot.stopOthers) {
+      slots.forEach((s) => {
+        if (s.id !== slotId && (s.isPlaying || s.pausedAt != null)) get().stopSlot(s.id);
+      });
     }
 
     const source = ctx.createBufferSource();
@@ -218,8 +237,11 @@ export const useSoundStore = create((set, get) => ({
     const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
     const stopPoint  = Math.min(slot.stopPoint ?? total, total);
     const segDur     = Math.max(0.02, stopPoint - startPoint);
-    const fadeIn     = Math.max(0, Math.min(slot.fadeIn || 0, segDur));
-    const fadeOut    = Math.max(0, Math.min(slot.fadeOut || 0, segDur));
+    // Fades efectius: globals per defecte, o els propis del cue si fa override
+    const rawIn  = slot.useGlobalFades ? globalFadeIn : slot.fadeIn;
+    const rawOut = slot.useGlobalFades ? globalFadeOut : slot.fadeOut;
+    const fadeIn     = Math.max(0, Math.min(rawIn || 0, segDur));
+    const fadeOut    = Math.max(0, Math.min(rawOut || 0, segDur));
 
     const now = ctx.currentTime;
 
@@ -323,7 +345,7 @@ export const useSoundStore = create((set, get) => ({
     if (fg) {
       fg.gain.cancelScheduledValues(now);
       fg.gain.setValueAtTime(1, now); // sense fade in en reprendre
-      const fadeOut = Math.max(0, Math.min(slot.fadeOut || 0, segDur));
+      const fadeOut = Math.max(0, Math.min((slot.useGlobalFades ? get().globalFadeOut : slot.fadeOut) || 0, segDur));
       if (!slot.loop && fadeOut > 0 && remaining > fadeOut) {
         fg.gain.setValueAtTime(1, now + remaining - fadeOut);
         fg.gain.linearRampToValueAtTime(0, now + remaining);
@@ -392,24 +414,28 @@ export const useSoundStore = create((set, get) => ({
     }));
   },
 
-  // Gestiona el final natural d'un clip: l'atura i, en mode continuous,
-  // encadena el següent slot amb àudio (per ordre, sense fer la volta).
+  // Gestiona el final natural d'un clip: l'atura (l'encadenament és manual
+  // amb GO, o automàtic a la Playlist; la botonera no avança sola).
   handleEnded: (slotId) => {
-    const st = get();
-    const current = st.slots.find((s) => s.id === slotId);
+    const current = get().slots.find((s) => s.id === slotId);
     if (!current || !current.isPlaying) return;
-
     set((state) => ({
       slots: state.slots.map((s) =>
         s.id === slotId ? { ...s, isPlaying: false, sourceNode: null } : s
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));
+  },
 
-    if (st.mode === 'continuous' && !current.loop) {
-      const next = st.slots.find((s) => s.id > slotId && s.audioBuffer);
-      if (next) get().playSlot(next.id);
-    }
+  // GO: dispara el slot seleccionat i avança la selecció al següent cue amb àudio
+  go: () => {
+    const { selectedSlot, slots } = get();
+    const sel = selectedSlot || 1;
+    const slot = slots.find((s) => s.id === sel);
+    if (slot && slot.audioBuffer) get().triggerSlot(sel);
+    // Avança la selecció al següent slot amb àudio (sense fer la volta)
+    const next = slots.find((s) => s.id > sel && s.audioBuffer);
+    if (next) set({ selectedSlot: next.id });
   },
 
   // Salta a una posició (ratio 0..1 dins el segment) mentre el slot sona,
@@ -443,7 +469,7 @@ export const useSoundStore = create((set, get) => ({
       // En fer seek no apliquem fade in; mantenim el fade out cap al final
       fg.gain.cancelScheduledValues(now);
       fg.gain.setValueAtTime(1, now);
-      const fadeOut = Math.max(0, Math.min(slot.fadeOut || 0, segDur));
+      const fadeOut = Math.max(0, Math.min((slot.useGlobalFades ? get().globalFadeOut : slot.fadeOut) || 0, segDur));
       if (!slot.loop && fadeOut > 0 && remaining > fadeOut) {
         fg.gain.setValueAtTime(1, now + remaining - fadeOut);
         fg.gain.linearRampToValueAtTime(0, now + remaining);
@@ -549,6 +575,8 @@ export const useSoundStore = create((set, get) => ({
       filePath: s.filePath,
       volume: s.volume,
       loop: s.loop,
+      stopOthers: s.stopOthers,
+      useGlobalFades: s.useGlobalFades,
       startPoint: s.startPoint,
       stopPoint: s.stopPoint,
       fadeIn: s.fadeIn,
