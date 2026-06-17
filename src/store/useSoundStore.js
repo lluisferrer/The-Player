@@ -55,6 +55,7 @@ const loadPlaylist = () => {
 const savedPlaylist = loadPlaylist();
 let plNextId = 1;
 let previewSource = null; // font activa del bus de preview (a nivell de mòdul)
+const cueCtxRegistry = new Map(); // deviceId → AudioContext (busos de color dels cues)
 if (Array.isArray(savedPlaylist.tracks)) {
   for (const t of savedPlaylist.tracks) if (t.id >= plNextId) plNextId = t.id + 1;
 }
@@ -101,6 +102,7 @@ export const useSoundStore = create((set, get) => ({
   previewArmed: false,     // Ctrl premut: mode preview
   previewingSlot: null,    // slot que sona ara pel bus de preview
   previewStartedAt: 0,     // instant (previewCtx) en què va començar el preview
+  colorOutputs: savedGlobals.colorOutputs || {}, // { color: deviceId } routing per grup
 
   // ── Playlist (VLC) ──
   playlist: Array.isArray(savedPlaylist.tracks) ? savedPlaylist.tracks : [],
@@ -121,11 +123,40 @@ export const useSoundStore = create((set, get) => ({
   },
 
   persistGlobals: () => {
-    const { globalFadeIn, globalFadeOut, selectedDeviceId, playlistDeviceId, previewDeviceId } = get();
+    const { globalFadeIn, globalFadeOut, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
+      colorOutputs,
     }));
+  },
+
+  // Retorna (o crea) el context d'un dispositiu de sortida per als cues.
+  // El bus de Cues reutilitza l'audioContext principal.
+  ctxForDevice: (deviceId) => {
+    const st = get();
+    if (!deviceId || deviceId === st.selectedDeviceId) {
+      return st.audioContext || get().initAudioContext();
+    }
+    let ctx = cueCtxRegistry.get(deviceId);
+    if (!ctx || ctx.state === 'closed') {
+      ctx = new AudioContext();
+      if (ctx.setSinkId) { try { ctx.setSinkId(deviceId); } catch { /* res */ } }
+      cueCtxRegistry.set(deviceId, ctx);
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  },
+
+  // Assigna un color a un dispositiu de sortida (routing per grup)
+  setColorOutput: (color, deviceId) => {
+    set((state) => {
+      const colorOutputs = { ...state.colorOutputs };
+      if (!deviceId || deviceId === 'cues') delete colorOutputs[color];
+      else colorOutputs[color] = deviceId;
+      return { colorOutputs };
+    });
+    get().persistGlobals();
   },
 
   setGlobalFades: (patch) => {
@@ -341,23 +372,8 @@ export const useSoundStore = create((set, get) => ({
   },
 
   loadAudio: (slotId, file, audioBuffer, audioUrl, filePath = null) => {
-    const { slots, audioContext } = get();
-    const ctx = audioContext || get().initAudioContext();
-
-    // Graf: source → fadeGain → gain (volum) → analyser → destination
-    const fadeGainNode = ctx.createGain();
-    fadeGainNode.gain.value = 1;
-    const gainNode = ctx.createGain();
-    const analyserNode = ctx.createAnalyser();
-    analyserNode.fftSize = 256;
-
-    fadeGainNode.connect(gainNode);
-    gainNode.connect(analyserNode);
-    analyserNode.connect(ctx.destination);
-
-    const currentSlot = slots.find((s) => s.id === slotId);
-    gainNode.gain.value = currentSlot?.volume ?? 0.8;
-
+    // Els nodes (gain/fade/analyser) es construeixen al Play, al context del
+    // dispositiu segons el color del cue (routing per grup).
     set((state) => ({
       slots: state.slots.map((s) =>
         s.id === slotId
@@ -367,9 +383,9 @@ export const useSoundStore = create((set, get) => ({
               filePath,
               audioUrl,
               audioBuffer,
-              gainNode,
-              fadeGainNode,
-              analyserNode,
+              gainNode: null,
+              fadeGainNode: null,
+              analyserNode: null,
               sourceNode: null,
               isPlaying: false,
               // Un fitxer nou reinicia els punts d'edició
@@ -386,9 +402,7 @@ export const useSoundStore = create((set, get) => ({
   },
 
   playSlot: (slotId) => {
-    const { slots, audioContext, globalFadeIn, globalFadeOut } = get();
-    const ctx = audioContext || get().initAudioContext();
-    if (ctx.state === 'suspended') ctx.resume();
+    const { slots, globalFadeIn, globalFadeOut, colorOutputs } = get();
     const slot = slots.find((s) => s.id === slotId);
     if (!slot || !slot.audioBuffer) return;
 
@@ -410,9 +424,31 @@ export const useSoundStore = create((set, get) => ({
       try { slot.sourceNode.onended = null; slot.sourceNode.stop(); } catch { /* res */ }
     }
 
+    // Context segons el color del cue (routing per grup); per defecte, bus Cues
+    const outDev = (slot.color && colorOutputs[slot.color]) || get().selectedDeviceId;
+    const ctx = get().ctxForDevice(outDev);
+    if (ctx.state === 'suspended') ctx.resume();
+
+    // (Re)construeix el graf si no existeix o és d'un altre context
+    let { fadeGainNode, gainNode, analyserNode } = slot;
+    if (!fadeGainNode || fadeGainNode.context !== ctx) {
+      try { slot.fadeGainNode && slot.fadeGainNode.disconnect(); } catch { /* res */ }
+      try { slot.gainNode && slot.gainNode.disconnect(); } catch { /* res */ }
+      try { slot.analyserNode && slot.analyserNode.disconnect(); } catch { /* res */ }
+      fadeGainNode = ctx.createGain();
+      fadeGainNode.gain.value = 1;
+      gainNode = ctx.createGain();
+      gainNode.gain.value = slot.volume ?? 0.8;
+      analyserNode = ctx.createAnalyser();
+      analyserNode.fftSize = 256;
+      fadeGainNode.connect(gainNode);
+      gainNode.connect(analyserNode);
+      analyserNode.connect(ctx.destination);
+    }
+
     const source = ctx.createBufferSource();
     source.buffer = slot.audioBuffer;
-    source.connect(slot.fadeGainNode || slot.gainNode);
+    source.connect(fadeGainNode);
 
     // Punts d'inici/stop (segment) i durada efectiva
     const total = slot.audioBuffer.duration;
@@ -428,7 +464,7 @@ export const useSoundStore = create((set, get) => ({
     const now = ctx.currentTime;
 
     // Envolupant de fade sobre el node de fade (0..1), independent del volum
-    const fg = slot.fadeGainNode;
+    const fg = fadeGainNode;
     if (fg) {
       fg.gain.cancelScheduledValues(now);
       if (fadeIn > 0) {
@@ -460,7 +496,9 @@ export const useSoundStore = create((set, get) => ({
 
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, sourceNode: source, isPlaying: true, startedAt, pausedAt: null } : s
+        s.id === slotId
+          ? { ...s, sourceNode: source, fadeGainNode, gainNode, analyserNode, isPlaying: true, startedAt, pausedAt: null }
+          : s
       ),
       activeSlot: slotId,
     }));
@@ -480,10 +518,10 @@ export const useSoundStore = create((set, get) => ({
 
   // Pausa: atura recordant la posició dins el segment
   pauseSlot: (slotId) => {
-    const { slots, audioContext } = get();
-    const ctx = audioContext;
-    const slot = slots.find((s) => s.id === slotId);
-    if (!slot || !slot.isPlaying || !ctx) return;
+    const slot = get().slots.find((s) => s.id === slotId);
+    if (!slot || !slot.isPlaying) return;
+    const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
+    if (!ctx) return;
 
     const total = slot.audioBuffer.duration;
     const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
@@ -505,10 +543,9 @@ export const useSoundStore = create((set, get) => ({
 
   // Reprèn la reproducció des de la posició pausada
   resumeSlot: (slotId) => {
-    const { slots, audioContext } = get();
-    const ctx = audioContext || get().initAudioContext();
-    const slot = slots.find((s) => s.id === slotId);
+    const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !slot.audioBuffer || slot.pausedAt == null) return;
+    const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : (get().audioContext || get().initAudioContext());
 
     const total = slot.audioBuffer.duration;
     const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
@@ -621,10 +658,10 @@ export const useSoundStore = create((set, get) => ({
   // Salta a una posició (ratio 0..1 dins el segment) mentre el slot sona,
   // recreant el node de reproducció amb el nou offset.
   seekSlot: (slotId, ratio) => {
-    const { slots, audioContext } = get();
-    const ctx = audioContext;
-    const slot = slots.find((s) => s.id === slotId);
-    if (!slot || !slot.audioBuffer || !ctx || !slot.isPlaying) return;
+    const slot = get().slots.find((s) => s.id === slotId);
+    if (!slot || !slot.audioBuffer || !slot.isPlaying) return;
+    const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
+    if (!ctx) return;
 
     const total      = slot.audioBuffer.duration;
     const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
@@ -721,11 +758,11 @@ export const useSoundStore = create((set, get) => ({
   // fade: false/undefined = tall sec · true = usa el fade-out efectiu del cue
   //       · número = fade d'aquests segons
   stopSlot: (slotId, fade = false) => {
-    const { slots, audioContext, globalFadeOut } = get();
-    const slot = slots.find((s) => s.id === slotId);
+    const { audioContext, globalFadeOut } = get();
+    const slot = get().slots.find((s) => s.id === slotId);
     // Res a fer si ja està del tot aturat (sense source ni pausa)
     if (!slot || (!slot.sourceNode && slot.pausedAt == null && !slot.isPlaying)) return;
-    const ctx = audioContext;
+    const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : audioContext;
 
     // Calcula la durada del fade out
     let fadeSec = 0;

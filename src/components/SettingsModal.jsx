@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useSoundStore } from '../store/useSoundStore';
+import { CUE_COLORS } from '../lib/colors';
 
 // Modal global de configuració amb tres pestanyes: Audio, Cues, Playlist
 export function SettingsModal({ onClose }) {
@@ -13,6 +14,8 @@ export function SettingsModal({ onClose }) {
   const setSelectedDevice = useSoundStore((s) => s.setSelectedDevice);
   const setPlaylistDevice = useSoundStore((s) => s.setPlaylistDevice);
   const setPreviewDevice  = useSoundStore((s) => s.setPreviewDevice);
+  const colorOutputs     = useSoundStore((s) => s.colorOutputs);
+  const setColorOutput   = useSoundStore((s) => s.setColorOutput);
   const outputChannels   = useSoundStore((s) => s.outputChannels);
 
   const globalFadeIn  = useSoundStore((s) => s.globalFadeIn);
@@ -90,6 +93,25 @@ export function SettingsModal({ onClose }) {
                   ))}
                 </select>
               </div>
+
+              <div className="settings-subtitle">Routing per color (cues)</div>
+              <div className="settings-note">Els cues sense color, o amb un color sense assignar, sonen pel bus Cues.</div>
+              {CUE_COLORS.map((c) => (
+                <div className="settings-row" key={c.value}>
+                  <span className="color-dot" style={{ background: c.value }} />
+                  <label htmlFor={`dev-color-${c.value}`}>{c.name}</label>
+                  <select
+                    id={`dev-color-${c.value}`}
+                    value={colorOutputs[c.value] || 'cues'}
+                    onChange={(e) => setColorOutput(c.value, e.target.value)}
+                  >
+                    <option value="cues">Bus Cues (per defecte)</option>
+                    {audioDevices.map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
 
               <div className="settings-subtitle">Diagnòstic natiu (cpal / WASAPI)</div>
               {diagError && <div className="diag-error">⚠ {diagError}</div>}

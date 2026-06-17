@@ -1,12 +1,11 @@
-// Paleta de colors per als cues (organització visual i, més endavant,
-// agrupació per a routing de sortida). value = color, o null = sense color.
+// Paleta de colors per als cues (organització visual i routing per grup).
+// 6 colors = 6 grups possibles (de les 8 parelles del DVS, 3 ja són per
+// defecte: Cues/Playlist/Preview → queden 6 lliures). value = color.
 export const CUE_COLORS = [
   { name: 'Vermell',  value: '#ef4444' },
   { name: 'Taronja',  value: '#f97316' },
   { name: 'Groc',     value: '#eab308' },
   { name: 'Verd',     value: '#22c55e' },
-  { name: 'Cian',     value: '#06b6d4' },
   { name: 'Blau',     value: '#3b82f6' },
   { name: 'Lila',     value: '#a855f7' },
-  { name: 'Rosa',     value: '#ec4899' },
 ];

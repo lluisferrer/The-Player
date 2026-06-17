@@ -486,6 +486,17 @@ body {
   color: var(--text-secondary);
 }
 
+.color-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.settings-row > label {
+  min-width: 64px;
+}
+
 .settings-note {
   font-size: 11px;
   color: var(--text-secondary);
