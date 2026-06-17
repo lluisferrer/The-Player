@@ -84,18 +84,25 @@ export default function App() {
       // Ctrl arma el mode preview (contorns vermells)
       if (e.key === 'Control') { store.setPreviewArmed(true); return; }
 
+      const pageBase = store.currentPage * 32;
+
       // Ctrl + tecla de slot → preview pel bus de preview (sense tocar el main)
       if (e.ctrlKey && !e.altKey && !e.metaKey) {
         if (typing) return;
-        const sid = slotForKey(e.key);
-        if (sid) {
-          const s = store.slots.find((x) => x.id === sid);
-          if (s && s.audioBuffer) { e.preventDefault(); store.previewSlot(sid); }
+        const local = slotForKey(e.key);
+        if (local) {
+          const id = pageBase + local;
+          const s = store.slots.find((x) => x.id === id);
+          if (s && s.audioBuffer) { e.preventDefault(); store.previewSlot(id); }
         }
         return;
       }
 
       if (e.altKey || e.metaKey || typing) return;
+
+      // Canvi de pàgina
+      if (e.key === 'PageUp')   { e.preventDefault(); store.setPage(store.currentPage - 1); return; }
+      if (e.key === 'PageDown') { e.preventDefault(); store.setPage(store.currentPage + 1); return; }
 
       // Fletxes: mou el slot seleccionat
       if (e.key === 'ArrowLeft')  { e.preventDefault(); store.moveSelection('left');  return; }
@@ -108,9 +115,10 @@ export default function App() {
       if (e.key === 'Enter')  { e.preventDefault(); store.stopSlot(store.selectedSlot, true); return; }
       if (e.key === 'Escape') { e.preventDefault(); store.stopAll(); return; }
 
-      // Tecla de slot → play (re-dispara des de l'inici)
-      const slotId = slotForKey(e.key);
-      if (!slotId) return;
+      // Tecla de slot → play (re-dispara des de l'inici), a la pàgina activa
+      const local = slotForKey(e.key);
+      if (!local) return;
+      const slotId = pageBase + local;
       const slot = store.slots.find((s) => s.id === slotId);
       if (slot && slot.audioBuffer) {
         e.preventDefault();
@@ -142,7 +150,8 @@ export default function App() {
             const startSlot = slotAtPosition(p.position);
             if (!startSlot) return;
             const paths = (p.paths || []).filter((p2) => AUDIO_EXT.test(p2));
-            for (let i = 0; i < paths.length && startSlot + i <= 32; i++) {
+            const pageEnd = (Math.floor((startSlot - 1) / 32) + 1) * 32; // no vessar de pàgina
+            for (let i = 0; i < paths.length && startSlot + i <= pageEnd; i++) {
               try { await loadFromPath(startSlot + i, paths[i]); }
               catch (err) { console.warn('Error carregant', paths[i], err); }
             }

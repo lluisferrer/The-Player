@@ -3,7 +3,9 @@ import {
   plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume,
 } from '../lib/playlistEngine';
 
-const NUM_SLOTS = 32;
+const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
+const NUM_PAGES = 4;         // pàgines de cues (4 × 32 = 128 cues)
+const NUM_SLOTS = SLOTS_PER_PAGE * NUM_PAGES;
 
 const createEmptySlot = (id) => ({
   id,
@@ -89,6 +91,8 @@ export const useSoundStore = create((set, get) => ({
   editingSlot: null,       // id del slot obert a l'editor (o null)
   dragOverSlot: null,      // id del slot sota un drag&drop natiu (o null)
   selectedSlot: 1,         // slot seleccionat (cursor de teclat per al transport)
+  currentPage: 0,          // pàgina de cues visible (0..NUM_PAGES-1)
+  numPages: NUM_PAGES,
   activeSlot: null,
   audioDevices: [],
   // Tres busos de sortida (cada un a un dispositiu estèreo)
@@ -592,29 +596,33 @@ export const useSoundStore = create((set, get) => ({
 
   setSelectedSlot: (slotId) => set({ selectedSlot: slotId }),
 
-  // Mou el cursor de selecció amb les fletxes (segons graella o llista)
-  moveSelection: (dir) => {
-    const { selectedSlot, viewMode } = get();
-    let id = selectedSlot || 1;
-    if (viewMode === 'list') {
-      if (dir === 'up' || dir === 'left') id = Math.max(1, id - 1);
-      if (dir === 'down' || dir === 'right') id = Math.min(32, id + 1);
-    } else {
-      const col = (id - 1) % 8;
-      const row = Math.floor((id - 1) / 8);
-      if (dir === 'left' && col > 0) id -= 1;
-      if (dir === 'right' && col < 7) id += 1;
-      if (dir === 'up' && row > 0) id -= 8;
-      if (dir === 'down' && row < 3) id += 8;
-    }
-    set({ selectedSlot: id });
+  // Canvia de pàgina (conserva la posició del cursor dins la graella)
+  setPage: (n) => {
+    const page = Math.max(0, Math.min(n, NUM_PAGES - 1));
+    const local = (get().selectedSlot - 1) % SLOTS_PER_PAGE;
+    set({ currentPage: page, selectedSlot: page * SLOTS_PER_PAGE + local + 1 });
   },
 
-  // Mou la selecció al cue carregat anterior/següent (delta -1 / +1)
+  // Mou el cursor de selecció amb les fletxes, dins la pàgina activa (8×4)
+  moveSelection: (dir) => {
+    const { selectedSlot, currentPage } = get();
+    const base = currentPage * SLOTS_PER_PAGE;
+    let local = (selectedSlot - 1) % SLOTS_PER_PAGE;
+    const col = local % 8;
+    const row = Math.floor(local / 8);
+    if (dir === 'left' && col > 0) local -= 1;
+    if (dir === 'right' && col < 7) local += 1;
+    if (dir === 'up' && row > 0) local -= 8;
+    if (dir === 'down' && row < 3) local += 8;
+    set({ selectedSlot: base + local + 1 });
+  },
+
+  // Mou la selecció al cue carregat anterior/següent, dins la pàgina activa
   selectStep: (delta) => {
-    const { selectedSlot, slots } = get();
+    const { selectedSlot, slots, currentPage } = get();
+    const base = currentPage * SLOTS_PER_PAGE;
     let id = (selectedSlot || 1) + delta;
-    while (id >= 1 && id <= 32) {
+    while (id >= base + 1 && id <= base + SLOTS_PER_PAGE) {
       const s = slots.find((x) => x.id === id);
       if (s && s.audioBuffer) { set({ selectedSlot: id }); return; }
       id += delta;
@@ -655,14 +663,14 @@ export const useSoundStore = create((set, get) => ({
     }));
   },
 
-  // GO: dispara el slot seleccionat i avança la selecció al següent cue amb àudio
+  // GO: dispara el slot seleccionat i avança al següent cue amb àudio (dins la pàgina)
   go: () => {
-    const { selectedSlot, slots } = get();
+    const { selectedSlot, slots, currentPage } = get();
     const sel = selectedSlot || 1;
     const slot = slots.find((s) => s.id === sel);
     if (slot && slot.audioBuffer) get().triggerSlot(sel);
-    // Avança la selecció al següent slot amb àudio (sense fer la volta)
-    const next = slots.find((s) => s.id > sel && s.audioBuffer);
+    const pageEnd = (currentPage + 1) * SLOTS_PER_PAGE;
+    const next = slots.find((s) => s.id > sel && s.id <= pageEnd && s.audioBuffer);
     if (next) set({ selectedSlot: next.id });
   },
 

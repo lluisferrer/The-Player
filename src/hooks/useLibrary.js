@@ -55,8 +55,9 @@ export function useLibrary() {
     if (!set) return;
     const { clearSlot, applySlotConfig } = useSoundStore.getState();
 
-    // Buida tots els slots abans de carregar el set
-    for (let id = 1; id <= 32; id++) clearSlot(id);
+    // Buida tots els slots (totes les pàgines) abans de carregar el set
+    const total = useSoundStore.getState().slots.length;
+    for (let id = 1; id <= total; id++) clearSlot(id);
 
     for (const cfg of set.slots) {
       if (cfg.filePath) {

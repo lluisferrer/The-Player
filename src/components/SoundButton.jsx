@@ -164,7 +164,7 @@ export function SoundButton({ slotId }) {
   if (isPlaying) stateClass = 'slot-playing';
 
   const truncatedLabel = slot.label ? slot.label.replace(/\.[^/.]+$/, '') : '';
-  const keyLabel = keyForSlot(slotId).toUpperCase();
+  const keyLabel = keyForSlot(((slotId - 1) % 32) + 1).toUpperCase();
 
   return (
     <div

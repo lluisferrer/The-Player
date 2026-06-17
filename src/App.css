@@ -629,6 +629,33 @@ body {
   padding-top: 12px;
 }
 
+/* ─── PUNTS DE PÀGINA ─── */
+
+.page-dots {
+  display: flex;
+  justify-content: center;
+  gap: 9px;
+  padding: 4px 0 2px;
+}
+
+.page-dot {
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--border);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.page-dot:hover { background: var(--bg-button-hover); }
+
+.page-dot.active {
+  background: var(--accent);
+  transform: scale(1.25);
+}
+
 /* ─── SOUND BUTTON ─── */
 
 .sound-button {
