@@ -20,6 +20,7 @@ const createEmptySlot = (id) => ({
   startedAt: 0,        // instant (audioContext.currentTime) en què va començar a sonar
   pausedAt: null,      // posició (s dins el segment) on s'ha pausat (null = no pausat)
   loop: false,         // opció de reproducció: repeteix el mateix slot
+  color: null,         // color del cue (organització + futur routing per grup)
   stopOthers: false,   // en disparar, atura la resta de cues (QLab)
   useGlobalFades: true,// usa els fades globals per defecte (override si false)
   // Edició del slot (segons l'editor) — tot en segons
@@ -67,6 +68,7 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
       filePath: savedSlots[i].filePath ?? null,
       volume: savedSlots[i].volume ?? 0.8,
       loop: savedSlots[i].loop ?? false,
+      color: savedSlots[i].color ?? null,
       stopOthers: savedSlots[i].stopOthers ?? false,
       useGlobalFades: savedSlots[i].useGlobalFades ?? true,
       startPoint: savedSlots[i].startPoint ?? 0,
@@ -290,6 +292,7 @@ export const useSoundStore = create((set, get) => ({
               fadeIn: cfg.fadeIn || 0,
               fadeOut: cfg.fadeOut || 0,
               loop: !!cfg.loop,
+              color: cfg.color != null ? cfg.color : null,
               stopOthers: !!cfg.stopOthers,
               useGlobalFades: cfg.useGlobalFades != null ? cfg.useGlobalFades : true,
             }
@@ -698,6 +701,13 @@ export const useSoundStore = create((set, get) => ({
     get().persistSlots();
   },
 
+  setColor: (slotId, color) => {
+    set((state) => ({
+      slots: state.slots.map((s) => (s.id === slotId ? { ...s, color } : s)),
+    }));
+    get().persistSlots();
+  },
+
   // Activa/desactiva el loop d'un slot (opció de reproducció persistida)
   setLoop: (slotId, loop) => {
     set((state) => ({
@@ -778,6 +788,7 @@ export const useSoundStore = create((set, get) => ({
       filePath: s.filePath,
       volume: s.volume,
       loop: s.loop,
+      color: s.color,
       stopOthers: s.stopOthers,
       useGlobalFades: s.useGlobalFades,
       startPoint: s.startPoint,

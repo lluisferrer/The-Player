@@ -31,6 +31,7 @@ export function useLibrary() {
         fadeIn: s.fadeIn,
         fadeOut: s.fadeOut,
         loop: s.loop,
+        color: s.color,
         stopOthers: s.stopOthers,
         useGlobalFades: s.useGlobalFades,
       }))

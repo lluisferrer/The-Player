@@ -176,6 +176,8 @@ export function SoundButton({ slotId }) {
       onMouseLeave={() => setShowHover(false)}
       title={hasAudio ? slot.label : 'Arrossega un fitxer d\'àudio o clic dret per obrir'}
     >
+      {slot.color && <div className="slot-color-bar" style={{ background: slot.color }} />}
+
       {/* Capçalera: nom (esq) + loop + eliminar + tecla (dre) */}
       <div className="slot-header">
         <span className="slot-name">{truncatedLabel}</span>

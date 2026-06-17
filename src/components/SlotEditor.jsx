@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSoundStore } from '../store/useSoundStore';
 import { drawWavePath } from '../lib/waveformDraw';
+import { CUE_COLORS } from '../lib/colors';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 
 const BG          = '#141416';
@@ -17,6 +18,7 @@ export function SlotEditor() {
   const setEditingSlot = useSoundStore((s) => s.setEditingSlot);
   const updateSlotEdit = useSoundStore((s) => s.updateSlotEdit);
   const setLoop        = useSoundStore((s) => s.setLoop);
+  const setColor       = useSoundStore((s) => s.setColor);
   const seekSlot       = useSoundStore((s) => s.seekSlot);
   const playSlot       = useSoundStore((s) => s.playSlot);
   const stopSlot       = useSoundStore((s) => s.stopSlot);
@@ -322,6 +324,24 @@ export function SlotEditor() {
             />
             Fades propis (override dels globals)
           </label>
+        </div>
+
+        <div className="editor-colors">
+          <span className="editor-colors-label">Color</span>
+          <button
+            className={`color-swatch none ${!slot.color ? 'active' : ''}`}
+            onClick={() => setColor(editingSlot, null)}
+            title="Sense color"
+          >✕</button>
+          {CUE_COLORS.map((c) => (
+            <button
+              key={c.value}
+              className={`color-swatch ${slot.color === c.value ? 'active' : ''}`}
+              style={{ background: c.value }}
+              onClick={() => setColor(editingSlot, c.value)}
+              title={c.name}
+            />
+          ))}
         </div>
 
         <div className="editor-fades">
