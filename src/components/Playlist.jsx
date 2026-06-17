@@ -23,7 +23,7 @@ export function Playlist() {
   useEffect(() => {
     let raf;
     const tick = () => {
-      setPos(plPosition(useSoundStore.getState));
+      setPos(plPosition());
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

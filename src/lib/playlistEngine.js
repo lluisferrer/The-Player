@@ -1,42 +1,51 @@
-// Motor de la Playlist (tipus VLC): reproducció seqüencial amb auto-avanç i
-// crossfade entre pistes. Funciona sobre el mateix AudioContext que els cues,
-// amb el seu propi node master (volum de la playlist) → destination.
+// Motor de la Playlist (VLC) en STREAMING: usa elements <audio> que llegeixen
+// el fitxer del disc via el protocol asset de Tauri (convertFileSrc). Càrrega
+// quasi instantània i RAM mínima, llargada il·limitada.
 //
-// Manté estat imperatiu (nodes, timers) a nivell de mòdul per no provocar
-// re-renders; l'estat "de dades" (llista, índex, flags) viu al store.
-import { invoke } from '@tauri-apps/api/core';
+// El routing al dispositiu de la playlist es fa amb audio.setSinkId, i el
+// crossfade ramping audio.volume (no passem per Web Audio → sense problemes
+// de CORS amb el protocol asset).
+import { convertFileSrc } from '@tauri-apps/api/core';
 
-let master = null;          // GainNode master de la playlist
-let current = null;         // { source, gain, startedAt, duration, index }
-let timer = null;           // timeout per a la transició/fi
-let paused = null;          // { index, pos } quan està en pausa
-let token = 0;              // invalida càrregues asíncrones obsoletes
-const bufferCache = new Map(); // filePath -> AudioBuffer
+let cur = null;      // { audio, index }
+let paused = null;   // { index, pos }
+let cfTimer = null;  // timeout que vigila el punt de crossfade
+let token = 0;       // invalida transicions obsoletes
 
-function ensureMaster(ctx, volume) {
-  if (!master || master.context !== ctx) {
-    master = ctx.createGain();
-    master.connect(ctx.destination);
-  }
-  master.gain.value = volume;
-  return master;
+function clearCf() { if (cfTimer) { clearTimeout(cfTimer); cfTimer = null; } }
+
+// Volum efectiu = guany de pista (0..1) × volum master de la playlist
+function applyVol(get, audio, gain) {
+  audio._gain = gain;
+  const master = get().playlistVolume ?? 1;
+  audio.volume = Math.max(0, Math.min(1, gain * master));
 }
 
-async function getBuffer(ctx, filePath) {
-  if (bufferCache.has(filePath)) return bufferCache.get(filePath);
-  const bytes = await invoke('read_file_bytes', { path: filePath });
-  const buf = await ctx.decodeAudioData(bytes);
-  bufferCache.set(filePath, buf);
-  return buf;
+function rampVol(get, audio, from, to, dur, onDone) {
+  if (audio._raf) cancelAnimationFrame(audio._raf);
+  if (dur <= 0) { applyVol(get, audio, to); if (onDone) onDone(); return; }
+  const start = performance.now();
+  const step = () => {
+    const t = Math.min(1, (performance.now() - start) / (dur * 1000));
+    applyVol(get, audio, from + (to - from) * t);
+    if (t < 1) audio._raf = requestAnimationFrame(step);
+    else if (onDone) onDone();
+  };
+  step();
 }
 
-function clearTimer() { if (timer) { clearTimeout(timer); timer = null; } }
+function destroy(audio) {
+  if (!audio) return;
+  if (audio._raf) cancelAnimationFrame(audio._raf);
+  try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch { /* res */ }
+}
 
-function stopCurrent() {
-  if (current && current.source) {
-    try { current.source.onended = null; current.source.stop(); } catch { /* ja aturat */ }
-  }
-  current = null;
+function makeAudio(get, filePath) {
+  const audio = new Audio(convertFileSrc(filePath));
+  audio.preload = 'auto';
+  const dev = get().playlistDeviceId;
+  if (audio.setSinkId && dev && dev !== 'default') audio.setSinkId(dev).catch(() => {});
+  return audio;
 }
 
 function nextIndex(get, idx) {
@@ -63,103 +72,77 @@ function prevIndex(get, idx) {
   return p;
 }
 
-async function startTrack(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
+function startTrack(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
   const myToken = ++token;
   const st = get();
-  const ctx = st.ensurePlaylistCtx();
-  if (ctx.state === 'suspended') ctx.resume();
   const track = st.playlist[index];
   if (!track || !track.filePath) return;
-  const m = ensureMaster(ctx, st.playlistVolume);
 
-  let buf;
-  try {
-    buf = await getBuffer(ctx, track.filePath);
-  } catch (e) {
-    console.warn('Playlist: no es pot carregar', track.filePath, e);
-    if (myToken !== token) return;
-    const ni = nextIndex(get, index);
-    if (ni != null) startTrack(get, set, ni, { fadeIn });
-    else { plStop(get, set); }
-    return;
+  const audio = makeAudio(get, track.filePath);
+  if (offset > 0) {
+    audio.addEventListener('loadedmetadata', () => { try { audio.currentTime = offset; } catch { /* res */ } }, { once: true });
   }
-  if (myToken !== token) return; // s'ha interromput durant la descàrrega
+  applyVol(get, audio, fadeIn > 0 ? 0 : 1);
+  audio.addEventListener('ended', () => onEnded(get, set, myToken), { once: true });
+  audio.play().catch(() => {});
 
-  const gain = ctx.createGain();
-  gain.connect(m);
-  const now = ctx.currentTime;
-  if (fadeIn > 0) {
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(1, now + fadeIn);
-  } else {
-    gain.gain.setValueAtTime(1, now);
-  }
-  const source = ctx.createBufferSource();
-  source.buffer = buf;
-  source.connect(gain);
-  source.start(now, offset);
-  current = { source, gain, startedAt: now - offset, duration: buf.duration, index };
+  cur = { audio, index };
   set({ playlistIndex: index, playlistPlaying: true, playlistPaused: false });
+  if (fadeIn > 0) rampVol(get, audio, 0, 1, fadeIn);
 
-  // Pre-descodifica la següent per a un crossfade sense buits
-  const ni = nextIndex(get, index);
-  if (ni != null) {
-    const t = get().playlist[ni];
-    if (t && t.filePath) getBuffer(ctx, t.filePath).catch(() => {});
-  }
-
-  scheduleTransition(get, set);
+  scheduleTransition(get, set, myToken);
 }
 
-function scheduleTransition(get, set) {
-  clearTimer();
-  const st = get();
-  const ctx = st.playlistCtx;
-  if (!current || !ctx) return;
-  const cf = Math.max(0, st.crossfade || 0);
-  const remaining = current.duration - (ctx.currentTime - current.startedAt);
-  const ni = nextIndex(get, current.index);
-  if (ni == null) {
-    // Sense següent: para en acabar
-    timer = setTimeout(() => {
-      stopCurrent(); clearTimer();
-      set({ playlistPlaying: false, playlistPaused: false });
-    }, Math.max(0, remaining * 1000) + 50);
-    return;
-  }
-  const lead = Math.max(0, remaining - cf);
-  timer = setTimeout(() => doTransition(get, set), lead * 1000);
+function scheduleTransition(get, set, myToken) {
+  clearCf();
+  if (!cur || myToken !== token) return;
+  const audio = cur.audio;
+  const arm = () => {
+    if (!cur || cur.audio !== audio) return;
+    const cf = Math.max(0, get().crossfade || 0);
+    const dur = audio.duration;
+    if (!isFinite(dur) || dur <= 0) return;
+    const remaining = dur - audio.currentTime;
+    if (remaining <= cf + 0.08) {
+      doTransition(get, set);
+    } else {
+      cfTimer = setTimeout(arm, Math.max(60, (remaining - cf) * 1000));
+    }
+  };
+  if (isFinite(audio.duration) && audio.duration > 0) arm();
+  else audio.addEventListener('loadedmetadata', arm, { once: true });
 }
 
 function doTransition(get, set) {
-  const st = get();
-  const ctx = st.playlistCtx;
-  if (!current || !ctx) return;
-  const cf = Math.max(0, st.crossfade || 0);
-  const ni = nextIndex(get, current.index);
-  if (ni == null) return;
-  if (cf > 0 && current.gain) {
-    const now = ctx.currentTime;
-    current.gain.gain.cancelScheduledValues(now);
-    current.gain.gain.setValueAtTime(current.gain.gain.value, now);
-    current.gain.gain.linearRampToValueAtTime(0, now + cf);
-    try { current.source.onended = null; current.source.stop(now + cf + 0.05); } catch { /* res */ }
-  } else {
-    stopCurrent();
-  }
+  if (!cur) return;
+  const ni = nextIndex(get, cur.index);
+  if (ni == null) return; // deixa acabar; onEnded pararà
+  const cf = Math.max(0, get().crossfade || 0);
+  const old = cur.audio;
+  rampVol(get, old, old._gain, 0, cf, () => destroy(old));
   startTrack(get, set, ni, { fadeIn: cf });
+}
+
+function onEnded(get, set, myToken) {
+  if (myToken !== token || !cur) return;
+  const ni = nextIndex(get, cur.index);
+  if (ni != null) {
+    destroy(cur.audio);
+    startTrack(get, set, ni, { fadeIn: 0 });
+  } else {
+    destroy(cur.audio); cur = null; clearCf();
+    set({ playlistPlaying: false, playlistPaused: false });
+  }
 }
 
 export function plPlayPause(get, set) {
   const st = get();
-  if (st.playlistPlaying) {
-    const ctx = st.playlistCtx;
-    if (current && ctx) {
-      const pos = Math.max(0, Math.min(ctx.currentTime - current.startedAt, current.duration - 0.01));
-      paused = { index: current.index, pos };
-      token++; clearTimer(); stopCurrent();
-      set({ playlistPlaying: false, playlistPaused: true });
-    }
+  if (st.playlistPlaying && cur) {
+    paused = { index: cur.index, pos: cur.audio.currentTime };
+    token++; clearCf();
+    try { cur.audio.pause(); } catch { /* res */ }
+    destroy(cur.audio); cur = null;
+    set({ playlistPlaying: false, playlistPaused: true });
   } else if (st.playlistPaused && paused) {
     const p = paused; paused = null;
     startTrack(get, set, p.index, { fadeIn: 0, offset: p.pos });
@@ -171,69 +154,53 @@ export function plPlayPause(get, set) {
 }
 
 export function plStop(get, set) {
-  token++; clearTimer(); stopCurrent(); paused = null;
+  token++; clearCf();
+  if (cur) destroy(cur.audio);
+  cur = null; paused = null;
   set({ playlistPlaying: false, playlistPaused: false });
 }
 
 export function plNext(get, set) {
   const st = get();
-  const base = current ? current.index : (st.playlistIndex >= 0 ? st.playlistIndex : 0);
+  const base = cur ? cur.index : (st.playlistIndex >= 0 ? st.playlistIndex : 0);
   const ni = nextIndex(get, base);
   if (ni == null) { plStop(get, set); return; }
   const cf = Math.max(0, st.crossfade || 0);
-  const hadCurrent = !!current;
-  if (current && cf > 0 && current.gain && st.playlistCtx) {
-    const now = st.playlistCtx.currentTime;
-    current.gain.gain.cancelScheduledValues(now);
-    current.gain.gain.setValueAtTime(current.gain.gain.value, now);
-    current.gain.gain.linearRampToValueAtTime(0, now + cf);
-    try { current.source.onended = null; current.source.stop(now + cf + 0.05); } catch { /* res */ }
-    current = null;
-  } else {
-    stopCurrent();
-  }
+  if (cur) { const old = cur.audio; rampVol(get, old, old._gain, 0, cf, () => destroy(old)); }
   paused = null;
-  startTrack(get, set, ni, { fadeIn: hadCurrent ? cf : 0 });
+  startTrack(get, set, ni, { fadeIn: cur ? cf : 0 });
 }
 
 export function plPrev(get, set) {
   const st = get();
-  const base = current ? current.index : (st.playlistIndex >= 0 ? st.playlistIndex : 0);
+  const base = cur ? cur.index : (st.playlistIndex >= 0 ? st.playlistIndex : 0);
   const pi = prevIndex(get, base);
   if (pi == null) return;
   const cf = Math.max(0, st.crossfade || 0);
-  const hadCurrent = !!current;
-  if (current && cf > 0 && current.gain && st.playlistCtx) {
-    const now = st.playlistCtx.currentTime;
-    current.gain.gain.cancelScheduledValues(now);
-    current.gain.gain.setValueAtTime(current.gain.gain.value, now);
-    current.gain.gain.linearRampToValueAtTime(0, now + cf);
-    try { current.source.onended = null; current.source.stop(now + cf + 0.05); } catch { /* res */ }
-    current = null;
-  } else {
-    stopCurrent();
-  }
+  if (cur) { const old = cur.audio; rampVol(get, old, old._gain, 0, cf, () => destroy(old)); }
   paused = null;
-  startTrack(get, set, pi, { fadeIn: hadCurrent ? cf : 0 });
+  startTrack(get, set, pi, { fadeIn: cur ? cf : 0 });
 }
 
 export function plPlayIndex(get, set, index) {
-  stopCurrent(); paused = null;
+  if (cur) destroy(cur.audio);
+  cur = null; paused = null; clearCf();
   startTrack(get, set, index, { fadeIn: 0 });
 }
 
-export function plSetVolume(get, v) {
-  if (master) master.gain.value = v;
+export function plSetVolume(get) {
+  if (cur) applyVol(get, cur.audio, cur.audio._gain ?? 1);
 }
 
-// Posició actual per a la UI (sense passar pel store, llegit cada frame)
-export function plPosition(get) {
-  const st = get();
-  const ctx = st.playlistCtx;
-  if (current && ctx) {
-    const e = Math.max(0, ctx.currentTime - current.startedAt);
-    return { elapsed: Math.min(e, current.duration), duration: current.duration, index: current.index };
+export function plSetDevice(get) {
+  const dev = get().playlistDeviceId;
+  if (cur && cur.audio.setSinkId) cur.audio.setSinkId(dev).catch(() => {});
+}
+
+export function plPosition() {
+  if (cur && isFinite(cur.audio.duration)) {
+    return { elapsed: cur.audio.currentTime, duration: cur.audio.duration, index: cur.index };
   }
   if (paused) return { elapsed: paused.pos, duration: 0, index: paused.index };
-  return { elapsed: 0, duration: 0, index: st.playlistIndex };
+  return { elapsed: 0, duration: 0, index: -1 };
 }

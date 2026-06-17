@@ -629,6 +629,32 @@ body {
   padding-top: 12px;
 }
 
+/* ─── INDICADOR DE CÀRREGA ─── */
+
+.slot-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 15, 15, 0.6);
+  border-radius: 8px;
+}
+
+.slot-spinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ─── PUNTS DE PÀGINA ─── */
 
 .page-dots {

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import {
-  plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume,
+  plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume, plSetDevice,
 } from '../lib/playlistEngine';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
@@ -11,6 +11,7 @@ const createEmptySlot = (id) => ({
   id,
   label: '',
   filePath: null,      // ruta absoluta del fitxer (per recarregar des de la Library)
+  loading: false,      // s'està llegint/descodificant
   audioUrl: null,
   audioBuffer: null,
   gainNode: null,
@@ -193,10 +194,9 @@ export const useSoundStore = create((set, get) => ({
     return ctx;
   },
 
-  setPlaylistDevice: async (deviceId) => {
+  setPlaylistDevice: (deviceId) => {
     set({ playlistDeviceId: deviceId });
-    const ctx = get().playlistCtx;
-    if (ctx && ctx.setSinkId) { try { await ctx.setSinkId(deviceId); } catch (e) { console.warn(e); } }
+    plSetDevice(get);
     get().persistGlobals();
   },
 
@@ -296,7 +296,7 @@ export const useSoundStore = create((set, get) => ({
   setCrossfade: (sec) => { set({ crossfade: Math.max(0, sec) }); get().persistPlaylist(); },
   togglePlaylistRepeat: () => { set((s) => ({ playlistRepeat: !s.playlistRepeat })); get().persistPlaylist(); },
   togglePlaylistShuffle: () => { set((s) => ({ playlistShuffle: !s.playlistShuffle })); get().persistPlaylist(); },
-  setPlaylistVolume: (v) => { set({ playlistVolume: v }); plSetVolume(get, v); get().persistPlaylist(); },
+  setPlaylistVolume: (v) => { set({ playlistVolume: v }); plSetVolume(get); get().persistPlaylist(); },
 
   playlistPlayPause: () => plPlayPause(get, set),
   playlistStop: () => plStop(get, set),
@@ -385,6 +385,7 @@ export const useSoundStore = create((set, get) => ({
               ...s,
               label: file.name,
               filePath,
+              loading: false,
               audioUrl,
               audioBuffer,
               gainNode: null,
@@ -756,6 +757,11 @@ export const useSoundStore = create((set, get) => ({
     }));
     get().persistSlots();
   },
+
+  setSlotLoading: (slotId, loading) =>
+    set((state) => ({
+      slots: state.slots.map((s) => (s.id === slotId ? { ...s, loading } : s)),
+    })),
 
   setColor: (slotId, color) => {
     set((state) => ({

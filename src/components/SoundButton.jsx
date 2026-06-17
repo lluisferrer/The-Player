@@ -178,6 +178,10 @@ export function SoundButton({ slotId }) {
     >
       {slot.color && <div className="slot-color-bar" style={{ background: slot.color }} />}
 
+      {slot.loading && (
+        <div className="slot-loading"><span className="slot-spinner" /></div>
+      )}
+
       {/* Capçalera: nom (esq) + loop + eliminar + tecla (dre) */}
       <div className="slot-header">
         <span className="slot-name">{truncatedLabel}</span>

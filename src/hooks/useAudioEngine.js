@@ -9,24 +9,37 @@ function basename(path) {
 export function useAudioEngine() {
   const initAudioContext = useSoundStore((s) => s.initAudioContext);
   const loadAudio = useSoundStore((s) => s.loadAudio);
+  const setSlotLoading = useSoundStore((s) => s.setSlotLoading);
 
   // Càrrega des d'un objecte File (drag&drop web / input).
   // No cal reprendre el context per descodificar; el resume es fa al Play.
   const decodeAndLoad = async (slotId, file) => {
-    const ctx = initAudioContext();
-    const arrayBuffer = await file.arrayBuffer();
-    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-    const audioUrl = URL.createObjectURL(file);
-    loadAudio(slotId, file, audioBuffer, audioUrl, null);
+    setSlotLoading(slotId, true);
+    try {
+      const ctx = initAudioContext();
+      const arrayBuffer = await file.arrayBuffer();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      const audioUrl = URL.createObjectURL(file);
+      loadAudio(slotId, file, audioBuffer, audioUrl, null);
+    } catch (e) {
+      setSlotLoading(slotId, false);
+      throw e;
+    }
   };
 
   // Càrrega des d'una ruta de fitxer (Tauri): llegeix els bytes al backend,
   // decodifica i desa la ruta perquè es pugui recarregar des de la Library.
   const loadFromPath = async (slotId, path) => {
-    const ctx = initAudioContext();
-    const buffer = await invoke('read_file_bytes', { path }); // ArrayBuffer
-    const audioBuffer = await ctx.decodeAudioData(buffer);
-    loadAudio(slotId, { name: basename(path) }, audioBuffer, null, path);
+    setSlotLoading(slotId, true);
+    try {
+      const ctx = initAudioContext();
+      const buffer = await invoke('read_file_bytes', { path }); // ArrayBuffer
+      const audioBuffer = await ctx.decodeAudioData(buffer);
+      loadAudio(slotId, { name: basename(path) }, audioBuffer, null, path);
+    } catch (e) {
+      setSlotLoading(slotId, false);
+      throw e;
+    }
   };
 
   return { decodeAndLoad, loadFromPath };
