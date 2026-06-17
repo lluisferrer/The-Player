@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import {
   plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume, plSetDevice,
 } from '../lib/playlistEngine';
+import {
+  csPlay, csStop, csPause, csResume, csSeek, csSetVolume,
+  csPreviewStart, csPreviewStop,
+} from '../lib/cueStreamEngine';
+import { hasClip } from '../lib/slotAudio';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
 const NUM_PAGES = 4;         // pàgines de cues (4 × 32 = 128 cues)
@@ -14,6 +19,9 @@ const createEmptySlot = (id) => ({
   loading: false,      // s'està llegint/descodificant
   audioUrl: null,
   audioBuffer: null,
+  isStreaming: false,  // cue llarg (>60s): es reprodueix amb <audio> en streaming
+  streamDuration: 0,   // durada (s) del fitxer en streaming (des de les metadades)
+  peaks: null,         // pics min/max de la forma d'ona (streaming; generats en segon pla)
   gainNode: null,
   fadeGainNode: null,  // node de guany dedicat als fades (independent del volum)
   analyserNode: null,
@@ -70,6 +78,8 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
       ...base,
       label: savedSlots[i].label || '',
       filePath: savedSlots[i].filePath ?? null,
+      isStreaming: savedSlots[i].isStreaming ?? false,
+      streamDuration: savedSlots[i].streamDuration ?? 0,
       volume: savedSlots[i].volume ?? 0.8,
       loop: savedSlots[i].loop ?? false,
       color: savedSlots[i].color ?? null,
@@ -215,7 +225,17 @@ export const useSoundStore = create((set, get) => ({
     if (get().previewingSlot === slotId) { get().stopPreview(); return; }
 
     const slot = get().slots.find((s) => s.id === slotId);
-    if (!slot || !slot.audioBuffer) return;
+    if (!slot || !hasClip(slot)) return;
+
+    // Cue en streaming: preview amb element <audio> al bus de preview
+    if (slot.isStreaming) {
+      get().stopPreview();
+      if (csPreviewStart(get, set, slotId)) {
+        set({ previewingSlot: slotId, previewStartedAt: 0 });
+      }
+      return;
+    }
+
     const ctx = get().ensurePreviewCtx();
 
     if (previewSource) { try { previewSource.onended = null; previewSource.stop(); } catch { /* res */ } previewSource = null; }
@@ -242,6 +262,7 @@ export const useSoundStore = create((set, get) => ({
 
   stopPreview: () => {
     if (previewSource) { try { previewSource.onended = null; previewSource.stop(); } catch { /* res */ } previewSource = null; }
+    csPreviewStop();
     set({ previewingSlot: null });
   },
 
@@ -375,9 +396,15 @@ export const useSoundStore = create((set, get) => ({
     return max;
   },
 
-  loadAudio: (slotId, file, audioBuffer, audioUrl, filePath = null) => {
+  loadAudio: (slotId, file, audioBuffer, audioUrl, filePath = null, opts = {}) => {
     // Els nodes (gain/fade/analyser) es construeixen al Play, al context del
     // dispositiu segons el color del cue (routing per grup).
+    const streaming = !!opts.streaming;
+    // Allibera el blob URL anterior d'aquest slot (si n'hi havia)
+    const prev = get().slots.find((s) => s.id === slotId);
+    if (prev && prev.audioUrl && prev.audioUrl !== audioUrl) {
+      try { URL.revokeObjectURL(prev.audioUrl); } catch { /* res */ }
+    }
     set((state) => ({
       slots: state.slots.map((s) =>
         s.id === slotId
@@ -388,6 +415,9 @@ export const useSoundStore = create((set, get) => ({
               loading: false,
               audioUrl,
               audioBuffer,
+              isStreaming: streaming,
+              streamDuration: streaming ? (opts.duration || 0) : 0,
+              peaks: null,
               gainNode: null,
               fadeGainNode: null,
               analyserNode: null,
@@ -409,7 +439,7 @@ export const useSoundStore = create((set, get) => ({
   playSlot: (slotId) => {
     const { slots, globalFadeIn, globalFadeOut, colorOutputs } = get();
     const slot = slots.find((s) => s.id === slotId);
-    if (!slot || !slot.audioBuffer) return;
+    if (!slot || !hasClip(slot)) return;
 
     // Si ja sona, el togglam (atura amb fade out)
     if (slot.isPlaying) {
@@ -423,6 +453,9 @@ export const useSoundStore = create((set, get) => ({
         if (s.id !== slotId && (s.isPlaying || s.pausedAt != null)) get().stopSlot(s.id);
       });
     }
+
+    // Cue llarg en streaming: reproducció amb element <audio>
+    if (slot.isStreaming) { csPlay(get, set, slotId); return; }
 
     // Atura qualsevol font residual d'aquest slot (p. ex. en ple fade out)
     if (slot.sourceNode) {
@@ -512,7 +545,7 @@ export const useSoundStore = create((set, get) => ({
   // Re-dispara un slot des de l'inici (per la tecla del teclat)
   triggerSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
-    if (!slot || !slot.audioBuffer) return;
+    if (!slot || !hasClip(slot)) return;
     if (slot.isPlaying) get().stopSlot(slotId);
     set((state) => ({
       slots: state.slots.map((s) => (s.id === slotId ? { ...s, pausedAt: null } : s)),
@@ -525,6 +558,7 @@ export const useSoundStore = create((set, get) => ({
   pauseSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !slot.isPlaying) return;
+    if (slot.isStreaming) { csPause(get, set, slotId); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
     if (!ctx) return;
 
@@ -549,7 +583,8 @@ export const useSoundStore = create((set, get) => ({
   // Reprèn la reproducció des de la posició pausada
   resumeSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
-    if (!slot || !slot.audioBuffer || slot.pausedAt == null) return;
+    if (!slot || !hasClip(slot) || slot.pausedAt == null) return;
+    if (slot.isStreaming) { csResume(get, set, slotId); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : (get().audioContext || get().initAudioContext());
 
     const total = slot.audioBuffer.duration;
@@ -625,7 +660,7 @@ export const useSoundStore = create((set, get) => ({
     let id = (selectedSlot || 1) + delta;
     while (id >= base + 1 && id <= base + SLOTS_PER_PAGE) {
       const s = slots.find((x) => x.id === id);
-      if (s && s.audioBuffer) { set({ selectedSlot: id }); return; }
+      if (s && hasClip(s)) { set({ selectedSlot: id }); return; }
       id += delta;
     }
   },
@@ -633,7 +668,7 @@ export const useSoundStore = create((set, get) => ({
   // Transport sobre un slot: play si aturat, pausa si sona, reprèn si pausat
   togglePlayPause: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
-    if (!slot || !slot.audioBuffer) return;
+    if (!slot || !hasClip(slot)) return;
     if (slot.isPlaying) get().pauseSlot(slotId);
     else if (slot.pausedAt != null) get().resumeSlot(slotId);
     else get().triggerSlot(slotId);
@@ -669,9 +704,9 @@ export const useSoundStore = create((set, get) => ({
     const { selectedSlot, slots, currentPage } = get();
     const sel = selectedSlot || 1;
     const slot = slots.find((s) => s.id === sel);
-    if (slot && slot.audioBuffer) get().triggerSlot(sel);
+    if (slot && hasClip(slot)) get().triggerSlot(sel);
     const pageEnd = (currentPage + 1) * SLOTS_PER_PAGE;
-    const next = slots.find((s) => s.id > sel && s.id <= pageEnd && s.audioBuffer);
+    const next = slots.find((s) => s.id > sel && s.id <= pageEnd && hasClip(s));
     if (next) set({ selectedSlot: next.id });
   },
 
@@ -679,7 +714,8 @@ export const useSoundStore = create((set, get) => ({
   // recreant el node de reproducció amb el nou offset.
   seekSlot: (slotId, ratio) => {
     const slot = get().slots.find((s) => s.id === slotId);
-    if (!slot || !slot.audioBuffer || !slot.isPlaying) return;
+    if (!slot || !hasClip(slot) || !slot.isPlaying) return;
+    if (slot.isStreaming) { csSeek(get, set, slotId, ratio); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
     if (!ctx) return;
 
@@ -740,6 +776,8 @@ export const useSoundStore = create((set, get) => ({
     const slot = slots.find((s) => s.id === slotId);
     if (!slot) return;
 
+    // Atura l'streaming (l'element <audio> no és un sourceNode)
+    if (slot.isStreaming) csStop(get, set, slotId);
     if (slot.sourceNode) {
       try { slot.sourceNode.onended = null; slot.sourceNode.stop(); } catch { /* ja aturat */ }
     }
@@ -761,6 +799,12 @@ export const useSoundStore = create((set, get) => ({
   setSlotLoading: (slotId, loading) =>
     set((state) => ({
       slots: state.slots.map((s) => (s.id === slotId ? { ...s, loading } : s)),
+    })),
+
+  // Desa els pics de la forma d'ona d'un cue en streaming (generats en segon pla)
+  setSlotPeaks: (slotId, peaks) =>
+    set((state) => ({
+      slots: state.slots.map((s) => (s.id === slotId ? { ...s, peaks } : s)),
     })),
 
   setColor: (slotId, color) => {
@@ -787,6 +831,7 @@ export const useSoundStore = create((set, get) => ({
     const slot = get().slots.find((s) => s.id === slotId);
     // Res a fer si ja està del tot aturat (sense source ni pausa)
     if (!slot || (!slot.sourceNode && slot.pausedAt == null && !slot.isPlaying)) return;
+    if (slot.isStreaming) { csStop(get, set, slotId, fade); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : audioContext;
 
     // Calcula la durada del fade out
@@ -835,6 +880,7 @@ export const useSoundStore = create((set, get) => ({
     if (slot?.gainNode) {
       slot.gainNode.gain.value = volume;
     }
+    if (slot?.isStreaming) csSetVolume(get, slotId, volume);
     set((state) => ({
       slots: state.slots.map((s) =>
         s.id === slotId ? { ...s, volume } : s
@@ -848,6 +894,8 @@ export const useSoundStore = create((set, get) => ({
     const data = slots.map((s) => ({
       label: s.label,
       filePath: s.filePath,
+      isStreaming: s.isStreaming,
+      streamDuration: s.streamDuration,
       volume: s.volume,
       loop: s.loop,
       color: s.color,

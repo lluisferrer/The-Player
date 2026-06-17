@@ -4,6 +4,7 @@ import { useSoundStore } from '../store/useSoundStore';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { keyForSlot } from '../lib/keyMap';
+import { hasClip, slotDuration } from '../lib/slotAudio';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
 
@@ -31,13 +32,14 @@ export function SoundButton({ slotId }) {
   const suppressClickRef = useRef(false); // evita que el click post-drag faci play/stop
   const waveRef = useRef(null);
 
-  const hasAudio  = Boolean(slot.audioBuffer);
+  const hasAudio  = hasClip(slot);
+  const isStreaming = slot.isStreaming;
   const isPlaying = slot.isPlaying;
 
   const { elapsed, duration, progress } = usePlaybackTime(slot);
 
   // Tram retallat i durada del segment
-  const total      = hasAudio ? slot.audioBuffer.duration : 0;
+  const total      = hasAudio ? slotDuration(slot) : 0;
   const startSec   = hasAudio ? Math.max(0, slot.startPoint || 0) : 0;
   const stopSec    = hasAudio ? (slot.stopPoint ?? total) : 0;
   const segDur     = Math.max(0, stopSec - startSec);
@@ -104,9 +106,9 @@ export function SoundButton({ slotId }) {
     // Ignora el click immediatament posterior a arrossegar el playhead
     if (suppressClickRef.current) return;
     // Ctrl+clic → preview pel bus de preview
-    if (e.ctrlKey && slot.audioBuffer) { previewSlot(slotId); return; }
+    if (e.ctrlKey && hasAudio) { previewSlot(slotId); return; }
     setSelectedSlot(slotId);
-    if (slot.audioBuffer) playSlot(slotId);
+    if (hasAudio) playSlot(slotId);
   };
 
   // Clic dret: obre el selector natiu de fitxers (retorna la ruta)
@@ -213,12 +215,15 @@ export function SoundButton({ slotId }) {
             <div className="slot-waveform" ref={waveRef}>
               <Waveform
                 audioBuffer={slot.audioBuffer}
+                peaks={slot.peaks}
                 active={isPlaying}
                 startRatio={startRatio}
                 stopRatio={stopRatio}
               />
               {/* Visualitzador de temps (dalt-dreta) */}
               <span className="slot-time">{timeLabel}</span>
+              {/* Cue llarg en streaming: no hi ha forma d'ona */}
+              {isStreaming && <span className="slot-stream-badge">STREAM</span>}
               {/* Playhead interactiu (mentre sona o en pausa) */}
               {(isPlaying || paused) && (
                 <div

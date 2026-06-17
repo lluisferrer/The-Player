@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSoundStore } from '../store/useSoundStore';
 import { drawWavePath } from '../lib/waveformDraw';
 import { CUE_COLORS } from '../lib/colors';
+import { hasClip, slotDuration } from '../lib/slotAudio';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 
 const BG          = '#141416';
@@ -34,8 +35,9 @@ export function SlotEditor() {
   // Posició de reproducció (per la línia de playhead estil DAW)
   const { progress } = usePlaybackTime(slot);
 
-  const hasAudio = slot && slot.audioBuffer;
-  const total    = hasAudio ? slot.audioBuffer.duration : 0;
+  const hasAudio = hasClip(slot);
+  const isStreaming = slot && slot.isStreaming;
+  const total    = hasAudio ? slotDuration(slot) : 0;
   const start    = hasAudio ? Math.max(0, slot.startPoint || 0) : 0;
   const stop     = hasAudio ? (slot.stopPoint ?? total) : 0;
   const fadeIn   = hasAudio ? (slot.fadeIn || 0) : 0;
@@ -62,8 +64,22 @@ export function SlotEditor() {
       ctx.fillStyle = BG;
       ctx.fillRect(0, 0, w, h);
 
-      const channel = slot.audioBuffer.getChannelData(0);
-      drawWavePath(ctx, channel, w, h, WAVE_COLOR);
+      const data = slot.audioBuffer ? slot.audioBuffer.getChannelData(0) : slot.peaks;
+      if (data) {
+        drawWavePath(ctx, data, w, h, WAVE_COLOR);
+      } else {
+        // Streaming sense pics encara: línia central + avís
+        ctx.strokeStyle = WAVE_COLOR;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, h / 2 + 0.5);
+        ctx.lineTo(w, h / 2 + 0.5);
+        ctx.stroke();
+        ctx.fillStyle = '#52525b';
+        ctx.font = '11px "JetBrains Mono", monospace';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('STREAMING — generant forma d\'ona…', 10, h / 2 - 12);
+      }
 
       const xStart = (start / total) * w;
       const xStop  = (stop / total) * w;

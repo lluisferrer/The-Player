@@ -886,6 +886,23 @@ body {
   color: var(--accent);
 }
 
+/* Etiqueta dels cues llargs reproduïts en streaming */
+.slot-stream-badge {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  z-index: 2;
+  font-size: 7px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  background: rgba(10, 10, 12, 0.55);
+  border: 1px solid rgba(113, 113, 122, 0.35);
+  padding: 0 3px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
 /* Playhead interactiu sobre la waveform del botó */
 .slot-playhead {
   position: absolute;

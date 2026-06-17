@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSoundStore } from '../store/useSoundStore';
+import { slotDuration } from '../lib/slotAudio';
+import { csPosition } from '../lib/cueStreamEngine';
 
 // Retorna el temps de reproducció d'un slot en temps real:
 //   { elapsed, duration, progress }  (progress = 0..1)
@@ -8,16 +10,42 @@ import { useSoundStore } from '../store/useSoundStore';
 export function usePlaybackTime(slot) {
   const audioContext = useSoundStore((s) => s.audioContext);
   // Durada del segment efectiu (punt d'inici → stop), no del fitxer sencer
-  const total = slot && slot.audioBuffer ? slot.audioBuffer.duration : 0;
+  const total = slotDuration(slot);
   const startPoint = (slot && slot.startPoint) || 0;
   const stopPoint = (slot && slot.stopPoint != null) ? slot.stopPoint : total;
   const duration = Math.max(0, stopPoint - startPoint);
   const isPlaying = Boolean(slot && slot.isPlaying);
+  const isStreaming = Boolean(slot && slot.isStreaming);
+  const slotId = slot && slot.id;
   const startedAt = (slot && slot.startedAt) || 0;
   const pausedAt = slot && slot.pausedAt != null ? slot.pausedAt : null;
   const [state, setState] = useState({ elapsed: 0, duration, progress: 0 });
 
+  // Streaming: la posició ve de l'element <audio> (csPosition)
   useEffect(() => {
+    if (!isStreaming) return undefined;
+    if (!isPlaying || !duration) {
+      if (pausedAt != null && duration) {
+        const p = Math.min(pausedAt, duration);
+        setState({ elapsed: p, duration, progress: p / duration });
+      } else {
+        setState({ elapsed: 0, duration, progress: 0 });
+      }
+      return undefined;
+    }
+    let raf;
+    const tick = () => {
+      const pos = csPosition(slotId);
+      const e = pos != null ? Math.min(pos, duration) : 0;
+      setState({ elapsed: e, duration, progress: duration ? e / duration : 0 });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isStreaming, isPlaying, duration, pausedAt, slotId]);
+
+  useEffect(() => {
+    if (isStreaming) return undefined;
     if (!isPlaying || !audioContext || !duration) {
       // En pausa, mostra la posició congelada; aturat, a zero
       if (pausedAt != null && duration) {
@@ -39,7 +67,7 @@ export function usePlaybackTime(slot) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isPlaying, startedAt, audioContext, duration, pausedAt]);
+  }, [isStreaming, isPlaying, startedAt, audioContext, duration, pausedAt]);
 
   return state;
 }

@@ -10,6 +10,7 @@ import { Library } from './components/Library';
 import { PlaylistSave } from './components/PlaylistSave';
 import { SettingsModal } from './components/SettingsModal';
 import { slotForKey } from './lib/keyMap';
+import { hasClip } from './lib/slotAudio';
 import './App.css';
 
 const AUDIO_EXT = /\.(mp3|wav|ogg|flac)$/i;
@@ -93,7 +94,7 @@ export default function App() {
         if (local) {
           const id = pageBase + local;
           const s = store.slots.find((x) => x.id === id);
-          if (s && s.audioBuffer) { e.preventDefault(); store.previewSlot(id); }
+          if (s && hasClip(s)) { e.preventDefault(); store.previewSlot(id); }
         }
         return;
       }
@@ -120,7 +121,7 @@ export default function App() {
       if (!local) return;
       const slotId = pageBase + local;
       const slot = store.slots.find((s) => s.id === slotId);
-      if (slot && slot.audioBuffer) {
+      if (slot && hasClip(slot)) {
         e.preventDefault();
         store.triggerSlot(slotId);
       }

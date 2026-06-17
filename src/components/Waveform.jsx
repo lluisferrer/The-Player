@@ -9,7 +9,7 @@ const WAVE_BG           = '#141416';
 // Dibuixa la forma d'ona estàtica d'un AudioBuffer dins d'un canvas que
 // s'adapta a la mida del seu contenidor. Si startRatio/stopRatio retallen el
 // tram (0..1), enfosqueix la part exterior i marca els límits.
-export function Waveform({ audioBuffer, active, startRatio = 0, stopRatio = 1 }) {
+export function Waveform({ audioBuffer, peaks = null, active, startRatio = 0, stopRatio = 1 }) {
   const canvasRef = useRef(null);
   const wrapRef   = useRef(null);
 
@@ -32,10 +32,11 @@ export function Waveform({ audioBuffer, active, startRatio = 0, stopRatio = 1 })
       ctx.fillStyle = WAVE_BG;
       ctx.fillRect(0, 0, w, h);
 
-      if (!audioBuffer) return;
+      // Mostres del buffer (cue curt) o pics reduïts (cue en streaming)
+      const data = audioBuffer ? audioBuffer.getChannelData(0) : peaks;
+      if (!data) return;
 
-      const channel = audioBuffer.getChannelData(0);
-      drawWavePath(ctx, channel, w, h, active ? WAVE_COLOR_ACTIVE : WAVE_COLOR);
+      drawWavePath(ctx, data, w, h, active ? WAVE_COLOR_ACTIVE : WAVE_COLOR);
 
       // Tram retallat: enfosqueix fora de [startRatio, stopRatio]
       if (startRatio > 0 || stopRatio < 1) {
@@ -56,7 +57,7 @@ export function Waveform({ audioBuffer, active, startRatio = 0, stopRatio = 1 })
     const ro = new ResizeObserver(draw);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [audioBuffer, active, startRatio, stopRatio]);
+  }, [audioBuffer, peaks, active, startRatio, stopRatio]);
 
   return (
     <div ref={wrapRef} className="waveform-wrap">
