@@ -3,6 +3,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { useSoundStore } from './store/useSoundStore';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { SoundBoard } from './components/SoundBoard';
+import { CueTransport } from './components/CueTransport';
 import { Playlist } from './components/Playlist';
 import { SlotEditor } from './components/SlotEditor';
 import { Library } from './components/Library';
@@ -47,6 +48,28 @@ export default function App() {
     navigator.mediaDevices.addEventListener('devicechange', loadDevices);
     return () => navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
   }, [setAudioDevices]);
+
+  // En arrencar: recarrega els cues des de disc (per la ruta desada) i neteja
+  // els fantasmes vells (nom sense ruta) perquè no quedin noms penjats.
+  useEffect(() => {
+    const slots = useSoundStore.getState().slots;
+    (async () => {
+      for (const s of slots) {
+        if (s.filePath && !s.audioBuffer) {
+          const cfg = { ...s };
+          try {
+            await loadFromPath(s.id, s.filePath);
+            useSoundStore.getState().applySlotConfig(s.id, cfg);
+          } catch {
+            useSoundStore.getState().clearSlot(s.id); // fitxer no trobat
+          }
+        } else if (s.label && !s.filePath && !s.audioBuffer) {
+          useSoundStore.getState().clearSlot(s.id); // fantasma antic sense ruta
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Teclat: transport, selecció i preview (Ctrl)
   useEffect(() => {
@@ -155,13 +178,20 @@ export default function App() {
             </button>
           </div>
 
-          <button className="library-btn" onClick={() => setShowSave(true)}>SAVE</button>
+          <button className="library-btn" onClick={() => setShowSave(true)}>FILES</button>
           <button className="library-btn" onClick={() => setShowSettings(true)}>SETTINGS</button>
         </div>
       </header>
 
       <main className="app-main">
-        {viewMode === 'list' ? <Playlist /> : <SoundBoard />}
+        {viewMode === 'list' ? (
+          <Playlist />
+        ) : (
+          <div className="cues-view">
+            <CueTransport />
+            <SoundBoard />
+          </div>
+        )}
       </main>
 
       <SlotEditor />

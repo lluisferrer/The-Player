@@ -186,10 +186,9 @@ body {
 
 .soundboard.grid {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 8px;
   width: 100%;
-  max-width: 1100px;
 }
 
 .soundboard.list {
@@ -198,6 +197,88 @@ body {
   gap: 6px;
   width: 100%;
   max-width: 900px;
+}
+
+/* ─── BARRA DE TRANSPORT DELS CUES ─── */
+
+.cues-view {
+  width: 100%;
+  max-width: 1200px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cue-transport {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-button);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.cue-tp-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.cue-tp-buttons button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cue-tp-buttons button:hover { background: var(--bg-button-hover); }
+
+.cue-go {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff !important;
+  font-weight: 700;
+  min-width: 50px;
+}
+
+.cue-stop-all {
+  border-color: rgba(239, 68, 68, 0.5) !important;
+  color: var(--vu-red) !important;
+}
+
+.cue-stop-all:hover {
+  background: var(--vu-red) !important;
+  color: #fff !important;
+}
+
+.cue-now {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.cue-now-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.cue-now-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ─── PLAYLIST (VLC) ─── */

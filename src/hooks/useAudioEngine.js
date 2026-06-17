@@ -10,11 +10,10 @@ export function useAudioEngine() {
   const initAudioContext = useSoundStore((s) => s.initAudioContext);
   const loadAudio = useSoundStore((s) => s.loadAudio);
 
-  // Càrrega des d'un objecte File (drag&drop web / input)
+  // Càrrega des d'un objecte File (drag&drop web / input).
+  // No cal reprendre el context per descodificar; el resume es fa al Play.
   const decodeAndLoad = async (slotId, file) => {
     const ctx = initAudioContext();
-    if (ctx.state === 'suspended') await ctx.resume();
-
     const arrayBuffer = await file.arrayBuffer();
     const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
     const audioUrl = URL.createObjectURL(file);
@@ -25,8 +24,6 @@ export function useAudioEngine() {
   // decodifica i desa la ruta perquè es pugui recarregar des de la Library.
   const loadFromPath = async (slotId, path) => {
     const ctx = initAudioContext();
-    if (ctx.state === 'suspended') await ctx.resume();
-
     const buffer = await invoke('read_file_bytes', { path }); // ArrayBuffer
     const audioBuffer = await ctx.decodeAudioData(buffer);
     loadAudio(slotId, { name: basename(path) }, audioBuffer, null, path);

@@ -610,6 +610,17 @@ export const useSoundStore = create((set, get) => ({
     set({ selectedSlot: id });
   },
 
+  // Mou la selecció al cue carregat anterior/següent (delta -1 / +1)
+  selectStep: (delta) => {
+    const { selectedSlot, slots } = get();
+    let id = (selectedSlot || 1) + delta;
+    while (id >= 1 && id <= 32) {
+      const s = slots.find((x) => x.id === id);
+      if (s && s.audioBuffer) { set({ selectedSlot: id }); return; }
+      id += delta;
+    }
+  },
+
   // Transport sobre un slot: play si aturat, pausa si sona, reprèn si pausat
   togglePlayPause: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);

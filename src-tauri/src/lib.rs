@@ -148,6 +148,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            use tauri::Manager;
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_min_size(Some(tauri::LogicalSize::new(1000.0, 640.0)));
+                // Arrenca maximitzada (ocupa tota la pantalla, sense retalls)
+                let _ = win.maximize();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             read_file_bytes,
             list_audio_outputs,
