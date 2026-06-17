@@ -1,4 +1,7 @@
 import { create } from 'zustand';
+import {
+  plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume,
+} from '../lib/playlistEngine';
 
 const NUM_SLOTS = 32;
 
@@ -44,6 +47,16 @@ const loadGlobals = () => {
 };
 const savedGlobals = loadGlobals();
 
+const loadPlaylist = () => {
+  try { return JSON.parse(localStorage.getItem('the-player-playlist')) || {}; }
+  catch { return {}; }
+};
+const savedPlaylist = loadPlaylist();
+let plNextId = 1;
+if (Array.isArray(savedPlaylist.tracks)) {
+  for (const t of savedPlaylist.tracks) if (t.id >= plNextId) plNextId = t.id + 1;
+}
+
 const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
   const base = createEmptySlot(i + 1);
   if (savedSlots && savedSlots[i]) {
@@ -78,6 +91,16 @@ export const useSoundStore = create((set, get) => ({
   audioContext: null,
   outputChannels: 2,       // canals màxims de sortida del dispositiu seleccionat
 
+  // ── Playlist (VLC) ──
+  playlist: Array.isArray(savedPlaylist.tracks) ? savedPlaylist.tracks : [],
+  playlistIndex: -1,
+  playlistPlaying: false,
+  playlistPaused: false,
+  crossfade: savedPlaylist.crossfade ?? 3,
+  playlistRepeat: savedPlaylist.repeat ?? false,
+  playlistShuffle: savedPlaylist.shuffle ?? false,
+  playlistVolume: savedPlaylist.volume ?? 0.8,
+
   initAudioContext: () => {
     const existing = get().audioContext;
     if (existing && existing.state !== 'closed') return existing;
@@ -93,6 +116,63 @@ export const useSoundStore = create((set, get) => ({
   },
 
   setViewMode: (viewMode) => set({ viewMode }),
+
+  // ── Accions de la Playlist ──
+  persistPlaylist: () => {
+    const { playlist, crossfade, playlistRepeat, playlistShuffle, playlistVolume } = get();
+    localStorage.setItem('the-player-playlist', JSON.stringify({
+      tracks: playlist, crossfade, repeat: playlistRepeat, shuffle: playlistShuffle, volume: playlistVolume,
+    }));
+  },
+
+  addPlaylistTracks: (items) => {
+    set((state) => ({
+      playlist: [
+        ...state.playlist,
+        ...items.map((it) => ({ id: plNextId++, filePath: it.filePath, label: it.label })),
+      ],
+    }));
+    get().persistPlaylist();
+  },
+
+  removePlaylistTrack: (id) => {
+    set((state) => {
+      const idx = state.playlist.findIndex((t) => t.id === id);
+      const playlist = state.playlist.filter((t) => t.id !== id);
+      let playlistIndex = state.playlistIndex;
+      if (idx >= 0 && idx < playlistIndex) playlistIndex -= 1;
+      return { playlist, playlistIndex };
+    });
+    get().persistPlaylist();
+  },
+
+  movePlaylistTrack: (from, to) => {
+    set((state) => {
+      const playlist = [...state.playlist];
+      if (from < 0 || from >= playlist.length || to < 0 || to >= playlist.length) return {};
+      const [item] = playlist.splice(from, 1);
+      playlist.splice(to, 0, item);
+      return { playlist };
+    });
+    get().persistPlaylist();
+  },
+
+  clearPlaylist: () => {
+    plStop(get, set);
+    set({ playlist: [], playlistIndex: -1 });
+    get().persistPlaylist();
+  },
+
+  setCrossfade: (sec) => { set({ crossfade: Math.max(0, sec) }); get().persistPlaylist(); },
+  togglePlaylistRepeat: () => { set((s) => ({ playlistRepeat: !s.playlistRepeat })); get().persistPlaylist(); },
+  togglePlaylistShuffle: () => { set((s) => ({ playlistShuffle: !s.playlistShuffle })); get().persistPlaylist(); },
+  setPlaylistVolume: (v) => { set({ playlistVolume: v }); plSetVolume(get, v); get().persistPlaylist(); },
+
+  playlistPlayPause: () => plPlayPause(get, set),
+  playlistStop: () => plStop(get, set),
+  playlistNext: () => plNext(get, set),
+  playlistPrev: () => plPrev(get, set),
+  playlistPlayIndex: (i) => plPlayIndex(get, set, i),
 
   setEditingSlot: (slotId) => set({ editingSlot: slotId }),
 
@@ -215,9 +295,9 @@ export const useSoundStore = create((set, get) => ({
     const slot = slots.find((s) => s.id === slotId);
     if (!slot || !slot.audioBuffer) return;
 
-    // Si ja sona, el togglam (atura)
+    // Si ja sona, el togglam (atura amb fade out)
     if (slot.isPlaying) {
-      get().stopSlot(slotId);
+      get().stopSlot(slotId, true);
       return;
     }
 
@@ -226,6 +306,11 @@ export const useSoundStore = create((set, get) => ({
       slots.forEach((s) => {
         if (s.id !== slotId && (s.isPlaying || s.pausedAt != null)) get().stopSlot(s.id);
       });
+    }
+
+    // Atura qualsevol font residual d'aquest slot (p. ex. en ple fade out)
+    if (slot.sourceNode) {
+      try { slot.sourceNode.onended = null; slot.sourceNode.stop(); } catch { /* res */ }
     }
 
     const source = ctx.createBufferSource();
@@ -401,17 +486,14 @@ export const useSoundStore = create((set, get) => ({
   },
 
   // Parada d'emergència: atura TOTS els slots
+  // Parada d'emergència de TOTS els cues, amb fade out (segons el fade-out
+  // efectiu de cada cue; si és 0, tall sec).
   stopAll: () => {
     const { slots } = get();
     slots.forEach((s) => {
-      if (s.sourceNode) {
-        try { s.sourceNode.onended = null; s.sourceNode.stop(); } catch { /* res */ }
-      }
+      if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id, true);
     });
-    set((state) => ({
-      slots: state.slots.map((s) => ({ ...s, sourceNode: null, isPlaying: false, pausedAt: null })),
-      activeSlot: null,
-    }));
+    set({ activeSlot: null });
   },
 
   // Gestiona el final natural d'un clip: l'atura (l'encadenament és manual
@@ -531,24 +613,50 @@ export const useSoundStore = create((set, get) => ({
     get().persistSlots();
   },
 
-  stopSlot: (slotId) => {
-    const { slots } = get();
+  // fade: false/undefined = tall sec · true = usa el fade-out efectiu del cue
+  //       · número = fade d'aquests segons
+  stopSlot: (slotId, fade = false) => {
+    const { slots, audioContext, globalFadeOut } = get();
     const slot = slots.find((s) => s.id === slotId);
     // Res a fer si ja està del tot aturat (sense source ni pausa)
     if (!slot || (!slot.sourceNode && slot.pausedAt == null && !slot.isPlaying)) return;
+    const ctx = audioContext;
 
-    try {
-      if (slot.sourceNode) {
+    // Calcula la durada del fade out
+    let fadeSec = 0;
+    if (fade === true) {
+      const total = slot.audioBuffer ? slot.audioBuffer.duration : 0;
+      const segDur = Math.max(
+        0.02,
+        Math.min(slot.stopPoint ?? total, total) - Math.max(0, slot.startPoint || 0)
+      );
+      fadeSec = Math.max(0, Math.min((slot.useGlobalFades ? globalFadeOut : slot.fadeOut) || 0, segDur));
+    } else if (typeof fade === 'number') {
+      fadeSec = Math.max(0, fade);
+    }
+
+    const fading = slot.sourceNode && fadeSec > 0 && slot.fadeGainNode && ctx;
+    if (fading) {
+      // Fade out: rampa el node de fade a 0 i atura la font en acabar.
+      // Mantenim la referència perquè playSlot la pugui aturar si es re-dispara.
+      const now = ctx.currentTime;
+      const fg = slot.fadeGainNode;
+      try {
+        fg.gain.cancelScheduledValues(now);
+        fg.gain.setValueAtTime(fg.gain.value, now);
+        fg.gain.linearRampToValueAtTime(0, now + fadeSec);
         slot.sourceNode.onended = null;
-        slot.sourceNode.stop();
-      }
-    } catch {
-      // ja aturat
+        slot.sourceNode.stop(now + fadeSec + 0.05);
+      } catch { /* res */ }
+    } else if (slot.sourceNode) {
+      try { slot.sourceNode.onended = null; slot.sourceNode.stop(); } catch { /* ja aturat */ }
     }
 
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, sourceNode: null, isPlaying: false, pausedAt: null } : s
+        s.id === slotId
+          ? { ...s, sourceNode: fading ? s.sourceNode : null, isPlaying: false, pausedAt: null }
+          : s
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));

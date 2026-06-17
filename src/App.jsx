@@ -3,9 +3,11 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { useSoundStore } from './store/useSoundStore';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { SoundBoard } from './components/SoundBoard';
+import { Playlist } from './components/Playlist';
 import { SlotEditor } from './components/SlotEditor';
 import { Library } from './components/Library';
-import { NativeDiagnostic } from './components/NativeDiagnostic';
+import { PlaylistSave } from './components/PlaylistSave';
+import { SettingsModal } from './components/SettingsModal';
 import { slotForKey } from './lib/keyMap';
 import './App.css';
 
@@ -20,22 +22,14 @@ function slotAtPosition(position) {
 }
 
 export default function App() {
-  const globalFadeIn      = useSoundStore((s) => s.globalFadeIn);
-  const globalFadeOut     = useSoundStore((s) => s.globalFadeOut);
-  const setGlobalFades    = useSoundStore((s) => s.setGlobalFades);
-  const viewMode          = useSoundStore((s) => s.viewMode);
-  const setViewMode       = useSoundStore((s) => s.setViewMode);
-  const audioDevices      = useSoundStore((s) => s.audioDevices);
-  const selectedDeviceId  = useSoundStore((s) => s.selectedDeviceId);
-  const setAudioDevices   = useSoundStore((s) => s.setAudioDevices);
-  const setSelectedDevice = useSoundStore((s) => s.setSelectedDevice);
-  const initAudioContext  = useSoundStore((s) => s.initAudioContext);
-  const setDragOverSlot   = useSoundStore((s) => s.setDragOverSlot);
-  const outputChannels    = useSoundStore((s) => s.outputChannels);
-  const { loadFromPath }  = useAudioEngine();
+  const viewMode        = useSoundStore((s) => s.viewMode);
+  const setViewMode     = useSoundStore((s) => s.setViewMode);
+  const setAudioDevices = useSoundStore((s) => s.setAudioDevices);
+  const setDragOverSlot = useSoundStore((s) => s.setDragOverSlot);
+  const { loadFromPath } = useAudioEngine();
 
-  const [showLibrary, setShowLibrary] = useState(false);
-  const [showDiag, setShowDiag] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showSave, setShowSave] = useState(false);
 
   useEffect(() => {
     const loadDevices = async () => {
@@ -54,13 +48,12 @@ export default function App() {
     return () => navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
   }, [setAudioDevices]);
 
-  // Disparar slots des del teclat (graella QWERTY)
+  // Disparar slots des del teclat (graella QWERTY) + transport
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
       const el = document.activeElement;
       const tag = el && el.tagName;
-      // Ignora si s'escriu en un camp o si l'editor és obert
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       const store = useSoundStore.getState();
       if (store.editingSlot) return;
@@ -71,10 +64,9 @@ export default function App() {
       if (e.key === 'ArrowUp')    { e.preventDefault(); store.moveSelection('up');    return; }
       if (e.key === 'ArrowDown')  { e.preventDefault(); store.moveSelection('down');  return; }
 
-      // Transport: espai = GO (dispara seleccionat + avança) ·
-      // enter = stop seleccionat · esc = stop tot
+      // Transport: espai = GO · enter = stop seleccionat · esc = stop tot
       if (e.key === ' ')      { e.preventDefault(); store.go(); return; }
-      if (e.key === 'Enter')  { e.preventDefault(); store.stopSlot(store.selectedSlot); return; }
+      if (e.key === 'Enter')  { e.preventDefault(); store.stopSlot(store.selectedSlot, true); return; }
       if (e.key === 'Escape') { e.preventDefault(); store.stopAll(); return; }
 
       // Tecla de slot → play (re-dispara des de l'inici)
@@ -109,7 +101,7 @@ export default function App() {
               catch (err) { console.warn('Error carregant', paths[i], err); }
             }
           } else {
-            setDragOverSlot(null); // leave / cancel
+            setDragOverSlot(null);
           }
         });
       } catch (err) {
@@ -119,87 +111,43 @@ export default function App() {
     return () => { if (unlisten) unlisten(); };
   }, [setDragOverSlot, loadFromPath]);
 
-  const handleDeviceChange = (e) => {
-    setSelectedDevice(e.target.value);
-  };
-
   return (
     <div className="app">
       <header className="app-header">
         <h1 className="app-title">THE PLAYER</h1>
 
         <div className="header-controls">
-          <div className="global-fades" title="Fades per defecte de tots els cues (el cue pot fer override)">
-            <span className="gf-label">FADES</span>
-            <label>in
-              <input
-                type="number" min="0" max="30" step="0.1"
-                value={globalFadeIn}
-                onChange={(e) => setGlobalFades({ globalFadeIn: Math.max(0, parseFloat(e.target.value) || 0) })}
-              />
-            </label>
-            <label>out
-              <input
-                type="number" min="0" max="30" step="0.1"
-                value={globalFadeOut}
-                onChange={(e) => setGlobalFades({ globalFadeOut: Math.max(0, parseFloat(e.target.value) || 0) })}
-              />
-            </label>
-          </div>
-
           <div className="mode-toggle">
             <button
               className={`mode-btn ${viewMode === 'grid' ? 'active' : ''}`}
               onClick={() => setViewMode('grid')}
             >
-              GRID
+              CUES
             </button>
             <button
               className={`mode-btn ${viewMode === 'list' ? 'active' : ''}`}
               onClick={() => setViewMode('list')}
             >
-              LLISTA
+              PLAYLIST
             </button>
           </div>
 
-          <button
-            className={`channel-info ${outputChannels > 2 ? 'multi' : ''}`}
-            onClick={() => setShowDiag(true)}
-            title="Obre el diagnòstic d'àudio natiu (canals reals via cpal/WASAPI)"
-          >
-            {outputChannels} CH {outputChannels > 2 ? '· multicanal' : '· estèreo'}
-          </button>
-
-          <button className="library-btn" onClick={() => setShowLibrary(true)}>
-            LIBRARY
-          </button>
-
-          {audioDevices.length > 0 && (
-            <div className="device-selector">
-              <label htmlFor="audio-device">SORTIDA</label>
-              <select
-                id="audio-device"
-                value={selectedDeviceId}
-                onChange={handleDeviceChange}
-              >
-                {audioDevices.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          <button className="library-btn" onClick={() => setShowSave(true)}>SAVE</button>
+          <button className="library-btn" onClick={() => setShowSettings(true)}>SETTINGS</button>
         </div>
       </header>
 
       <main className="app-main">
-        <SoundBoard />
+        {viewMode === 'list' ? <Playlist /> : <SoundBoard />}
       </main>
 
       <SlotEditor />
-      {showLibrary && <Library onClose={() => setShowLibrary(false)} />}
-      {showDiag && <NativeDiagnostic onClose={() => setShowDiag(false)} />}
+      {showSave && (
+        viewMode === 'list'
+          ? <PlaylistSave onClose={() => setShowSave(false)} />
+          : <Library onClose={() => setShowSave(false)} />
+      )}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

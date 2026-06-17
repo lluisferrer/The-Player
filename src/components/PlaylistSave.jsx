@@ -1,23 +1,17 @@
 import { useState } from 'react';
-import { useLibrary } from '../hooks/useLibrary';
+import { usePlaylistLibrary } from '../hooks/usePlaylistLibrary';
 
-// Modal de la Set Library: desar/carregar/eliminar soundboards
-export function Library({ onClose }) {
-  const { sets, saveSet, loadSet, deleteSet } = useLibrary();
+// Modal de desar/carregar playlists amb nom
+export function PlaylistSave({ onClose }) {
+  const { lists, saveList, deleteList, loadList } = usePlaylistLibrary();
   const [name, setName] = useState('');
-
-  const names = Object.keys(sets).sort();
+  const names = Object.keys(lists).sort();
 
   const handleSave = () => {
     const n = name.trim();
     if (!n) return;
-    saveSet(n);
+    saveList(n);
     setName('');
-  };
-
-  const handleLoad = async (n) => {
-    await loadSet(n);
-    onClose();
   };
 
   const fmtDate = (ts) => {
@@ -30,14 +24,14 @@ export function Library({ onClose }) {
     <div className="editor-overlay" onClick={onClose}>
       <div className="editor-panel library-panel" onClick={(e) => e.stopPropagation()}>
         <div className="editor-header">
-          <span className="editor-title">Sets de cues desats</span>
+          <span className="editor-title">Playlists desades</span>
           <button className="editor-close" onClick={onClose}>✕</button>
         </div>
 
         <div className="library-save">
           <input
             type="text"
-            placeholder="Nom del set…"
+            placeholder="Nom de la playlist…"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
@@ -49,18 +43,18 @@ export function Library({ onClose }) {
 
         <div className="library-list">
           {names.length === 0 ? (
-            <div className="library-empty">Encara no hi ha cap set desat.</div>
+            <div className="library-empty">Cap playlist desada.</div>
           ) : (
             names.map((n) => (
               <div className="library-item" key={n}>
                 <div className="library-item-info">
                   <span className="library-item-name">{n}</span>
                   <span className="library-item-meta">
-                    {sets[n].slots.length} slots · {fmtDate(sets[n].savedAt)}
+                    {lists[n].tracks.length} pistes · {fmtDate(lists[n].savedAt)}
                   </span>
                 </div>
-                <button className="editor-btn primary" onClick={() => handleLoad(n)}>Carrega</button>
-                <button className="editor-btn" onClick={() => deleteSet(n)}>Elimina</button>
+                <button className="editor-btn primary" onClick={() => { loadList(n); onClose(); }}>Carrega</button>
+                <button className="editor-btn" onClick={() => deleteList(n)}>Elimina</button>
               </div>
             ))
           )}

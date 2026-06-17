@@ -361,7 +361,7 @@ export function SlotEditor() {
           </button>
           <span className="editor-actions-spacer" />
           <button className="editor-btn primary" onClick={() => playSlot(editingSlot)}>▶ Preview</button>
-          <button className="editor-btn" onClick={() => stopSlot(editingSlot)}>■ Stop</button>
+          <button className="editor-btn" onClick={() => stopSlot(editingSlot, true)}>■ Stop</button>
           <button className="editor-btn" onClick={handleReset}>Reset</button>
           <button className="editor-btn" onClick={handleClose}>Tancar</button>
         </div>
