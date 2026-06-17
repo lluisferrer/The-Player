@@ -7,8 +7,12 @@ export function SettingsModal({ onClose }) {
   const [tab, setTab] = useState('audio');
 
   const audioDevices     = useSoundStore((s) => s.audioDevices);
-  const selectedDeviceId = useSoundStore((s) => s.selectedDeviceId);
+  const cuesDeviceId     = useSoundStore((s) => s.selectedDeviceId);
+  const playlistDeviceId = useSoundStore((s) => s.playlistDeviceId);
+  const previewDeviceId  = useSoundStore((s) => s.previewDeviceId);
   const setSelectedDevice = useSoundStore((s) => s.setSelectedDevice);
+  const setPlaylistDevice = useSoundStore((s) => s.setPlaylistDevice);
+  const setPreviewDevice  = useSoundStore((s) => s.setPreviewDevice);
   const outputChannels   = useSoundStore((s) => s.outputChannels);
 
   const globalFadeIn  = useSoundStore((s) => s.globalFadeIn);
@@ -55,23 +59,36 @@ export function SettingsModal({ onClose }) {
         <div className="settings-content">
           {tab === 'audio' && (
             <>
+              <div className="settings-subtitle">Sortides (un dispositiu estèreo per bus)</div>
+
               <div className="settings-row">
-                <label htmlFor="settings-device">Sortida</label>
-                <select
-                  id="settings-device"
-                  value={selectedDeviceId}
-                  onChange={(e) => setSelectedDevice(e.target.value)}
-                >
+                <label htmlFor="dev-cues">Cues</label>
+                <select id="dev-cues" value={cuesDeviceId} onChange={(e) => setSelectedDevice(e.target.value)}>
                   <option value="default">Per defecte</option>
                   {audioDevices.map((d) => (
-                    <option key={d.deviceId} value={d.deviceId}>
-                      {d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}
-                    </option>
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
                   ))}
                 </select>
-                <span className={`channel-info static ${outputChannels > 2 ? 'multi' : ''}`}>
-                  {outputChannels} CH {outputChannels > 2 ? '· multicanal' : '· estèreo'}
-                </span>
+              </div>
+
+              <div className="settings-row">
+                <label htmlFor="dev-playlist">Playlist</label>
+                <select id="dev-playlist" value={playlistDeviceId} onChange={(e) => setPlaylistDevice(e.target.value)}>
+                  <option value="default">Per defecte</option>
+                  {audioDevices.map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="settings-row">
+                <label htmlFor="dev-preview">Preview</label>
+                <select id="dev-preview" value={previewDeviceId} onChange={(e) => setPreviewDevice(e.target.value)}>
+                  <option value="default">Per defecte</option>
+                  {audioDevices.map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="settings-subtitle">Diagnòstic natiu (cpal / WASAPI)</div>

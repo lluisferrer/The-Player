@@ -66,7 +66,7 @@ function prevIndex(get, idx) {
 async function startTrack(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
   const myToken = ++token;
   const st = get();
-  const ctx = st.audioContext || st.initAudioContext();
+  const ctx = st.ensurePlaylistCtx();
   if (ctx.state === 'suspended') ctx.resume();
   const track = st.playlist[index];
   if (!track || !track.filePath) return;
@@ -114,7 +114,7 @@ async function startTrack(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
 function scheduleTransition(get, set) {
   clearTimer();
   const st = get();
-  const ctx = st.audioContext;
+  const ctx = st.playlistCtx;
   if (!current || !ctx) return;
   const cf = Math.max(0, st.crossfade || 0);
   const remaining = current.duration - (ctx.currentTime - current.startedAt);
@@ -133,7 +133,7 @@ function scheduleTransition(get, set) {
 
 function doTransition(get, set) {
   const st = get();
-  const ctx = st.audioContext;
+  const ctx = st.playlistCtx;
   if (!current || !ctx) return;
   const cf = Math.max(0, st.crossfade || 0);
   const ni = nextIndex(get, current.index);
@@ -153,7 +153,7 @@ function doTransition(get, set) {
 export function plPlayPause(get, set) {
   const st = get();
   if (st.playlistPlaying) {
-    const ctx = st.audioContext;
+    const ctx = st.playlistCtx;
     if (current && ctx) {
       const pos = Math.max(0, Math.min(ctx.currentTime - current.startedAt, current.duration - 0.01));
       paused = { index: current.index, pos };
@@ -182,8 +182,8 @@ export function plNext(get, set) {
   if (ni == null) { plStop(get, set); return; }
   const cf = Math.max(0, st.crossfade || 0);
   const hadCurrent = !!current;
-  if (current && cf > 0 && current.gain && st.audioContext) {
-    const now = st.audioContext.currentTime;
+  if (current && cf > 0 && current.gain && st.playlistCtx) {
+    const now = st.playlistCtx.currentTime;
     current.gain.gain.cancelScheduledValues(now);
     current.gain.gain.setValueAtTime(current.gain.gain.value, now);
     current.gain.gain.linearRampToValueAtTime(0, now + cf);
@@ -203,8 +203,8 @@ export function plPrev(get, set) {
   if (pi == null) return;
   const cf = Math.max(0, st.crossfade || 0);
   const hadCurrent = !!current;
-  if (current && cf > 0 && current.gain && st.audioContext) {
-    const now = st.audioContext.currentTime;
+  if (current && cf > 0 && current.gain && st.playlistCtx) {
+    const now = st.playlistCtx.currentTime;
     current.gain.gain.cancelScheduledValues(now);
     current.gain.gain.setValueAtTime(current.gain.gain.value, now);
     current.gain.gain.linearRampToValueAtTime(0, now + cf);
@@ -229,7 +229,7 @@ export function plSetVolume(get, v) {
 // Posició actual per a la UI (sense passar pel store, llegit cada frame)
 export function plPosition(get) {
   const st = get();
-  const ctx = st.audioContext;
+  const ctx = st.playlistCtx;
   if (current && ctx) {
     const e = Math.max(0, ctx.currentTime - current.startedAt);
     return { elapsed: Math.min(e, current.duration), duration: current.duration, index: current.index };

@@ -48,15 +48,31 @@ export default function App() {
     return () => navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
   }, [setAudioDevices]);
 
-  // Disparar slots des del teclat (graella QWERTY) + transport
+  // Teclat: transport, selecció i preview (Ctrl)
   useEffect(() => {
     const onKeyDown = (e) => {
-      if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
-      const el = document.activeElement;
-      const tag = el && el.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.repeat) return;
       const store = useSoundStore.getState();
       if (store.editingSlot) return;
+      const el = document.activeElement;
+      const tag = el && el.tagName;
+      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+      // Ctrl arma el mode preview (contorns vermells)
+      if (e.key === 'Control') { store.setPreviewArmed(true); return; }
+
+      // Ctrl + tecla de slot → preview pel bus de preview (sense tocar el main)
+      if (e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (typing) return;
+        const sid = slotForKey(e.key);
+        if (sid) {
+          const s = store.slots.find((x) => x.id === sid);
+          if (s && s.audioBuffer) { e.preventDefault(); store.previewSlot(sid); }
+        }
+        return;
+      }
+
+      if (e.altKey || e.metaKey || typing) return;
 
       // Fletxes: mou el slot seleccionat
       if (e.key === 'ArrowLeft')  { e.preventDefault(); store.moveSelection('left');  return; }
@@ -78,8 +94,15 @@ export default function App() {
         store.triggerSlot(slotId);
       }
     };
+    const onKeyUp = (e) => {
+      if (e.key === 'Control') useSoundStore.getState().setPreviewArmed(false);
+    };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
   }, []);
 
   // Drag&drop natiu de Tauri: carrega fitxers a partir de la ruta i la posició

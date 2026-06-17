@@ -16,13 +16,17 @@ export function SoundButton({ slotId }) {
   const setLoop        = useSoundStore((s) => s.setLoop);
   const setEditingSlot = useSoundStore((s) => s.setEditingSlot);
   const setSelectedSlot = useSoundStore((s) => s.setSelectedSlot);
+  const previewSlot    = useSoundStore((s) => s.previewSlot);
   const isDragOver     = useSoundStore((s) => s.dragOverSlot === slotId);
   const isSelected     = useSoundStore((s) => s.selectedSlot === slotId);
+  const previewArmed   = useSoundStore((s) => s.previewArmed);
+  const isPreviewing   = useSoundStore((s) => s.previewingSlot === slotId);
   const { loadFromPath } = useAudioEngine();
 
   const [showHover, setShowHover]   = useState(false);
   const [scrub, setScrub]   = useState(null);  // posició (ratio dins segment) mentre s'arrossega el playhead
   const [seeking, setSeeking] = useState(false);
+  const [previewProg, setPreviewProg] = useState(0); // progrés del preview (0..1)
   const scrubRef = useRef(null);
   const suppressClickRef = useRef(false); // evita que el click post-drag faci play/stop
   const waveRef = useRef(null);
@@ -75,9 +79,32 @@ export function SoundButton({ slotId }) {
     };
   }, [seeking, segDur, total, startSec, slotId, seekSlot]);
 
-  const handleClick = () => {
+  // Progrés del preview (per al playhead vermell), llegint el context de preview
+  useEffect(() => {
+    if (!isPreviewing) { setPreviewProg(0); return; }
+    let raf;
+    const tick = () => {
+      const st = useSoundStore.getState();
+      const ctx = st.previewCtx;
+      if (ctx && segDur > 0) {
+        let pos = ctx.currentTime - st.previewStartedAt;
+        if (slot.loop) pos = pos % segDur;
+        pos = Math.max(0, Math.min(pos, segDur));
+        setPreviewProg(pos / segDur);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isPreviewing, segDur, slot.loop]);
+
+  const previewPlayheadPct = total ? ((startSec + previewProg * segDur) / total) * 100 : 0;
+
+  const handleClick = (e) => {
     // Ignora el click immediatament posterior a arrossegar el playhead
     if (suppressClickRef.current) return;
+    // Ctrl+clic → preview pel bus de preview
+    if (e.ctrlKey && slot.audioBuffer) { previewSlot(slotId); return; }
     setSelectedSlot(slotId);
     if (slot.audioBuffer) playSlot(slotId);
   };
@@ -141,7 +168,7 @@ export function SoundButton({ slotId }) {
 
   return (
     <div
-      className={`sound-button ${stateClass} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''}`}
+      className={`sound-button ${stateClass} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''}`}
       data-slot-id={slotId}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
@@ -194,6 +221,10 @@ export function SoundButton({ slotId }) {
                   onPointerDown={handlePlayheadDown}
                   title="Arrossega per moure la posició"
                 />
+              )}
+              {/* Playhead vermell del preview */}
+              {isPreviewing && (
+                <div className="slot-playhead preview" style={{ left: `${previewPlayheadPct}%` }} />
               )}
               {/* Botó d'edició (hover) */}
               <button

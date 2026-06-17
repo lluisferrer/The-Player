@@ -53,6 +53,7 @@ const loadPlaylist = () => {
 };
 const savedPlaylist = loadPlaylist();
 let plNextId = 1;
+let previewSource = null; // font activa del bus de preview (a nivell de mòdul)
 if (Array.isArray(savedPlaylist.tracks)) {
   for (const t of savedPlaylist.tracks) if (t.id >= plNextId) plNextId = t.id + 1;
 }
@@ -87,9 +88,17 @@ export const useSoundStore = create((set, get) => ({
   selectedSlot: 1,         // slot seleccionat (cursor de teclat per al transport)
   activeSlot: null,
   audioDevices: [],
-  selectedDeviceId: 'default',
-  audioContext: null,
-  outputChannels: 2,       // canals màxims de sortida del dispositiu seleccionat
+  // Tres busos de sortida (cada un a un dispositiu estèreo)
+  selectedDeviceId: savedGlobals.cuesDeviceId ?? 'default',  // sortida dels CUES
+  playlistDeviceId: savedGlobals.playlistDeviceId ?? 'default',
+  previewDeviceId: savedGlobals.previewDeviceId ?? 'default',
+  audioContext: null,      // context dels cues
+  playlistCtx: null,       // context de la playlist
+  previewCtx: null,        // context del preview
+  outputChannels: 2,       // canals màxims de sortida del dispositiu de cues
+  previewArmed: false,     // Ctrl premut: mode preview
+  previewingSlot: null,    // slot que sona ara pel bus de preview
+  previewStartedAt: 0,     // instant (previewCtx) en què va començar el preview
 
   // ── Playlist (VLC) ──
   playlist: Array.isArray(savedPlaylist.tracks) ? savedPlaylist.tracks : [],
@@ -109,10 +118,94 @@ export const useSoundStore = create((set, get) => ({
     return ctx;
   },
 
+  persistGlobals: () => {
+    const { globalFadeIn, globalFadeOut, selectedDeviceId, playlistDeviceId, previewDeviceId } = get();
+    localStorage.setItem('the-player-globals', JSON.stringify({
+      globalFadeIn, globalFadeOut,
+      cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
+    }));
+  },
+
   setGlobalFades: (patch) => {
     set(patch);
-    const { globalFadeIn, globalFadeOut } = get();
-    localStorage.setItem('the-player-globals', JSON.stringify({ globalFadeIn, globalFadeOut }));
+    get().persistGlobals();
+  },
+
+  // Crea/reutilitza el context d'un bus i li aplica el dispositiu de sortida
+  ensurePlaylistCtx: () => {
+    let ctx = get().playlistCtx;
+    if (!ctx || ctx.state === 'closed') {
+      ctx = new AudioContext();
+      set({ playlistCtx: ctx });
+      const dev = get().playlistDeviceId;
+      if (ctx.setSinkId && dev) { try { ctx.setSinkId(dev); } catch { /* res */ } }
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  },
+
+  ensurePreviewCtx: () => {
+    let ctx = get().previewCtx;
+    if (!ctx || ctx.state === 'closed') {
+      ctx = new AudioContext();
+      set({ previewCtx: ctx });
+      const dev = get().previewDeviceId;
+      if (ctx.setSinkId && dev) { try { ctx.setSinkId(dev); } catch { /* res */ } }
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  },
+
+  setPlaylistDevice: async (deviceId) => {
+    set({ playlistDeviceId: deviceId });
+    const ctx = get().playlistCtx;
+    if (ctx && ctx.setSinkId) { try { await ctx.setSinkId(deviceId); } catch (e) { console.warn(e); } }
+    get().persistGlobals();
+  },
+
+  setPreviewDevice: async (deviceId) => {
+    set({ previewDeviceId: deviceId });
+    const ctx = get().previewCtx;
+    if (ctx && ctx.setSinkId) { try { await ctx.setSinkId(deviceId); } catch (e) { console.warn(e); } }
+    get().persistGlobals();
+  },
+
+  // ── Preview (PFL) ──
+  setPreviewArmed: (armed) => set({ previewArmed: armed }),
+
+  previewSlot: (slotId) => {
+    // Toggle: si aquest slot ja està en preview, l'atura
+    if (get().previewingSlot === slotId) { get().stopPreview(); return; }
+
+    const slot = get().slots.find((s) => s.id === slotId);
+    if (!slot || !slot.audioBuffer) return;
+    const ctx = get().ensurePreviewCtx();
+
+    if (previewSource) { try { previewSource.onended = null; previewSource.stop(); } catch { /* res */ } previewSource = null; }
+
+    const total = slot.audioBuffer.duration;
+    const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
+    const stopPoint = Math.min(slot.stopPoint ?? total, total);
+    const segDur = Math.max(0.02, stopPoint - startPoint);
+
+    const gain = ctx.createGain();
+    gain.gain.value = slot.volume ?? 0.8;
+    gain.connect(ctx.destination);
+    const source = ctx.createBufferSource();
+    source.buffer = slot.audioBuffer;
+    source.connect(gain);
+    source.onended = () => {
+      if (get().previewingSlot === slotId) set({ previewingSlot: null });
+    };
+    source.start(0, startPoint, slot.loop ? undefined : segDur);
+    if (slot.loop) { source.loop = true; source.loopStart = startPoint; source.loopEnd = stopPoint; }
+    previewSource = source;
+    set({ previewingSlot: slotId, previewStartedAt: ctx.currentTime });
+  },
+
+  stopPreview: () => {
+    if (previewSource) { try { previewSource.onended = null; previewSource.stop(); } catch { /* res */ } previewSource = null; }
+    set({ previewingSlot: null });
   },
 
   setViewMode: (viewMode) => set({ viewMode }),
@@ -227,6 +320,7 @@ export const useSoundStore = create((set, get) => ({
       }
     }
     get().detectOutputChannels();
+    get().persistGlobals();
   },
 
   // Detecta quants canals de sortida exposa el dispositiu seleccionat.
@@ -493,6 +587,7 @@ export const useSoundStore = create((set, get) => ({
     slots.forEach((s) => {
       if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id, true);
     });
+    get().stopPreview();
     set({ activeSlot: null });
   },
 

@@ -570,6 +570,19 @@ body {
   outline-offset: -2px;
 }
 
+/* Mode preview armat (Ctrl): contorn vermell a tots els cues amb àudio */
+.sound-button.preview-armed {
+  outline: 2px solid var(--vu-red);
+  outline-offset: -2px;
+}
+
+/* Slot que sona pel bus de preview */
+.sound-button.previewing {
+  outline: 2px solid var(--vu-red);
+  outline-offset: -2px;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.55);
+}
+
 .sound-button.slot-playing {
   border-color: var(--accent);
   box-shadow: 0 0 12px var(--accent-glow), inset 0 0 8px rgba(59, 130, 246, 0.08);
@@ -751,6 +764,17 @@ body {
   left: -4px;
   right: -4px;
 }
+
+/* Playhead del preview: vermell i no interactiu */
+.slot-playhead.preview {
+  background: var(--vu-red);
+  box-shadow: 0 0 4px rgba(239, 68, 68, 0.6);
+  cursor: default;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.slot-playhead.preview::before { content: none; }
 
 .waveform-wrap,
 .vu-wrap {
