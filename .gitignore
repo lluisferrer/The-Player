@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Permisos personals de Claude Code (no versionar)
+.claude/settings.local.json

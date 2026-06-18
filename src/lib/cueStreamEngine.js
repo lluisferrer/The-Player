@@ -7,6 +7,8 @@
 //   - routing per color amb ctx.setSinkId (a través de ctxForDevice)
 // L'element <audio> descodifica sota demanda mentre reprodueix.
 
+import { effFadeIn, effFadeOut } from './slotAudio';
+
 const active = new Map(); // slotId → { audio, g, startPoint, stopPoint, segDur }
 let previewEl = null;     // { audio, srcNode, gain }
 
@@ -16,10 +18,8 @@ function segmentOf(get, slot) {
   const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
   const stopPoint = Math.min(slot.stopPoint ?? total, total);
   const segDur = Math.max(0.05, stopPoint - startPoint);
-  const rawIn = slot.useGlobalFades ? get().globalFadeIn : slot.fadeIn;
-  const rawOut = slot.useGlobalFades ? get().globalFadeOut : slot.fadeOut;
-  const fadeIn = Math.max(0, Math.min(rawIn || 0, segDur));
-  const fadeOut = Math.max(0, Math.min(rawOut || 0, segDur));
+  const fadeIn = Math.max(0, Math.min(effFadeIn(slot, get().globalFadeIn), segDur));
+  const fadeOut = Math.max(0, Math.min(effFadeOut(slot, get().globalFadeOut), segDur));
   return { total, startPoint, stopPoint, segDur, fadeIn, fadeOut };
 }
 

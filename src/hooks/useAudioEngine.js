@@ -94,8 +94,10 @@ export function useAudioEngine() {
       if (isFinite(dur) && dur > STREAM_THRESHOLD) {
         // Streaming: llegeix els bytes (ràpid) i en fa un Blob de mateix origen
         // perquè Web Audio el pugui analitzar (picòmetre). NO es descodifica.
+        // El Blob rep una còpia independent perquè la descodificació dels pics
+        // (decodeAudioData allibera el buffer) no interfereixi amb la font.
         const bytes = await invoke('read_file_bytes', { path });
-        const blobUrl = URL.createObjectURL(new Blob([bytes]));
+        const blobUrl = URL.createObjectURL(new Blob([bytes.slice(0)]));
         loadAudio(slotId, { name: basename(path) }, null, blobUrl, path, { streaming: true, duration: dur });
         buildPeaksBackground(slotId, { path, duration: dur, bytes }); // forma d'ona en segon pla
         return;

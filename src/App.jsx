@@ -101,6 +101,16 @@ export default function App() {
 
       if (e.altKey || e.metaKey || typing) return;
 
+      // Mode llista (Playlist): fletxes mouen la selecció, Enter reprodueix,
+      // espai play/pausa. No s'apliquen les tecles de cues.
+      if (store.viewMode === 'list') {
+        if (e.key === 'ArrowUp')   { e.preventDefault(); store.movePlaylistSelection(-1); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); store.movePlaylistSelection(1);  return; }
+        if (e.key === 'Enter')     { e.preventDefault(); store.playlistPlaySelected();     return; }
+        if (e.key === ' ')         { e.preventDefault(); store.playlistPlayPause();        return; }
+        return;
+      }
+
       // Canvi de pàgina
       if (e.key === 'PageUp')   { e.preventDefault(); store.setPage(store.currentPage - 1); return; }
       if (e.key === 'PageDown') { e.preventDefault(); store.setPage(store.currentPage + 1); return; }

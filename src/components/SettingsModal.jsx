@@ -21,13 +21,11 @@ export function SettingsModal({ onClose }) {
   const globalFadeIn  = useSoundStore((s) => s.globalFadeIn);
   const globalFadeOut = useSoundStore((s) => s.globalFadeOut);
   const setGlobalFades = useSoundStore((s) => s.setGlobalFades);
+  const cuesStopOthers = useSoundStore((s) => s.cuesStopOthers);
+  const setCuesStopOthers = useSoundStore((s) => s.setCuesStopOthers);
 
   const crossfade = useSoundStore((s) => s.crossfade);
-  const repeat    = useSoundStore((s) => s.playlistRepeat);
-  const shuffle   = useSoundStore((s) => s.playlistShuffle);
-  const setCrossfade          = useSoundStore((s) => s.setCrossfade);
-  const togglePlaylistRepeat  = useSoundStore((s) => s.togglePlaylistRepeat);
-  const togglePlaylistShuffle = useSoundStore((s) => s.togglePlaylistShuffle);
+  const setCrossfade = useSoundStore((s) => s.setCrossfade);
 
   const [outputs, setOutputs] = useState(null);
   const [diagError, setDiagError] = useState(null);
@@ -156,20 +154,25 @@ export function SettingsModal({ onClose }) {
                     onChange={(e) => setGlobalFades({ globalFadeOut: Math.max(0, parseFloat(e.target.value) || 0) })} /> s
                 </span>
               </label>
-              <div className="settings-note">Cada cue pot fer override d'aquests fades des del seu editor (✎).</div>
+              <div className="settings-note">Cada cue pot definir el seu fade des de l'editor (✎); si és 0, usa el global.</div>
+
+              <div className="settings-subtitle">Comportament</div>
+              <div className="editor-options">
+                <label className="editor-check">
+                  <input
+                    type="checkbox"
+                    checked={cuesStopOthers}
+                    onChange={(e) => setCuesStopOthers(e.target.checked)}
+                  />
+                  Stop Others per defecte (disparar un cue atura la resta)
+                </label>
+              </div>
+              <div className="settings-note">Els cues nous prenen aquest valor. Cada cue es pot canviar després des de l'editor (✎).</div>
             </>
           )}
 
           {tab === 'playlist' && (
             <>
-              <div className="editor-options">
-                <label className="editor-check">
-                  <input type="checkbox" checked={repeat} onChange={togglePlaylistRepeat} /> Repeteix la llista
-                </label>
-                <label className="editor-check">
-                  <input type="checkbox" checked={shuffle} onChange={togglePlaylistShuffle} /> Aleatori (shuffle)
-                </label>
-              </div>
               <label className="ps-row">
                 <span>Crossfade entre pistes</span>
                 <span className="ps-cf">

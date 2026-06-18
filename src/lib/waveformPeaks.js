@@ -4,7 +4,7 @@
 //
 // Retorna un Float32Array amb parells [min, max] intercalats. drawWavePath el
 // pot consumir directament com si fos un canal d'àudio.
-export function computePeaks(audioBuffer, buckets = 4000) {
+export function computePeaks(audioBuffer, buckets = 8000) {
   const ch = audioBuffer.getChannelData(0);
   const step = Math.max(1, Math.floor(ch.length / buckets));
   const out = new Float32Array(buckets * 2);

@@ -12,3 +12,12 @@ export function slotDuration(slot) {
   if (slot.audioBuffer) return slot.audioBuffer.duration;
   return slot.streamDuration || 0;
 }
+
+// Fades efectius: si el cue té un fade propi (>0) s'usa aquest; si és 0,
+// s'usa el fade global. No hi ha cap interruptor d'override.
+export function effFadeIn(slot, globalIn) {
+  return (slot && slot.fadeIn > 0) ? slot.fadeIn : (globalIn || 0);
+}
+export function effFadeOut(slot, globalOut) {
+  return (slot && slot.fadeOut > 0) ? slot.fadeOut : (globalOut || 0);
+}

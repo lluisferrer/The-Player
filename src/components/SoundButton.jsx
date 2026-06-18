@@ -222,8 +222,11 @@ export function SoundButton({ slotId }) {
               />
               {/* Visualitzador de temps (dalt-dreta) */}
               <span className="slot-time">{timeLabel}</span>
-              {/* Cue llarg en streaming: no hi ha forma d'ona */}
+              {/* Cue llarg en streaming: badge + indicador mentre es genera la forma d'ona */}
               {isStreaming && <span className="slot-stream-badge">STREAM</span>}
+              {isStreaming && !slot.peaks && (
+                <span className="slot-wave-loading"><span className="slot-spinner small" /></span>
+              )}
               {/* Playhead interactiu (mentre sona o en pausa) */}
               {(isPlaying || paused) && (
                 <div

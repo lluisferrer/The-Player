@@ -48,18 +48,23 @@ function makeAudio(get, filePath) {
   return audio;
 }
 
-function nextIndex(get, idx) {
+// auto=true quan és un avanç automàtic (final de pista); auto=false en saltar
+// manualment amb el botó Next. En mode 'song' només l'avanç automàtic repeteix
+// la pista actual: el botó Next sempre salta de debò.
+function nextIndex(get, idx, auto = false) {
   const st = get();
   const n = st.playlist.length;
   if (n === 0) return null;
+  if (auto && st.playlistRepeatMode === 'song') return idx;
+  const loop = st.playlistRepeatMode === 'list';
   if (st.playlistShuffle) {
-    if (n === 1) return st.playlistRepeat ? 0 : null;
+    if (n === 1) return loop ? 0 : null;
     let r = idx;
     while (r === idx) r = Math.floor(Math.random() * n);
     return r;
   }
   const next = idx + 1;
-  if (next >= n) return st.playlistRepeat ? 0 : null;
+  if (next >= n) return loop ? 0 : null;
   return next;
 }
 
@@ -68,7 +73,7 @@ function prevIndex(get, idx) {
   const n = st.playlist.length;
   if (n === 0) return null;
   const p = idx - 1;
-  if (p < 0) return st.playlistRepeat ? n - 1 : 0;
+  if (p < 0) return st.playlistRepeatMode === 'list' ? n - 1 : 0;
   return p;
 }
 
@@ -115,7 +120,7 @@ function scheduleTransition(get, set, myToken) {
 
 function doTransition(get, set) {
   if (!cur) return;
-  const ni = nextIndex(get, cur.index);
+  const ni = nextIndex(get, cur.index, true);
   if (ni == null) return; // deixa acabar; onEnded pararà
   const cf = Math.max(0, get().crossfade || 0);
   const old = cur.audio;
@@ -125,7 +130,7 @@ function doTransition(get, set) {
 
 function onEnded(get, set, myToken) {
   if (myToken !== token || !cur) return;
-  const ni = nextIndex(get, cur.index);
+  const ni = nextIndex(get, cur.index, true);
   if (ni != null) {
     destroy(cur.audio);
     startTrack(get, set, ni, { fadeIn: 0 });

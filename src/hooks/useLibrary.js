@@ -33,7 +33,6 @@ export function useLibrary() {
         loop: s.loop,
         color: s.color,
         stopOthers: s.stopOthers,
-        useGlobalFades: s.useGlobalFades,
       }))
       .filter((s) => s.filePath || s.label); // només slots ocupats
     const all = readSets();

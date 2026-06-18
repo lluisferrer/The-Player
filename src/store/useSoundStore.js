@@ -6,7 +6,7 @@ import {
   csPlay, csStop, csPause, csResume, csSeek, csSetVolume,
   csPreviewStart, csPreviewStop,
 } from '../lib/cueStreamEngine';
-import { hasClip } from '../lib/slotAudio';
+import { hasClip, effFadeIn, effFadeOut } from '../lib/slotAudio';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
 const NUM_PAGES = 4;         // pàgines de cues (4 × 32 = 128 cues)
@@ -33,12 +33,11 @@ const createEmptySlot = (id) => ({
   loop: false,         // opció de reproducció: repeteix el mateix slot
   color: null,         // color del cue (organització + futur routing per grup)
   stopOthers: false,   // en disparar, atura la resta de cues (QLab)
-  useGlobalFades: true,// usa els fades globals per defecte (override si false)
   // Edició del slot (segons l'editor) — tot en segons
   startPoint: 0,       // punt d'inici dins el buffer
   stopPoint: null,     // punt de stop (null = final del buffer)
-  fadeIn: 0,           // durada del fade in (override propi)
-  fadeOut: 0,          // durada del fade out (override propi)
+  fadeIn: 0,           // fade in propi (0 = usa el fade in global)
+  fadeOut: 0,          // fade out propi (0 = usa el fade out global)
 });
 
 const loadPersistedSlots = () => {
@@ -84,7 +83,6 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
       loop: savedSlots[i].loop ?? false,
       color: savedSlots[i].color ?? null,
       stopOthers: savedSlots[i].stopOthers ?? false,
-      useGlobalFades: savedSlots[i].useGlobalFades ?? true,
       startPoint: savedSlots[i].startPoint ?? 0,
       stopPoint: savedSlots[i].stopPoint ?? null,
       fadeIn: savedSlots[i].fadeIn ?? 0,
@@ -98,6 +96,7 @@ export const useSoundStore = create((set, get) => ({
   slots: initialSlots,
   globalFadeIn: savedGlobals.globalFadeIn ?? 0,   // fades per defecte de tots els cues
   globalFadeOut: savedGlobals.globalFadeOut ?? 0,
+  cuesStopOthers: savedGlobals.cuesStopOthers ?? false, // Stop Others global per a tots els cues
   viewMode: 'grid',        // 'grid' (botonera 8×4) | 'list' (llista de files)
   editingSlot: null,       // id del slot obert a l'editor (o null)
   dragOverSlot: null,      // id del slot sota un drag&drop natiu (o null)
@@ -122,10 +121,13 @@ export const useSoundStore = create((set, get) => ({
   // ── Playlist (VLC) ──
   playlist: Array.isArray(savedPlaylist.tracks) ? savedPlaylist.tracks : [],
   playlistIndex: -1,
+  playlistSelected: 0,     // cursor de selecció a la llista (fletxes / clic)
   playlistPlaying: false,
   playlistPaused: false,
   crossfade: savedPlaylist.crossfade ?? 3,
-  playlistRepeat: savedPlaylist.repeat ?? false,
+  // Mode de repetició: 'off' | 'song' (repeteix la pista) | 'list' (repeteix la llista)
+  // Retrocompatibilitat amb sessions antigues que guardaven repeat com a booleà.
+  playlistRepeatMode: savedPlaylist.repeatMode ?? (savedPlaylist.repeat ? 'list' : 'off'),
   playlistShuffle: savedPlaylist.shuffle ?? false,
   playlistVolume: savedPlaylist.volume ?? 0.8,
 
@@ -138,13 +140,16 @@ export const useSoundStore = create((set, get) => ({
   },
 
   persistGlobals: () => {
-    const { globalFadeIn, globalFadeOut, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs } = get();
+    const { globalFadeIn, globalFadeOut, cuesStopOthers, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
-      globalFadeIn, globalFadeOut,
+      globalFadeIn, globalFadeOut, cuesStopOthers,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
     }));
   },
+
+  // Stop Others global: en disparar qualsevol cue, atura la resta
+  setCuesStopOthers: (on) => { set({ cuesStopOthers: !!on }); get().persistGlobals(); },
 
   // Retorna (o crea) el context d'un dispositiu de sortida per als cues.
   // El bus de Cues reutilitza l'audioContext principal.
@@ -270,9 +275,9 @@ export const useSoundStore = create((set, get) => ({
 
   // ── Accions de la Playlist ──
   persistPlaylist: () => {
-    const { playlist, crossfade, playlistRepeat, playlistShuffle, playlistVolume } = get();
+    const { playlist, crossfade, playlistRepeatMode, playlistShuffle, playlistVolume } = get();
     localStorage.setItem('the-player-playlist', JSON.stringify({
-      tracks: playlist, crossfade, repeat: playlistRepeat, shuffle: playlistShuffle, volume: playlistVolume,
+      tracks: playlist, crossfade, repeatMode: playlistRepeatMode, shuffle: playlistShuffle, volume: playlistVolume,
     }));
   },
 
@@ -315,7 +320,12 @@ export const useSoundStore = create((set, get) => ({
   },
 
   setCrossfade: (sec) => { set({ crossfade: Math.max(0, sec) }); get().persistPlaylist(); },
-  togglePlaylistRepeat: () => { set((s) => ({ playlistRepeat: !s.playlistRepeat })); get().persistPlaylist(); },
+  // Cicla el mode de repetició: off → song → list → off
+  cyclePlaylistRepeat: () => {
+    const next = { off: 'song', song: 'list', list: 'off' };
+    set((s) => ({ playlistRepeatMode: next[s.playlistRepeatMode] ?? 'song' }));
+    get().persistPlaylist();
+  },
   togglePlaylistShuffle: () => { set((s) => ({ playlistShuffle: !s.playlistShuffle })); get().persistPlaylist(); },
   setPlaylistVolume: (v) => { set({ playlistVolume: v }); plSetVolume(get); get().persistPlaylist(); },
 
@@ -323,7 +333,26 @@ export const useSoundStore = create((set, get) => ({
   playlistStop: () => plStop(get, set),
   playlistNext: () => plNext(get, set),
   playlistPrev: () => plPrev(get, set),
-  playlistPlayIndex: (i) => plPlayIndex(get, set, i),
+  playlistPlayIndex: (i) => { set({ playlistSelected: i }); plPlayIndex(get, set, i); },
+
+  // Selecció (cursor) de la llista: clic o fletxes
+  setPlaylistSelected: (i) => {
+    const n = get().playlist.length;
+    if (n === 0) { set({ playlistSelected: 0 }); return; }
+    set({ playlistSelected: Math.max(0, Math.min(i, n - 1)) });
+  },
+  movePlaylistSelection: (dir) => {
+    const { playlist, playlistSelected } = get();
+    if (playlist.length === 0) return;
+    const next = Math.max(0, Math.min((playlistSelected || 0) + dir, playlist.length - 1));
+    set({ playlistSelected: next });
+  },
+  playlistPlaySelected: () => {
+    const { playlist, playlistSelected } = get();
+    if (playlist.length === 0) return;
+    const i = Math.max(0, Math.min(playlistSelected || 0, playlist.length - 1));
+    plPlayIndex(get, set, i);
+  },
 
   setEditingSlot: (slotId) => set({ editingSlot: slotId }),
 
@@ -350,7 +379,6 @@ export const useSoundStore = create((set, get) => ({
               loop: !!cfg.loop,
               color: cfg.color != null ? cfg.color : null,
               stopOthers: !!cfg.stopOthers,
-              useGlobalFades: cfg.useGlobalFades != null ? cfg.useGlobalFades : true,
             }
           : s
       ),
@@ -423,6 +451,8 @@ export const useSoundStore = create((set, get) => ({
               analyserNode: null,
               sourceNode: null,
               isPlaying: false,
+              // Cue nou: Stop Others pren el valor per defecte global (Settings)
+              stopOthers: get().cuesStopOthers,
               // Un fitxer nou reinicia els punts d'edició
               startPoint: 0,
               stopPoint: null,
@@ -447,7 +477,7 @@ export const useSoundStore = create((set, get) => ({
       return;
     }
 
-    // "Stop others" per cue: atura la resta de cues que sonin
+    // "Stop others" del cue: atura la resta de cues que sonin
     if (slot.stopOthers) {
       slots.forEach((s) => {
         if (s.id !== slotId && (s.isPlaying || s.pausedAt != null)) get().stopSlot(s.id);
@@ -478,7 +508,7 @@ export const useSoundStore = create((set, get) => ({
       gainNode = ctx.createGain();
       gainNode.gain.value = slot.volume ?? 0.8;
       analyserNode = ctx.createAnalyser();
-      analyserNode.fftSize = 256;
+      analyserNode.fftSize = 1024;
       fadeGainNode.connect(gainNode);
       gainNode.connect(analyserNode);
       analyserNode.connect(ctx.destination);
@@ -493,11 +523,9 @@ export const useSoundStore = create((set, get) => ({
     const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
     const stopPoint  = Math.min(slot.stopPoint ?? total, total);
     const segDur     = Math.max(0.02, stopPoint - startPoint);
-    // Fades efectius: globals per defecte, o els propis del cue si fa override
-    const rawIn  = slot.useGlobalFades ? globalFadeIn : slot.fadeIn;
-    const rawOut = slot.useGlobalFades ? globalFadeOut : slot.fadeOut;
-    const fadeIn     = Math.max(0, Math.min(rawIn || 0, segDur));
-    const fadeOut    = Math.max(0, Math.min(rawOut || 0, segDur));
+    // Fades efectius: el propi del cue si és >0, si no el global
+    const fadeIn     = Math.max(0, Math.min(effFadeIn(slot, globalFadeIn), segDur));
+    const fadeOut    = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
 
     const now = ctx.currentTime;
 
@@ -604,7 +632,7 @@ export const useSoundStore = create((set, get) => ({
     if (fg) {
       fg.gain.cancelScheduledValues(now);
       fg.gain.setValueAtTime(1, now); // sense fade in en reprendre
-      const fadeOut = Math.max(0, Math.min((slot.useGlobalFades ? get().globalFadeOut : slot.fadeOut) || 0, segDur));
+      const fadeOut = Math.max(0, Math.min(effFadeOut(slot, get().globalFadeOut), segDur));
       if (!slot.loop && fadeOut > 0 && remaining > fadeOut) {
         fg.gain.setValueAtTime(1, now + remaining - fadeOut);
         fg.gain.linearRampToValueAtTime(0, now + remaining);
@@ -742,7 +770,7 @@ export const useSoundStore = create((set, get) => ({
       // En fer seek no apliquem fade in; mantenim el fade out cap al final
       fg.gain.cancelScheduledValues(now);
       fg.gain.setValueAtTime(1, now);
-      const fadeOut = Math.max(0, Math.min((slot.useGlobalFades ? get().globalFadeOut : slot.fadeOut) || 0, segDur));
+      const fadeOut = Math.max(0, Math.min(effFadeOut(slot, get().globalFadeOut), segDur));
       if (!slot.loop && fadeOut > 0 && remaining > fadeOut) {
         fg.gain.setValueAtTime(1, now + remaining - fadeOut);
         fg.gain.linearRampToValueAtTime(0, now + remaining);
@@ -842,7 +870,7 @@ export const useSoundStore = create((set, get) => ({
         0.02,
         Math.min(slot.stopPoint ?? total, total) - Math.max(0, slot.startPoint || 0)
       );
-      fadeSec = Math.max(0, Math.min((slot.useGlobalFades ? globalFadeOut : slot.fadeOut) || 0, segDur));
+      fadeSec = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
     } else if (typeof fade === 'number') {
       fadeSec = Math.max(0, fade);
     }
@@ -900,7 +928,6 @@ export const useSoundStore = create((set, get) => ({
       loop: s.loop,
       color: s.color,
       stopOthers: s.stopOthers,
-      useGlobalFades: s.useGlobalFades,
       startPoint: s.startPoint,
       stopPoint: s.stopPoint,
       fadeIn: s.fadeIn,

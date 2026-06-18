@@ -1,3 +1,4 @@
+import { SkipBack, SkipForward, Play, Square } from 'lucide-react';
 import { useSoundStore } from '../store/useSoundStore';
 
 // Barra de transport per als cues (sobre la botonera)
@@ -16,11 +17,15 @@ export function CueTransport() {
   return (
     <div className="cue-transport">
       <div className="cue-tp-buttons">
-        <button onClick={() => selectStep(-1)} title="Cue anterior">⏮ Prev</button>
-        <button onClick={() => selectStep(1)} title="Cue següent">Next ⏭</button>
-        <button className="cue-go" onClick={() => go()} title="GO: dispara el cue seleccionat i avança">GO</button>
-        <button onClick={() => stopSlot(selectedSlot, true)} title="Stop del cue seleccionat">■ Stop</button>
-        <button className="cue-stop-all" onClick={() => stopAll()} title="Stop ALL (pànic)">■ Stop all</button>
+        <button onClick={() => selectStep(-1)} title="Cue anterior"><SkipBack size={16} fill="currentColor" /></button>
+        <button onClick={() => selectStep(1)} title="Cue següent"><SkipForward size={16} fill="currentColor" /></button>
+        <button className="cue-go" onClick={() => go()} title="GO: dispara el cue seleccionat i avança">
+          <Play size={16} fill="currentColor" /> GO
+        </button>
+        <button onClick={() => stopSlot(selectedSlot, true)} title="Stop del cue seleccionat"><Square size={16} fill="currentColor" /></button>
+        <button className="cue-stop-all" onClick={() => stopAll()} title="Stop ALL (pànic)">
+          <Square size={16} fill="currentColor" /> ALL
+        </button>
       </div>
 
       <div className="cue-now">

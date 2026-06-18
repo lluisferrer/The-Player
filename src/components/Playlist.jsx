@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { SkipBack, SkipForward, Play, Pause, Square, Repeat, Repeat1, Shuffle } from 'lucide-react';
 import { useSoundStore } from '../store/useSoundStore';
 import { plPosition } from '../lib/playlistEngine';
 import { fmtTime } from '../hooks/usePlaybackTime';
@@ -9,13 +10,17 @@ function basename(p) { return p.split(/[\\/]/).pop() || p; }
 export function Playlist() {
   const playlist      = useSoundStore((s) => s.playlist);
   const playlistIndex = useSoundStore((s) => s.playlistIndex);
+  const selected      = useSoundStore((s) => s.playlistSelected);
   const playing       = useSoundStore((s) => s.playlistPlaying);
   const paused        = useSoundStore((s) => s.playlistPaused);
   const volume        = useSoundStore((s) => s.playlistVolume);
+  const repeatMode    = useSoundStore((s) => s.playlistRepeatMode);
+  const shuffle       = useSoundStore((s) => s.playlistShuffle);
 
   const {
     addPlaylistTracks, removePlaylistTrack, movePlaylistTrack, clearPlaylist,
-    setPlaylistVolume,
+    setPlaylistVolume, setPlaylistSelected,
+    cyclePlaylistRepeat, togglePlaylistShuffle,
     playlistPlayPause, playlistStop, playlistNext, playlistPrev, playlistPlayIndex,
   } = useSoundStore.getState();
 
@@ -46,16 +51,34 @@ export function Playlist() {
 
   const current = playlist[playlistIndex];
   const progress = pos.duration ? pos.elapsed / pos.duration : 0;
-  const playLabel = playing ? '❚❚' : '▶';
+
+  // Botó de repetició de tres estats: off → song → list
+  const RepeatIcon = repeatMode === 'song' ? Repeat1 : Repeat;
+  const repeatTitle =
+    repeatMode === 'song' ? 'Repeteix la pista'
+    : repeatMode === 'list' ? 'Repeteix la llista'
+    : 'Repetició desactivada';
 
   return (
     <div className="playlist">
       <div className="pl-toolbar">
         <div className="pl-transport">
-          <button onClick={playlistPrev} title="Anterior">⏮</button>
-          <button className="pl-play" onClick={playlistPlayPause} title="Play / Pausa">{playLabel}</button>
-          <button onClick={playlistStop} title="Stop">■</button>
-          <button onClick={playlistNext} title="Següent">⏭</button>
+          <button onClick={playlistPrev} title="Anterior"><SkipBack size={16} fill="currentColor" /></button>
+          <button className="pl-play" onClick={playlistPlayPause} title="Play / Pausa">
+            {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+          </button>
+          <button onClick={playlistStop} title="Stop"><Square size={16} fill="currentColor" /></button>
+          <button onClick={playlistNext} title="Següent"><SkipForward size={16} fill="currentColor" /></button>
+          <button
+            className={`pl-toggle ${repeatMode !== 'off' ? 'active' : ''}`}
+            onClick={cyclePlaylistRepeat}
+            title={repeatTitle}
+          ><RepeatIcon size={16} /></button>
+          <button
+            className={`pl-toggle ${shuffle ? 'active' : ''}`}
+            onClick={togglePlaylistShuffle}
+            title="Aleatori (shuffle)"
+          ><Shuffle size={16} /></button>
         </div>
 
         <label className="pl-vol" title="Volum de la playlist">
@@ -94,8 +117,9 @@ export function Playlist() {
         ) : (
           playlist.map((t, i) => (
             <div
-              className={`pl-item ${i === playlistIndex ? 'current' : ''}`}
+              className={`pl-item ${i === playlistIndex ? 'current' : ''} ${i === selected ? 'selected' : ''}`}
               key={t.id}
+              onClick={() => setPlaylistSelected(i)}
               onDoubleClick={() => playlistPlayIndex(i)}
             >
               <span className="pl-num">{i === playlistIndex && (playing || paused) ? '▶' : i + 1}</span>

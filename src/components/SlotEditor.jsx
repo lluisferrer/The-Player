@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSoundStore } from '../store/useSoundStore';
-import { drawWavePath } from '../lib/waveformDraw';
+import { drawWavePathRange } from '../lib/waveformDraw';
 import { CUE_COLORS } from '../lib/colors';
 import { hasClip, slotDuration } from '../lib/slotAudio';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
@@ -9,13 +9,17 @@ const BG          = '#141416';
 const WAVE_COLOR  = '#6b7280';
 const ACCENT      = '#3b82f6';
 const DIM         = 'rgba(10, 10, 12, 0.6)';
-const HANDLE_HIT  = 8; // marge en px per agafar un marcador
+const HANDLE_HIT  = 8;     // marge en px per agafar un marcador
+const MAX_ZOOM    = 512;   // amplia molt (viewport, sense ampliar el canvas)
+const FADE_MAX    = 30;    // sostre del slider de fade (s); el camp numèric cobreix valors majors
 
 export function SlotEditor() {
   const editingSlot    = useSoundStore((s) => s.editingSlot);
   const slot           = useSoundStore((s) =>
     s.editingSlot ? s.slots.find((x) => x.id === s.editingSlot) : null
   );
+  const globalFadeIn   = useSoundStore((s) => s.globalFadeIn);
+  const globalFadeOut  = useSoundStore((s) => s.globalFadeOut);
   const setEditingSlot = useSoundStore((s) => s.setEditingSlot);
   const updateSlotEdit = useSoundStore((s) => s.updateSlotEdit);
   const setLoop        = useSoundStore((s) => s.setLoop);
@@ -28,15 +32,16 @@ export function SlotEditor() {
   const wrapRef   = useRef(null);
   const rulerRef  = useRef(null);
   const [dragging, setDragging] = useState(null); // 'start' | 'stop' | 'playhead' | null
-  const [playScrub, setPlayScrub] = useState(null); // ratio dins segment mentre s'arrossega el playhead
+  const [playScrub, setPlayScrub] = useState(null);
   const playScrubRef = useRef(null);
-  const [zoom, setZoom] = useState(1); // 1× = tot el buffer; 2/4/8× amplia amb scroll
 
-  // Posició de reproducció (per la línia de playhead estil DAW)
+  // Zoom de viewport: 'zoom' = factor, 'view' = rati (0..1) del marge esquerre
+  const [zoom, setZoom] = useState(1);
+  const [view, setView] = useState(0);
+
   const { progress } = usePlaybackTime(slot);
 
   const hasAudio = hasClip(slot);
-  const isStreaming = slot && slot.isStreaming;
   const total    = hasAudio ? slotDuration(slot) : 0;
   const start    = hasAudio ? Math.max(0, slot.startPoint || 0) : 0;
   const stop     = hasAudio ? (slot.stopPoint ?? total) : 0;
@@ -44,7 +49,15 @@ export function SlotEditor() {
   const fadeOut  = hasAudio ? (slot.fadeOut || 0) : 0;
   const segDur   = Math.max(0, stop - start);
 
-  // ─── Dibuix del canvas ───
+  // Finestra visible (en ratis del fitxer sencer)
+  const span     = Math.min(1, 1 / zoom);
+  const viewMax  = Math.max(0, 1 - span);
+  const viewClamped = Math.min(view, viewMax);
+
+  // Conversió temps ↔ x (px dins el canvas, segons la finestra visible)
+  const tToX = (t, w) => ((t / total) - viewClamped) * zoom * w;
+
+  // ─── Dibuix de la forma d'ona ───
   useEffect(() => {
     if (!hasAudio) return;
     const canvas = canvasRef.current;
@@ -56,7 +69,7 @@ export function SlotEditor() {
       const dpr = window.devicePixelRatio || 1;
       const w = wrap.clientWidth;
       const h = wrap.clientHeight;
-      if (w === 0 || h === 0) return;
+      if (w === 0 || h === 0 || total === 0) return;
       canvas.width  = Math.round(w * dpr);
       canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -65,15 +78,17 @@ export function SlotEditor() {
       ctx.fillRect(0, 0, w, h);
 
       const data = slot.audioBuffer ? slot.audioBuffer.getChannelData(0) : slot.peaks;
-      if (data) {
-        drawWavePath(ctx, data, w, h, WAVE_COLOR);
+      if (data && data.length) {
+        const len = data.length;
+        const a = viewClamped * len;
+        const b = (viewClamped + span) * len;
+        drawWavePathRange(ctx, data, a, b, w, h, WAVE_COLOR);
       } else {
-        // Streaming sense pics encara: línia central + avís
+        // Streaming sense pics encara
         ctx.strokeStyle = WAVE_COLOR;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(0, h / 2 + 0.5);
-        ctx.lineTo(w, h / 2 + 0.5);
+        ctx.moveTo(0, h / 2 + 0.5); ctx.lineTo(w, h / 2 + 0.5);
         ctx.stroke();
         ctx.fillStyle = '#52525b';
         ctx.font = '11px "JetBrains Mono", monospace';
@@ -81,53 +96,49 @@ export function SlotEditor() {
         ctx.fillText('STREAMING — generant forma d\'ona…', 10, h / 2 - 12);
       }
 
-      const xStart = (start / total) * w;
-      const xStop  = (stop / total) * w;
+      const xStart = tToX(start, w);
+      const xStop  = tToX(stop, w);
 
-      // Enfosqueix fora del segment
+      // Enfosqueix fora del segment (clampat a la finestra)
       ctx.fillStyle = DIM;
-      ctx.fillRect(0, 0, xStart, h);
-      ctx.fillRect(xStop, 0, w - xStop, h);
+      const xs = Math.max(0, Math.min(xStart, w));
+      const xe = Math.max(0, Math.min(xStop, w));
+      if (xs > 0) ctx.fillRect(0, 0, xs, h);
+      if (xe < w) ctx.fillRect(xe, 0, w - xe, h);
 
-      // Rampes de fade (línies des de baix→dalt a l'inici, dalt→baix al final)
+      // Rampes de fade efectives (pròpia >0, si no la global)
+      const effIn  = fadeIn > 0 ? fadeIn : globalFadeIn;
+      const effOut = fadeOut > 0 ? fadeOut : globalFadeOut;
       ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
       ctx.lineWidth = 1.5;
-      if (fadeIn > 0) {
-        const xIn = ((start + Math.min(fadeIn, segDur)) / total) * w;
-        ctx.beginPath();
-        ctx.moveTo(xStart, h);
-        ctx.lineTo(xIn, 0);
-        ctx.stroke();
+      if (effIn > 0) {
+        const xIn = tToX(start + Math.min(effIn, segDur), w);
+        ctx.beginPath(); ctx.moveTo(xStart, h); ctx.lineTo(xIn, 0); ctx.stroke();
       }
-      if (fadeOut > 0) {
-        const xOut = ((stop - Math.min(fadeOut, segDur)) / total) * w;
-        ctx.beginPath();
-        ctx.moveTo(xOut, 0);
-        ctx.lineTo(xStop, h);
-        ctx.stroke();
+      if (effOut > 0) {
+        const xOut = tToX(stop - Math.min(effOut, segDur), w);
+        ctx.beginPath(); ctx.moveTo(xOut, 0); ctx.lineTo(xStop, h); ctx.stroke();
       }
 
-      // Marcadors inici/stop
+      // Marcadors inici/stop (si són dins la finestra)
       ctx.strokeStyle = ACCENT;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(xStart, 0); ctx.lineTo(xStart, h);
-      ctx.moveTo(xStop, 0);  ctx.lineTo(xStop, h);
+      if (xStart >= 0 && xStart <= w) { ctx.moveTo(xStart, 0); ctx.lineTo(xStart, h); }
+      if (xStop >= 0 && xStop <= w)   { ctx.moveTo(xStop, 0);  ctx.lineTo(xStop, h); }
       ctx.stroke();
-
-      // Petits tiradors a dalt
       ctx.fillStyle = ACCENT;
-      ctx.fillRect(xStart - 3, 0, 6, 8);
-      ctx.fillRect(xStop - 3, 0, 6, 8);
+      if (xStart >= 0 && xStart <= w) ctx.fillRect(xStart - 3, 0, 6, 8);
+      if (xStop >= 0 && xStop <= w)   ctx.fillRect(xStop - 3, 0, 6, 8);
     };
 
     draw();
     const ro = new ResizeObserver(draw);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [hasAudio, slot, total, start, stop, fadeIn, fadeOut, segDur]);
+  }, [hasAudio, slot, total, start, stop, fadeIn, fadeOut, segDur, zoom, viewClamped, span, globalFadeIn, globalFadeOut]);
 
-  // ─── Regla de temps (ticks + etiquetes mm:ss) ───
+  // ─── Regla de temps (finestra visible) ───
   useEffect(() => {
     if (!hasAudio) return;
     const canvas = rulerRef.current;
@@ -147,9 +158,11 @@ export function SlotEditor() {
       ctx.fillStyle = '#1b1b1e';
       ctx.fillRect(0, 0, w, h);
 
-      // Tria un interval de tick que deixi ~55px entre marques
-      const pxPerSec = w / total;
-      const candidates = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
+      const t0 = viewClamped * total;
+      const t1 = (viewClamped + span) * total;
+      const visDur = Math.max(1e-6, t1 - t0);
+      const pxPerSec = w / visDur;
+      const candidates = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
       let interval = candidates[candidates.length - 1];
       for (const c of candidates) { if (c * pxPerSec >= 55) { interval = c; break; } }
 
@@ -158,13 +171,14 @@ export function SlotEditor() {
       ctx.font = '9px "JetBrains Mono", monospace';
       ctx.textBaseline = 'bottom';
       ctx.lineWidth = 1;
-      for (let t = 0; t <= total + 1e-6; t += interval) {
-        const x = (t / total) * w;
+      const first = Math.ceil(t0 / interval) * interval;
+      for (let t = first; t <= t1 + 1e-6; t += interval) {
+        const x = ((t - t0) / visDur) * w;
         ctx.beginPath();
         ctx.moveTo(x + 0.5, h - 6);
         ctx.lineTo(x + 0.5, h);
         ctx.stroke();
-        const lbl = interval < 1 ? `${t.toFixed(1)}s` : fmtTime(t);
+        const lbl = interval < 1 ? `${t.toFixed(2)}s` : fmtTime(t);
         ctx.fillText(lbl, x + 3, h - 5);
       }
     };
@@ -173,28 +187,49 @@ export function SlotEditor() {
     const ro = new ResizeObserver(draw);
     ro.observe(host);
     return () => ro.disconnect();
-  }, [hasAudio, total, slot]);
+  }, [hasAudio, total, slot, zoom, viewClamped, span]);
 
-  // ─── Accions i conversió (funcions normals, no hooks) ───
+  // ─── Accions ───
   const handleClose = () => {
     stopSlot(editingSlot);
-    useSoundStore.getState().persistSlots(); // desa les edicions del cue
+    useSoundStore.getState().persistSlots();
     setEditingSlot(null);
   };
 
   const handleReset = () => {
-    updateSlotEdit(editingSlot, {
-      startPoint: 0, stopPoint: null, fadeIn: 0, fadeOut: 0,
-    });
+    updateSlotEdit(editingSlot, { startPoint: 0, stopPoint: null, fadeIn: 0, fadeOut: 0 });
   };
 
   const xToTime = (clientX) => {
     const wrap = wrapRef.current;
     if (!wrap) return 0;
     const rect = wrap.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return ratio * total;
+    const f = (clientX - rect.left) / rect.width;       // 0..1 dins la finestra
+    const ratio = viewClamped + f * span;               // rati del fitxer sencer
+    return Math.min(1, Math.max(0, ratio)) * total;
   };
+
+  // Zoom centrat en un punt (rati 0..1 del fitxer)
+  const zoomAt = (factor, anchorRatio) => {
+    const nz = Math.min(MAX_ZOOM, Math.max(1, zoom * factor));
+    const nspan = Math.min(1, 1 / nz);
+    let nview = anchorRatio - (anchorRatio - viewClamped) * (nspan / span);
+    nview = Math.min(Math.max(0, nview), Math.max(0, 1 - nspan));
+    setZoom(nz);
+    setView(nview);
+  };
+
+  const handleWheel = (e) => {
+    if (!hasAudio) return;
+    e.preventDefault();
+    const wrap = wrapRef.current;
+    const rect = wrap.getBoundingClientRect();
+    const f = (e.clientX - rect.left) / rect.width;
+    const anchor = viewClamped + f * span;
+    zoomAt(e.deltaY < 0 ? 1.3 : 1 / 1.3, anchor);
+  };
+
+  const fitZoom = () => { setZoom(1); setView(0); };
 
   // ─── Tancar amb Escape ───
   useEffect(() => {
@@ -204,7 +239,7 @@ export function SlotEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingSlot]);
 
-  // ─── Drag dels marcadors inici/stop i del playhead ───
+  // ─── Drag dels marcadors i del playhead ───
   useEffect(() => {
     if (!dragging) return;
     const onMove = (e) => {
@@ -216,7 +251,6 @@ export function SlotEditor() {
         const ne = Math.max(t, start + 0.05);
         updateSlotEdit(editingSlot, { stopPoint: Math.min(total, ne) });
       } else if (dragging === 'playhead') {
-        // Ratio dins el segment (salt en deixar anar)
         const r = segDur > 0 ? Math.min(1, Math.max(0, (t - start) / segDur)) : 0;
         playScrubRef.current = r;
         setPlayScrub(r);
@@ -238,17 +272,16 @@ export function SlotEditor() {
       window.removeEventListener('pointerup', onUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dragging, start, stop, total, segDur, editingSlot]);
+  }, [dragging, start, stop, total, segDur, editingSlot, viewClamped, span, zoom]);
 
-  // Tots els hooks han quedat per sobre d'aquest punt
   if (!editingSlot || !hasAudio) return null;
 
   const handlePointerDown = (e) => {
     const rect = wrapRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const xStart = (start / total) * rect.width;
-    const xStop  = (stop / total) * rect.width;
-    // Agafa el marcador més proper si el clic hi és a prop
+    const w = rect.width;
+    const xStart = tToX(start, w);
+    const xStop  = tToX(stop, w);
     if (Math.abs(x - xStart) <= HANDLE_HIT) setDragging('start');
     else if (Math.abs(x - xStop) <= HANDLE_HIT) setDragging('stop');
     else if (x < xStart) setDragging('start');
@@ -258,12 +291,13 @@ export function SlotEditor() {
 
   const label = slot.label || `Slot ${editingSlot}`;
 
-  // Posició del playhead (0..1 dins el segment → fracció del buffer sencer)
   const headRatio = playScrub != null ? playScrub : progress;
-  const playheadPct = total
-    ? ((start + Math.min(1, Math.max(0, headRatio)) * segDur) / total) * 100
-    : 0;
-  const showPlayhead = slot.isPlaying || playScrub != null;
+  const playheadTime = start + Math.min(1, Math.max(0, headRatio)) * segDur;
+  const playheadPct = total ? (((playheadTime / total) - viewClamped) / span) * 100 : 0;
+  const showPlayhead = (slot.isPlaying || playScrub != null) && playheadPct >= 0 && playheadPct <= 100;
+
+  // Posició del scrollbar de pan (0..1)
+  const scrollPos = viewMax > 0 ? viewClamped / viewMax : 0;
 
   return (
     <div className="editor-overlay" onClick={handleClose}>
@@ -274,48 +308,42 @@ export function SlotEditor() {
         </div>
 
         <div className="editor-wave-toolbar">
-          <span className="editor-zoom-label">Zoom {zoom}×</span>
-          <button
-            className="editor-zoom-btn"
-            onClick={() => setZoom((z) => Math.max(1, z / 2))}
-            disabled={zoom <= 1}
-            title="Allunya"
-          >−</button>
-          <button
-            className="editor-zoom-btn"
-            onClick={() => setZoom((z) => Math.min(8, z * 2))}
-            disabled={zoom >= 8}
-            title="Apropa"
-          >+</button>
-          <button
-            className="editor-zoom-btn"
-            onClick={() => setZoom(1)}
-            disabled={zoom === 1}
-            title="Ajusta a tot"
-          >Fit</button>
+          <span className="editor-zoom-label">
+            Zoom {zoom < 10 ? zoom.toFixed(1) : Math.round(zoom)}× · finestra {fmtTime(span * total)}
+          </span>
+          <button className="editor-zoom-btn" onClick={() => zoomAt(1 / 2, viewClamped + span / 2)} disabled={zoom <= 1} title="Allunya">−</button>
+          <button className="editor-zoom-btn" onClick={() => zoomAt(2, viewClamped + span / 2)} disabled={zoom >= MAX_ZOOM} title="Apropa">+</button>
+          <button className="editor-zoom-btn" onClick={fitZoom} disabled={zoom === 1} title="Ajusta a tot">Fit</button>
         </div>
 
-        <div className="editor-wave-scroll">
-          <div className="editor-wave-inner" style={{ width: `${zoom * 100}%` }}>
-            <div className="editor-ruler">
-              <canvas ref={rulerRef} className="editor-ruler-canvas" />
-            </div>
-            <div
-              ref={wrapRef}
-              className="editor-wave"
-              onPointerDown={handlePointerDown}
-            >
-              <canvas ref={canvasRef} className="editor-canvas" />
-              {showPlayhead && (
-                <div
-                  className="editor-playhead"
-                  style={{ left: `${playheadPct}%` }}
-                  onPointerDown={(e) => { e.stopPropagation(); setDragging('playhead'); }}
-                />
-              )}
-            </div>
-          </div>
+        <div className="editor-ruler">
+          <canvas ref={rulerRef} className="editor-ruler-canvas" />
         </div>
+        <div
+          ref={wrapRef}
+          className="editor-wave"
+          onPointerDown={handlePointerDown}
+          onWheel={handleWheel}
+        >
+          <canvas ref={canvasRef} className="editor-canvas" />
+          {showPlayhead && (
+            <div
+              className="editor-playhead"
+              style={{ left: `${playheadPct}%` }}
+              onPointerDown={(e) => { e.stopPropagation(); setDragging('playhead'); }}
+            />
+          )}
+        </div>
+
+        {zoom > 1 && (
+          <input
+            className="editor-scroll"
+            type="range" min="0" max="1" step="0.0005"
+            value={scrollPos}
+            onChange={(e) => setView(parseFloat(e.target.value) * viewMax)}
+            title="Desplaça la vista"
+          />
+        )}
 
         <div className="editor-times">
           <span>Inici: <b>{fmtTime(start)}</b></span>
@@ -331,14 +359,6 @@ export function SlotEditor() {
               onChange={(e) => updateSlotEdit(editingSlot, { stopOthers: e.target.checked })}
             />
             Stop others (talla la resta de cues en disparar)
-          </label>
-          <label className="editor-check">
-            <input
-              type="checkbox"
-              checked={!slot.useGlobalFades}
-              onChange={(e) => updateSlotEdit(editingSlot, { useGlobalFades: !e.target.checked })}
-            />
-            Fades propis (override dels globals)
           </label>
         </div>
 
@@ -361,30 +381,49 @@ export function SlotEditor() {
         </div>
 
         <div className="editor-fades">
-          {slot.useGlobalFades ? (
-            <div className="editor-fades-note">
-              Usant els <b>fades globals</b>. Activa «Fades propis» per definir-los aquí.
+          <label>
+            <span>Fade in: {fadeIn > 0 ? `${fadeIn.toFixed(2)}s` : `global (${globalFadeIn.toFixed(2)}s)`}</span>
+            <div className="editor-fade-row">
+              <input
+                type="range" min="0" max={Math.min(FADE_MAX, segDur)} step="0.1"
+                value={Math.min(fadeIn, FADE_MAX, segDur)}
+                onChange={(e) => updateSlotEdit(editingSlot, { fadeIn: parseFloat(e.target.value) })}
+              />
+              {/* Camp numèric per escriure valors exactes, independent de la durada de l'arxiu */}
+              <input
+                className="editor-fade-num"
+                type="number" min="0" step="0.1" max={segDur}
+                value={Math.min(fadeIn, segDur)}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  const clamped = Math.min(Math.max(0, isNaN(v) ? 0 : v), segDur);
+                  updateSlotEdit(editingSlot, { fadeIn: clamped });
+                }}
+              />
             </div>
-          ) : (
-            <>
-              <label>
-                <span>Fade in: {fadeIn.toFixed(2)}s</span>
-                <input
-                  type="range" min="0" max={Math.max(0.1, segDur)} step="0.05"
-                  value={Math.min(fadeIn, segDur)}
-                  onChange={(e) => updateSlotEdit(editingSlot, { fadeIn: parseFloat(e.target.value) })}
-                />
-              </label>
-              <label>
-                <span>Fade out: {fadeOut.toFixed(2)}s</span>
-                <input
-                  type="range" min="0" max={Math.max(0.1, segDur)} step="0.05"
-                  value={Math.min(fadeOut, segDur)}
-                  onChange={(e) => updateSlotEdit(editingSlot, { fadeOut: parseFloat(e.target.value) })}
-                />
-              </label>
-            </>
-          )}
+          </label>
+          <label>
+            <span>Fade out: {fadeOut > 0 ? `${fadeOut.toFixed(2)}s` : `global (${globalFadeOut.toFixed(2)}s)`}</span>
+            <div className="editor-fade-row">
+              <input
+                type="range" min="0" max={Math.min(FADE_MAX, segDur)} step="0.1"
+                value={Math.min(fadeOut, FADE_MAX, segDur)}
+                onChange={(e) => updateSlotEdit(editingSlot, { fadeOut: parseFloat(e.target.value) })}
+              />
+              {/* Camp numèric per escriure valors exactes, independent de la durada de l'arxiu */}
+              <input
+                className="editor-fade-num"
+                type="number" min="0" step="0.1" max={segDur}
+                value={Math.min(fadeOut, segDur)}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  const clamped = Math.min(Math.max(0, isNaN(v) ? 0 : v), segDur);
+                  updateSlotEdit(editingSlot, { fadeOut: clamped });
+                }}
+              />
+            </div>
+          </label>
+          <div className="editor-fades-note">Un fade a <b>0</b> usa el fade global (Settings → Cues).</div>
         </div>
 
         <div className="editor-actions">
