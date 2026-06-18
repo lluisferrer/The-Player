@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume, plSetDevice,
+  duckAdd, duckRemove, duckReset, duckRefresh,
 } from '../lib/playlistEngine';
 import {
   csPlay, csStop, csPause, csResume, csSeek, csSetVolume,
@@ -33,6 +34,7 @@ const createEmptySlot = (id) => ({
   loop: false,         // opció de reproducció: repeteix el mateix slot
   color: null,         // color del cue (organització + futur routing per grup)
   stopOthers: false,   // en disparar, atura la resta de cues (QLab)
+  duck: false,         // en sonar, abaixa el volum de la Playlist (ducking)
   // Edició del slot (segons l'editor) — tot en segons
   startPoint: 0,       // punt d'inici dins el buffer
   stopPoint: null,     // punt de stop (null = final del buffer)
@@ -83,6 +85,7 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
       loop: savedSlots[i].loop ?? false,
       color: savedSlots[i].color ?? null,
       stopOthers: savedSlots[i].stopOthers ?? false,
+      duck: savedSlots[i].duck ?? false,
       startPoint: savedSlots[i].startPoint ?? 0,
       stopPoint: savedSlots[i].stopPoint ?? null,
       fadeIn: savedSlots[i].fadeIn ?? 0,
@@ -97,6 +100,12 @@ export const useSoundStore = create((set, get) => ({
   globalFadeIn: savedGlobals.globalFadeIn ?? 0,   // fades per defecte de tots els cues
   globalFadeOut: savedGlobals.globalFadeOut ?? 0,
   cuesStopOthers: savedGlobals.cuesStopOthers ?? false, // Stop Others global per a tots els cues
+  // ── Ducking de la Playlist (híbrid: paràmetres globals + activador per cue) ──
+  duckEnabled: savedGlobals.duckEnabled ?? false,  // activa el ducking globalment
+  duckAmount: savedGlobals.duckAmount ?? 0.3,       // volum al qual baixa la playlist (factor lineal 0..1; 0.3 = 30%)
+  duckAttack: savedGlobals.duckAttack ?? 0.2,       // temps (s) de baixada en començar un cue de duck
+  duckRelease: savedGlobals.duckRelease ?? 0.8,     // temps (s) de recuperació quan no queda cap cue de duck
+  duckHold: savedGlobals.duckHold ?? 0,             // espera (s) abans de recuperar (0 = immediat)
   viewMode: 'grid',        // 'grid' (botonera 8×4) | 'list' (llista de files)
   editingSlot: null,       // id del slot obert a l'editor (o null)
   dragOverSlot: null,      // id del slot sota un drag&drop natiu (o null)
@@ -140,16 +149,43 @@ export const useSoundStore = create((set, get) => ({
   },
 
   persistGlobals: () => {
-    const { globalFadeIn, globalFadeOut, cuesStopOthers, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs } = get();
+    const {
+      globalFadeIn, globalFadeOut, cuesStopOthers, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold,
+    } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold,
     }));
   },
 
   // Stop Others global: en disparar qualsevol cue, atura la resta
   setCuesStopOthers: (on) => { set({ cuesStopOthers: !!on }); get().persistGlobals(); },
+
+  // Paràmetres globals del ducking. Reaplica el factor de duck al motor de la
+  // playlist (p. ex. canviar duckAmount mentre està duckejat, o desactivar-lo).
+  setDuckSettings: (patch) => {
+    set(patch);
+    get().persistGlobals();
+    duckRefresh(get);
+  },
+
+  // Activador per cue: marca/desmarca un slot com a cue de ducking. Si el cue
+  // ja sona i canvia l'estat, ajusta el comptador en calent.
+  setDuck: (slotId, on) => {
+    const slot = get().slots.find((s) => s.id === slotId);
+    const wasPlaying = slot && (slot.isPlaying || slot.pausedAt != null);
+    set((state) => ({
+      slots: state.slots.map((s) => (s.id === slotId ? { ...s, duck: !!on } : s)),
+    }));
+    if (wasPlaying) {
+      if (on) duckAdd(get, slotId);
+      else duckRemove(get, slotId);
+    }
+    get().persistSlots();
+  },
 
   // Retorna (o crea) el context d'un dispositiu de sortida per als cues.
   // El bus de Cues reutilitza l'audioContext principal.
@@ -379,6 +415,7 @@ export const useSoundStore = create((set, get) => ({
               loop: !!cfg.loop,
               color: cfg.color != null ? cfg.color : null,
               stopOthers: !!cfg.stopOthers,
+              duck: !!cfg.duck,
             }
           : s
       ),
@@ -430,6 +467,10 @@ export const useSoundStore = create((set, get) => ({
     const streaming = !!opts.streaming;
     // Allibera el blob URL anterior d'aquest slot (si n'hi havia)
     const prev = get().slots.find((s) => s.id === slotId);
+    // Si el slot previ sonava (o estava pausat), atura'l abans de reescriure'l:
+    // evita reproducció òrfena i que el seu id quedi penjat al comptador de duck.
+    if (prev && (prev.isPlaying || prev.pausedAt != null)) get().stopSlot(slotId);
+    if (prev && prev.duck) duckRemove(get, slotId);
     if (prev && prev.audioUrl && prev.audioUrl !== audioUrl) {
       try { URL.revokeObjectURL(prev.audioUrl); } catch { /* res */ }
     }
@@ -483,6 +524,11 @@ export const useSoundStore = create((set, get) => ({
         if (s.id !== slotId && (s.isPlaying || s.pausedAt != null)) get().stopSlot(s.id);
       });
     }
+
+    // Ducking: si aquest cue abaixa la playlist, incrementa el comptador.
+    // (Vàlid tant per a cues en buffer com en streaming; el decrement es fa a
+    // stopSlot / handleEnded / final natural de l'streaming.)
+    if (slot.duck) duckAdd(get, slotId);
 
     // Cue llarg en streaming: reproducció amb element <audio>
     if (slot.isStreaming) { csPlay(get, set, slotId); return; }
@@ -586,6 +632,8 @@ export const useSoundStore = create((set, get) => ({
   pauseSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !slot.isPlaying) return;
+    // En pausar deixa de sonar → deixa de duckejar (es reincrementa al resume)
+    if (slot.duck) duckRemove(get, slotId);
     if (slot.isStreaming) { csPause(get, set, slotId); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
     if (!ctx) return;
@@ -612,6 +660,8 @@ export const useSoundStore = create((set, get) => ({
   resumeSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot) || slot.pausedAt == null) return;
+    // Torna a sonar → torna a duckejar (si és un cue de duck)
+    if (slot.duck) duckAdd(get, slotId);
     if (slot.isStreaming) { csResume(get, set, slotId); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : (get().audioContext || get().initAudioContext());
 
@@ -711,6 +761,9 @@ export const useSoundStore = create((set, get) => ({
       if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id, true);
     });
     get().stopPreview();
+    // Seguretat: buida el comptador de ducking (recupera la playlist) per si
+    // hagués quedat algun id penjat
+    duckReset(get);
     set({ activeSlot: null });
   },
 
@@ -719,6 +772,8 @@ export const useSoundStore = create((set, get) => ({
   handleEnded: (slotId) => {
     const current = get().slots.find((s) => s.id === slotId);
     if (!current || !current.isPlaying) return;
+    // El cue ha acabat de forma natural: deixa de duckejar (si tocava)
+    if (current.duck) duckRemove(get, slotId);
     set((state) => ({
       slots: state.slots.map((s) =>
         s.id === slotId ? { ...s, isPlaying: false, sourceNode: null } : s
@@ -804,6 +859,9 @@ export const useSoundStore = create((set, get) => ({
     const slot = slots.find((s) => s.id === slotId);
     if (!slot) return;
 
+    // Si era un cue de ducking actiu, deixa de comptar
+    if (slot.duck) duckRemove(get, slotId);
+
     // Atura l'streaming (l'element <audio> no és un sourceNode)
     if (slot.isStreaming) csStop(get, set, slotId);
     if (slot.sourceNode) {
@@ -859,6 +917,8 @@ export const useSoundStore = create((set, get) => ({
     const slot = get().slots.find((s) => s.id === slotId);
     // Res a fer si ja està del tot aturat (sense source ni pausa)
     if (!slot || (!slot.sourceNode && slot.pausedAt == null && !slot.isPlaying)) return;
+    // Deixa de duckejar (el Set evita doble compte si ja no hi era)
+    if (slot.duck) duckRemove(get, slotId);
     if (slot.isStreaming) { csStop(get, set, slotId, fade); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : audioContext;
 
@@ -928,6 +988,7 @@ export const useSoundStore = create((set, get) => ({
       loop: s.loop,
       color: s.color,
       stopOthers: s.stopOthers,
+      duck: s.duck,
       startPoint: s.startPoint,
       stopPoint: s.stopPoint,
       fadeIn: s.fadeIn,

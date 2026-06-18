@@ -24,6 +24,8 @@ export function SlotEditor() {
   const updateSlotEdit = useSoundStore((s) => s.updateSlotEdit);
   const setLoop        = useSoundStore((s) => s.setLoop);
   const setColor       = useSoundStore((s) => s.setColor);
+  const setDuck        = useSoundStore((s) => s.setDuck);
+  const duckEnabled    = useSoundStore((s) => s.duckEnabled);
   const seekSlot       = useSoundStore((s) => s.seekSlot);
   const playSlot       = useSoundStore((s) => s.playSlot);
   const stopSlot       = useSoundStore((s) => s.stopSlot);
@@ -374,6 +376,17 @@ export function SlotEditor() {
             />
             Stop others (talla la resta de cues en disparar)
           </label>
+          <label className="editor-check">
+            <input
+              type="checkbox"
+              checked={!!slot.duck}
+              onChange={(e) => setDuck(editingSlot, e.target.checked)}
+            />
+            Ducking de la playlist (abaixa la playlist mentre sona)
+          </label>
+          {slot.duck && !duckEnabled && (
+            <div className="settings-note">El ducking està desactivat globalment (Settings → Playlist).</div>
+          )}
         </div>
 
         <div className="editor-colors">

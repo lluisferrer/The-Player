@@ -27,6 +27,13 @@ export function SettingsModal({ onClose }) {
   const crossfade = useSoundStore((s) => s.crossfade);
   const setCrossfade = useSoundStore((s) => s.setCrossfade);
 
+  const duckEnabled = useSoundStore((s) => s.duckEnabled);
+  const duckAmount  = useSoundStore((s) => s.duckAmount);
+  const duckAttack  = useSoundStore((s) => s.duckAttack);
+  const duckRelease = useSoundStore((s) => s.duckRelease);
+  const duckHold    = useSoundStore((s) => s.duckHold);
+  const setDuckSettings = useSoundStore((s) => s.setDuckSettings);
+
   const [outputs, setOutputs] = useState(null);
   const [diagError, setDiagError] = useState(null);
 
@@ -180,6 +187,52 @@ export function SettingsModal({ onClose }) {
                     onChange={(e) => setCrossfade(parseFloat(e.target.value) || 0)} /> s
                 </span>
               </label>
+
+              <div className="settings-subtitle">Ducking (abaixar la playlist sota els cues)</div>
+              <div className="editor-options">
+                <label className="editor-check">
+                  <input
+                    type="checkbox"
+                    checked={duckEnabled}
+                    onChange={(e) => setDuckSettings({ duckEnabled: e.target.checked })}
+                  />
+                  Activa el ducking
+                </label>
+              </div>
+              <label className="ps-row">
+                <span>Volum sota duck</span>
+                <span className="ps-cf">
+                  {/* Es mostra en % però es desa com a factor lineal 0..1 */}
+                  <input type="number" min="0" max="100" step="5"
+                    value={Math.round(duckAmount * 100)}
+                    onChange={(e) => {
+                      const pct = Math.max(0, Math.min(100, parseFloat(e.target.value) || 0));
+                      setDuckSettings({ duckAmount: pct / 100 });
+                    }} /> %
+                </span>
+              </label>
+              <label className="ps-row">
+                <span>Attack (baixada)</span>
+                <span className="ps-cf">
+                  <input type="number" min="0" max="10" step="0.1" value={duckAttack}
+                    onChange={(e) => setDuckSettings({ duckAttack: Math.max(0, parseFloat(e.target.value) || 0) })} /> s
+                </span>
+              </label>
+              <label className="ps-row">
+                <span>Release (recuperació)</span>
+                <span className="ps-cf">
+                  <input type="number" min="0" max="10" step="0.1" value={duckRelease}
+                    onChange={(e) => setDuckSettings({ duckRelease: Math.max(0, parseFloat(e.target.value) || 0) })} /> s
+                </span>
+              </label>
+              <label className="ps-row">
+                <span>Hold (espera abans de recuperar)</span>
+                <span className="ps-cf">
+                  <input type="number" min="0" max="10" step="0.1" value={duckHold}
+                    onChange={(e) => setDuckSettings({ duckHold: Math.max(0, parseFloat(e.target.value) || 0) })} /> s
+                </span>
+              </label>
+              <div className="settings-note">Cada cue activa el ducking des del seu editor (✎). La playlist baixa fins al volum indicat mentre soni algun cue de ducking i es recupera quan no en queda cap.</div>
             </>
           )}
         </div>

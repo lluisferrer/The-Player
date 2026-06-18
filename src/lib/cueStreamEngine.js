@@ -8,6 +8,7 @@
 // L'element <audio> descodifica sota demanda mentre reprodueix.
 
 import { effFadeIn, effFadeOut } from './slotAudio';
+import { duckRemove } from './playlistEngine';
 
 const active = new Map(); // slotId → { audio, g, startPoint, stopPoint, segDur }
 let previewEl = null;     // { audio, srcNode, gain }
@@ -68,6 +69,10 @@ function setStopped(set, slotId) {
 
 function onEnded(get, set, slotId) {
   killSlot(slotId);
+  // Final natural d'un cue en streaming: si duckejava, deixa de comptar.
+  // (El Set del motor de ducking evita doble compte si ja s'havia tret.)
+  const slot = get().slots.find((s) => s.id === slotId);
+  if (slot && slot.duck) duckRemove(get, slotId);
   set((state) => ({
     slots: state.slots.map((s) =>
       s.id === slotId
