@@ -14,6 +14,12 @@ export function CueTransport() {
     ? active.label.replace(/\.[^/.]+$/, '')
     : '—';
 
+  // Cue en espera (standby): el que es dispararà amb el proper GO
+  const standby = slots.find((s) => s.id === selectedSlot);
+  const standbyName = standby && standby.label
+    ? standby.label.replace(/\.[^/.]+$/, '')
+    : '—';
+
   return (
     <div className="cue-transport">
       <div className="cue-tp-buttons">
@@ -29,6 +35,8 @@ export function CueTransport() {
       </div>
 
       <div className="cue-now">
+        <span className="cue-now-label standby">EN ESPERA</span>
+        <span className="cue-now-name">{standbyName}</span>
         <span className="cue-now-label">SONANT</span>
         <span className="cue-now-name">{playingName}</span>
       </div>

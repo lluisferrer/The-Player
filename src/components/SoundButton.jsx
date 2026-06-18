@@ -178,7 +178,7 @@ export function SoundButton({ slotId }) {
 
   return (
     <div
-      className={`sound-button ${stateClass} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''}`}
+      className={`sound-button ${stateClass} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''}`}
       data-slot-id={slotId}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
@@ -187,6 +187,9 @@ export function SoundButton({ slotId }) {
       title={hasAudio ? slot.label : 'Arrossega un fitxer d\'àudio o clic dret per obrir'}
     >
       {slot.color && <div className="slot-color-bar" style={{ background: slot.color }} />}
+
+      {/* Indicador de standby: cue que es dispararà amb el proper GO */}
+      {isSelected && hasAudio && <span className="slot-standby-badge">NEXT</span>}
 
       {slot.loading && (
         <div className="slot-loading"><span className="slot-spinner" /></div>

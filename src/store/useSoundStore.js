@@ -40,6 +40,9 @@ const createEmptySlot = (id) => ({
   stopPoint: null,     // punt de stop (null = final del buffer)
   fadeIn: 0,           // fade in propi (0 = usa el fade in global)
   fadeOut: 0,          // fade out propi (0 = usa el fade out global)
+  // Seqüència estil QLab (mode GO)
+  preWait: 0,          // retard (s) entre prémer GO i que el cue soni
+  continueMode: 'none',// 'none' | 'auto' (auto-continue: dispara el següent tot seguit)
 });
 
 const loadPersistedSlots = () => {
@@ -67,6 +70,18 @@ const loadPlaylist = () => {
 const savedPlaylist = loadPlaylist();
 let plNextId = 1;
 let previewSource = null; // font activa del bus de preview (a nivell de mòdul)
+// Timers pendents de la seqüència GO (pre-wait i encadenament auto-continue).
+// A nivell de mòdul perquè els puguem cancel·lar des de stopAll o d'un GO nou.
+const goTimers = new Set();
+// Cues que formen part de la cadena auto-continue en curs: dins una cadena no
+// es tallen entre ells (Stop Others només actua sobre cues de FORA la cadena).
+// Només l'usa el camí de GO; els disparos manuals (teclat/clic) no el passen.
+const goChain = new Set();
+const clearGoTimers = () => {
+  for (const t of goTimers) clearTimeout(t);
+  goTimers.clear();
+  goChain.clear();
+};
 const cueCtxRegistry = new Map(); // deviceId → AudioContext (busos de color dels cues)
 if (Array.isArray(savedPlaylist.tracks)) {
   for (const t of savedPlaylist.tracks) if (t.id >= plNextId) plNextId = t.id + 1;
@@ -90,6 +105,8 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
       stopPoint: savedSlots[i].stopPoint ?? null,
       fadeIn: savedSlots[i].fadeIn ?? 0,
       fadeOut: savedSlots[i].fadeOut ?? 0,
+      preWait: savedSlots[i].preWait ?? 0,
+      continueMode: savedSlots[i].continueMode ?? 'none',
     };
   }
   return base;
@@ -416,6 +433,8 @@ export const useSoundStore = create((set, get) => ({
               color: cfg.color != null ? cfg.color : null,
               stopOthers: !!cfg.stopOthers,
               duck: !!cfg.duck,
+              preWait: cfg.preWait || 0,
+              continueMode: cfg.continueMode === 'auto' ? 'auto' : 'none',
             }
           : s
       ),
@@ -499,6 +518,9 @@ export const useSoundStore = create((set, get) => ({
               stopPoint: null,
               fadeIn: 0,
               fadeOut: 0,
+              // ...i les opcions de seqüència
+              preWait: 0,
+              continueMode: 'none',
             }
           : s
       ),
@@ -507,7 +529,7 @@ export const useSoundStore = create((set, get) => ({
     get().persistSlots();
   },
 
-  playSlot: (slotId) => {
+  playSlot: (slotId, opts = {}) => {
     const { slots, globalFadeIn, globalFadeOut, colorOutputs } = get();
     const slot = slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot)) return;
@@ -518,10 +540,13 @@ export const useSoundStore = create((set, get) => ({
       return;
     }
 
-    // "Stop others" del cue: atura la resta de cues que sonin
+    // "Stop others" del cue: atura la resta de cues que sonin, excepte els que
+    // formen part de la mateixa cadena auto-continue (opts.exemptIds).
     if (slot.stopOthers) {
+      const exempt = opts.exemptIds;
       slots.forEach((s) => {
-        if (s.id !== slotId && (s.isPlaying || s.pausedAt != null)) get().stopSlot(s.id);
+        if (s.id === slotId || (exempt && exempt.has(s.id))) return;
+        if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id);
       });
     }
 
@@ -616,8 +641,9 @@ export const useSoundStore = create((set, get) => ({
     }));
   },
 
-  // Re-dispara un slot des de l'inici (per la tecla del teclat)
-  triggerSlot: (slotId) => {
+  // Re-dispara un slot des de l'inici (per la tecla del teclat). opts es passa a
+  // playSlot (p. ex. exemptIds de la cadena auto-continue del GO).
+  triggerSlot: (slotId, opts = {}) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot)) return;
     if (slot.isPlaying) get().stopSlot(slotId);
@@ -625,7 +651,7 @@ export const useSoundStore = create((set, get) => ({
       slots: state.slots.map((s) => (s.id === slotId ? { ...s, pausedAt: null } : s)),
       selectedSlot: slotId,
     }));
-    get().playSlot(slotId);
+    get().playSlot(slotId, opts);
   },
 
   // Pausa: atura recordant la posició dins el segment
@@ -756,6 +782,10 @@ export const useSoundStore = create((set, get) => ({
   // Parada d'emergència de TOTS els cues, amb fade out (segons el fade-out
   // efectiu de cada cue; si és 0, tall sec).
   stopAll: () => {
+    // Cancel·la qualsevol seqüència GO pendent (pre-wait en curs o cadena
+    // auto-continue): si l'usuari prem Stop All mentre hi ha un disparo
+    // programat, no s'ha de disparar.
+    clearGoTimers();
     const { slots } = get();
     slots.forEach((s) => {
       if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id, true);
@@ -782,15 +812,61 @@ export const useSoundStore = create((set, get) => ({
     }));
   },
 
-  // GO: dispara el slot seleccionat i avança al següent cue amb àudio (dins la pàgina)
+  // Avança el standby al següent cue carregat (per id), travessant pàgines.
+  // Si surt de la pàgina actual, fa auto-flip de currentPage perquè el standby
+  // quedi visible. Si no hi ha cap cue carregat després, manté el standby.
+  advanceStandby: (fromId) => {
+    const { slots } = get();
+    const next = slots.find((s) => s.id > fromId && hasClip(s));
+    if (!next) return null;
+    const page = Math.floor((next.id - 1) / SLOTS_PER_PAGE);
+    set({ selectedSlot: next.id, currentPage: page });
+    return next.id;
+  },
+
+  // GO seqüencial estil QLab: dispara el standby (respectant el seu pre-wait),
+  // avança el standby al següent cue carregat (travessant pàgines), i si el cue
+  // disparat és auto-continue, encadena un GO sobre el nou standby.
+  //
+  // Cancel·lació: un GO manual nou cancel·la qualsevol seqüència pendent (pre-wait
+  // o cadena) abans d'iniciar-ne una de nova — comportament més predictible que
+  // ignorar-lo o encuar-lo. stopAll també la cancel·la.
   go: () => {
-    const { selectedSlot, slots, currentPage } = get();
+    clearGoTimers();
+    get()._goStep();
+  },
+
+  // Un pas de la seqüència (intern). No cancel·la timers: l'usa la cadena.
+  _goStep: () => {
+    const { selectedSlot, slots } = get();
     const sel = selectedSlot || 1;
     const slot = slots.find((s) => s.id === sel);
-    if (slot && hasClip(slot)) get().triggerSlot(sel);
-    const pageEnd = (currentPage + 1) * SLOTS_PER_PAGE;
-    const next = slots.find((s) => s.id > sel && s.id <= pageEnd && hasClip(s));
-    if (next) set({ selectedSlot: next.id });
+    if (!slot || !hasClip(slot)) return; // cap cue carregat al standby: GO no fa res
+
+    const continueMode = slot.continueMode;
+    const preWait = Math.max(0, slot.preWait || 0);
+
+    // Dispara el cue (immediat o després del pre-wait). Un cop disparat,
+    // avança el standby i, si cal, encadena.
+    const fire = () => {
+      // Afegeix aquest cue a la cadena ABANS de disparar-lo, perquè el seu
+      // Stop Others (si en té) no talli els cues anteriors de la mateixa cadena.
+      goChain.add(sel);
+      get().triggerSlot(sel, { exemptIds: goChain });
+      const nextId = get().advanceStandby(sel);
+      // Auto-continue: encadena sobre el nou standby. Evita bucles: només si
+      // el standby ha avançat de debò (nextId != null i != sel).
+      if (continueMode === 'auto' && nextId != null && nextId !== sel) {
+        get()._goStep();
+      }
+    };
+
+    if (preWait > 0) {
+      const t = setTimeout(() => { goTimers.delete(t); fire(); }, preWait * 1000);
+      goTimers.add(t);
+    } else {
+      fire();
+    }
   },
 
   // Salta a una posició (ratio 0..1 dins el segment) mentre el slot sona,
@@ -993,6 +1069,8 @@ export const useSoundStore = create((set, get) => ({
       stopPoint: s.stopPoint,
       fadeIn: s.fadeIn,
       fadeOut: s.fadeOut,
+      preWait: s.preWait,
+      continueMode: s.continueMode,
     }));
     localStorage.setItem('the-player-slots', JSON.stringify(data));
   },

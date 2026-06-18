@@ -387,6 +387,27 @@ export function SlotEditor() {
           {slot.duck && !duckEnabled && (
             <div className="settings-note">El ducking està desactivat globalment (Settings → Playlist).</div>
           )}
+          <label className="editor-check">
+            <input
+              type="checkbox"
+              checked={slot.continueMode === 'auto'}
+              onChange={(e) => updateSlotEdit(editingSlot, { continueMode: e.target.checked ? 'auto' : 'none' })}
+            />
+            Auto-continue (en disparar-se, dispara el cue següent tot seguit)
+          </label>
+          {/* Pre-wait: retard entre prémer GO i que el cue soni */}
+          <label className="editor-prewait">
+            <span>Pre-wait (s)</span>
+            <input
+              className="editor-fade-num"
+              type="number" min="0" step="0.1"
+              value={slot.preWait || 0}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                updateSlotEdit(editingSlot, { preWait: Math.max(0, isNaN(v) ? 0 : v) });
+              }}
+            />
+          </label>
         </div>
 
         <div className="editor-colors">

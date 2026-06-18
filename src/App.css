@@ -276,6 +276,11 @@ body {
   flex-shrink: 0;
 }
 
+/* Etiqueta del cue en espera (standby): verd, coherent amb el badge NEXT */
+.cue-now-label.standby {
+  color: var(--vu-green);
+}
+
 .cue-now-name {
   font-size: 13px;
   font-weight: 600;
@@ -746,6 +751,30 @@ body {
 .sound-button.selected {
   outline: 2px solid rgba(244, 244, 245, 0.85);
   outline-offset: -2px;
+}
+
+/* Standby (cue que es dispararà amb GO): contorn verd realçat + badge.
+   Conviu amb .selected; el verd distingeix el "proper a sonar" del cursor. */
+.sound-button.slot-standby {
+  outline: 2px solid var(--vu-green);
+  outline-offset: -2px;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.35);
+}
+
+.slot-standby-badge {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--bg-primary);
+  background: var(--vu-green);
+  border-radius: 3px;
+  padding: 1px 5px;
+  pointer-events: none;
 }
 
 /* Mode preview armat (Ctrl): contorn vermell a tots els cues amb àudio */
@@ -1355,6 +1384,15 @@ body {
   height: 15px;
   accent-color: var(--accent);
   cursor: pointer;
+}
+
+/* Pre-wait: etiqueta + camp numèric, alineat amb la resta d'opcions */
+.editor-prewait {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .editor-colors {
