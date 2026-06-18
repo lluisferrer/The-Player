@@ -5,6 +5,7 @@ import { useAudioEngine } from '../hooks/useAudioEngine';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { keyForSlot } from '../lib/keyMap';
 import { hasClip, slotDuration } from '../lib/slotAudio';
+import { getVideoThumb } from '../lib/videoThumb';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
 
@@ -28,6 +29,7 @@ export function SoundButton({ slotId }) {
   const [scrub, setScrub]   = useState(null);  // posició (ratio dins segment) mentre s'arrossega el playhead
   const [seeking, setSeeking] = useState(false);
   const [previewProg, setPreviewProg] = useState(0); // progrés del preview (0..1)
+  const [thumb, setThumb] = useState(null); // miniatura del cue de vídeo (dataURL)
   const scrubRef = useRef(null);
   const suppressClickRef = useRef(false); // evita que el click post-drag faci play/stop
   const waveRef = useRef(null);
@@ -110,6 +112,18 @@ export function SoundButton({ slotId }) {
   }, [isPreviewing, segDur, slot.loop]);
 
   const previewPlayheadPct = total ? ((startSec + previewProg * segDur) / total) * 100 : 0;
+
+  // Miniatura del cue de vídeo (async, en segon pla; de cau si ja existeix).
+  // No bloqueja la UI ni peta si el fitxer no existeix (retorna null).
+  useEffect(() => {
+    if (!isVideoCue || !slot.filePath) { setThumb(null); return; }
+    let cancel = false;
+    const seekAt = Math.max(0.1, slot.startPoint || 0);
+    getVideoThumb(slot.filePath, seekAt).then((url) => {
+      if (!cancel && url) setThumb(url);
+    });
+    return () => { cancel = true; };
+  }, [isVideoCue, slot.filePath, slot.startPoint]);
 
   const handleClick = (e) => {
     // Ignora el click immediatament posterior a arrossegar el playhead
@@ -221,9 +235,12 @@ export function SoundButton({ slotId }) {
       </div>
 
       {hasAudio && isVideoCue ? (
-        /* Cue de vídeo: placeholder senzill (la miniatura és Fase 4b).
+        /* Cue de vídeo: miniatura de fons (si n'hi ha) + badge "VÍDEO".
            Es reprodueix a la finestra de sortida, no per Web Audio. */
-        <div className="slot-body slot-video">
+        <div className={`slot-body slot-video ${thumb ? 'has-thumb' : ''}`}>
+          {thumb && (
+            <div className="slot-video-thumb" style={{ backgroundImage: `url(${thumb})` }} />
+          )}
           <div className="slot-video-badge">VÍDEO</div>
           <button
             className={`slot-edit-btn ${showHover ? 'visible' : ''}`}

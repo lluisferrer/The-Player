@@ -109,10 +109,10 @@ export async function toggleOutputWindow(monitorIndex = null) {
 // Tots protegits: si la finestra no està oberta, el disparo no peta (l'event
 // simplement no té cap oient).
 
-// Reprodueix un fitxer de vídeo des de startPoint (slotId per identificar el
-// cue quan la sortida informi que ha acabat sol)
-export async function emitVideoPlay(filePath, startPoint = 0, slotId = null) {
-  try { await emit('video-play', { filePath, startPoint: startPoint || 0, slotId }); }
+// Reprodueix un fitxer de vídeo entre startPoint i stopPoint (slotId per
+// identificar el cue quan la sortida informi que ha acabat o ha arribat al stop)
+export async function emitVideoPlay(filePath, startPoint = 0, stopPoint = null, slotId = null) {
+  try { await emit('video-play', { filePath, startPoint: startPoint || 0, stopPoint: stopPoint || 0, slotId }); }
   catch (e) { console.warn('video-play:', e); }
 }
 

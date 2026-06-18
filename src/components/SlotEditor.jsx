@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { useSoundStore } from '../store/useSoundStore';
 import { drawWavePathRange } from '../lib/waveformDraw';
 import { CUE_COLORS } from '../lib/colors';
-import { hasClip, slotDuration } from '../lib/slotAudio';
+import { hasClip, isVideo, slotDuration } from '../lib/slotAudio';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 
 const BG          = '#141416';
@@ -33,9 +34,13 @@ export function SlotEditor() {
   const canvasRef = useRef(null);
   const wrapRef   = useRef(null);
   const rulerRef  = useRef(null);
+  const videoRef  = useRef(null);   // <video> de previsualització (cues de vídeo)
   const [dragging, setDragging] = useState(null); // 'start' | 'stop' | 'playhead' | null
   const [playScrub, setPlayScrub] = useState(null);
   const playScrubRef = useRef(null);
+  // Previsualització del vídeo a l'editor (independent de la sortida)
+  const [vidPlaying, setVidPlaying] = useState(false);
+  const [vidTime, setVidTime] = useState(0); // segon actual del <video> de preview
   // Evita que el click sintètic en deixar anar el playhead fora del panell tanqui l'editor
   const suppressCloseRef = useRef(false);
 
@@ -46,6 +51,7 @@ export function SlotEditor() {
   const { progress } = usePlaybackTime(slot);
 
   const hasAudio = hasClip(slot);
+  const isVid    = isVideo(slot);
   const total    = hasAudio ? slotDuration(slot) : 0;
   const start    = hasAudio ? Math.max(0, slot.startPoint || 0) : 0;
   const stop     = hasAudio ? (slot.stopPoint ?? total) : 0;
@@ -77,27 +83,33 @@ export function SlotEditor() {
       canvas.width  = Math.round(w * dpr);
       canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
 
-      ctx.fillStyle = BG;
-      ctx.fillRect(0, 0, w, h);
-
-      const data = slot.audioBuffer ? slot.audioBuffer.getChannelData(0) : slot.peaks;
-      if (data && data.length) {
-        const len = data.length;
-        const a = viewClamped * len;
-        const b = (viewClamped + span) * len;
-        drawWavePathRange(ctx, data, a, b, w, h, WAVE_COLOR);
+      if (isVid) {
+        // Cue de vídeo: el canvas és transparent (només marcadors/fades) i el
+        // <video> de previsualització es veu a sota; no es dibuixa forma d'ona.
       } else {
-        // Streaming sense pics encara
-        ctx.strokeStyle = WAVE_COLOR;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, h / 2 + 0.5); ctx.lineTo(w, h / 2 + 0.5);
-        ctx.stroke();
-        ctx.fillStyle = '#52525b';
-        ctx.font = '11px "JetBrains Mono", monospace';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('STREAMING — generant forma d\'ona…', 10, h / 2 - 12);
+        ctx.fillStyle = BG;
+        ctx.fillRect(0, 0, w, h);
+
+        const data = slot.audioBuffer ? slot.audioBuffer.getChannelData(0) : slot.peaks;
+        if (data && data.length) {
+          const len = data.length;
+          const a = viewClamped * len;
+          const b = (viewClamped + span) * len;
+          drawWavePathRange(ctx, data, a, b, w, h, WAVE_COLOR);
+        } else {
+          // Streaming sense pics encara
+          ctx.strokeStyle = WAVE_COLOR;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, h / 2 + 0.5); ctx.lineTo(w, h / 2 + 0.5);
+          ctx.stroke();
+          ctx.fillStyle = '#52525b';
+          ctx.font = '11px "JetBrains Mono", monospace';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('STREAMING — generant forma d\'ona…', 10, h / 2 - 12);
+        }
       }
 
       const xStart = tToX(start, w);
@@ -140,7 +152,7 @@ export function SlotEditor() {
     const ro = new ResizeObserver(draw);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [hasAudio, slot, total, start, stop, fadeIn, fadeOut, segDur, zoom, viewClamped, span, globalFadeIn, globalFadeOut]);
+  }, [hasAudio, isVid, slot, total, start, stop, fadeIn, fadeOut, segDur, zoom, viewClamped, span, globalFadeIn, globalFadeOut]);
 
   // ─── Regla de temps (finestra visible) ───
   useEffect(() => {
@@ -259,6 +271,11 @@ export function SlotEditor() {
         const r = segDur > 0 ? Math.min(1, Math.max(0, (t - start) / segDur)) : 0;
         playScrubRef.current = r;
         setPlayScrub(r);
+        // Scrubbing del vídeo de previsualització: mou el currentTime en directe
+        if (isVid && videoRef.current) {
+          try { videoRef.current.currentTime = Math.min(total, Math.max(0, t)); }
+          catch { /* el vídeo encara no està a punt */ }
+        }
       }
     };
     const onUp = (e) => {
@@ -288,7 +305,51 @@ export function SlotEditor() {
       window.removeEventListener('pointerup', onUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dragging, start, stop, total, segDur, editingSlot, viewClamped, span, zoom]);
+  }, [dragging, isVid, start, stop, total, segDur, editingSlot, viewClamped, span, zoom]);
+
+  // ─── Sincronització del <video> de previsualització ───
+  useEffect(() => {
+    if (!isVid) return;
+    const v = videoRef.current;
+    if (!v) return;
+    const onTime  = () => {
+      setVidTime(v.currentTime || 0);
+      // Atura la previsualització en arribar al punt de stop del clip
+      if (!v.paused && v.currentTime >= stop) { try { v.pause(); } catch { /* res */ } }
+    };
+    const onPlay  = () => setVidPlaying(true);
+    const onPause = () => setVidPlaying(false);
+    v.addEventListener('timeupdate', onTime);
+    v.addEventListener('play', onPlay);
+    v.addEventListener('pause', onPause);
+    v.addEventListener('ended', onPause);
+    return () => {
+      v.removeEventListener('timeupdate', onTime);
+      v.removeEventListener('play', onPlay);
+      v.removeEventListener('pause', onPause);
+      v.removeEventListener('ended', onPause);
+    };
+  }, [isVid, editingSlot, start, stop]);
+
+  // En canviar de slot, reseteja l'estat del playhead del vídeo (evita que es
+  // dibuixi a la posició del slot anterior) i atura la previsualització.
+  useEffect(() => {
+    setVidTime(0);
+    setVidPlaying(false);
+    return () => { try { videoRef.current && videoRef.current.pause(); } catch { /* res */ } };
+  }, [editingSlot]);
+
+  const toggleVideoPreview = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      // Comença pel punt d'inici si estem fora del segment (o al final)
+      if (v.currentTime < start || v.currentTime >= stop - 0.05) {
+        try { v.currentTime = start; } catch { /* res */ }
+      }
+      v.play().catch(() => { /* autoplay bloquejat */ });
+    } else v.pause();
+  };
 
   if (!editingSlot || !hasAudio) return null;
 
@@ -307,10 +368,16 @@ export function SlotEditor() {
 
   const label = slot.label || `Slot ${editingSlot}`;
 
+  // Posició del playhead. Per a vídeo es deriva del temps real del <video> de
+  // preview (segons absoluts); per a àudio, del progrés dins el segment.
   const headRatio = playScrub != null ? playScrub : progress;
-  const playheadTime = start + Math.min(1, Math.max(0, headRatio)) * segDur;
+  const playheadTime = isVid
+    ? (playScrub != null ? start + Math.min(1, Math.max(0, playScrub)) * segDur : vidTime)
+    : start + Math.min(1, Math.max(0, headRatio)) * segDur;
   const playheadPct = total ? (((playheadTime / total) - viewClamped) / span) * 100 : 0;
-  const showPlayhead = (slot.isPlaying || playScrub != null) && playheadPct >= 0 && playheadPct <= 100;
+  const showPlayhead = isVid
+    ? (vidPlaying || playScrub != null) && playheadPct >= 0 && playheadPct <= 100
+    : (slot.isPlaying || playScrub != null) && playheadPct >= 0 && playheadPct <= 100;
 
   // Posició del scrollbar de pan (0..1)
   const scrollPos = viewMax > 0 ? viewClamped / viewMax : 0;
@@ -341,6 +408,17 @@ export function SlotEditor() {
           onPointerDown={handlePointerDown}
           onWheel={handleWheel}
         >
+          {/* Cue de vídeo: <video> de previsualització a la zona de l'ona.
+              Pot tenir so (és la finestra principal, no la sortida). */}
+          {isVid && slot.filePath && (
+            <video
+              ref={videoRef}
+              className="editor-video"
+              src={convertFileSrc(slot.filePath)}
+              preload="auto"
+              playsInline
+            />
+          )}
           <canvas ref={canvasRef} className="editor-canvas" />
           {showPlayhead && (
             <div
@@ -483,8 +561,31 @@ export function SlotEditor() {
             ⟳ Loop
           </button>
           <span className="editor-actions-spacer" />
-          <button className="editor-btn primary" onClick={() => playSlot(editingSlot)}>▶ Preview</button>
-          <button className="editor-btn" onClick={() => stopSlot(editingSlot, true)}>■ Stop</button>
+          {isVid ? (
+            /* Vídeo: preview a la pròpia finestra (el <video> de l'editor),
+               no a la sortida. Play/pausa i reinici al punt d'inici. */
+            <>
+              <button className="editor-btn primary" onClick={toggleVideoPreview}>
+                {vidPlaying ? '❚❚ Pausa' : '▶ Preview'}
+              </button>
+              <button
+                className="editor-btn"
+                onClick={() => {
+                  const v = videoRef.current;
+                  if (!v) return;
+                  v.pause();
+                  try { v.currentTime = start; } catch { /* res */ }
+                }}
+              >
+                ■ Stop
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="editor-btn primary" onClick={() => playSlot(editingSlot)}>▶ Preview</button>
+              <button className="editor-btn" onClick={() => stopSlot(editingSlot, true)}>■ Stop</button>
+            </>
+          )}
           <button className="editor-btn" onClick={handleReset}>Reset</button>
           <button className="editor-btn" onClick={handleClose}>Tancar</button>
         </div>

@@ -519,7 +519,9 @@ export const useSoundStore = create((set, get) => ({
               audioUrl,
               audioBuffer,
               isStreaming: streaming,
-              streamDuration: streaming ? (opts.duration || 0) : 0,
+              // Durada de les metadades: per streaming d'àudio i també per als
+              // cues de vídeo (perquè slotDuration() i l'editor tinguin timeline).
+              streamDuration: (streaming || mediaType === 'video') ? (opts.duration || 0) : 0,
               peaks: null,
               gainNode: null,
               fadeGainNode: null,
@@ -569,7 +571,7 @@ export const useSoundStore = create((set, get) => ({
     // Emet l'event video-play; si la finestra no està oberta, no passa res.
     // Marquem isPlaying perquè el tile/transport ho reflecteixin.
     if (isVideo(slot)) {
-      emitVideoPlay(slot.filePath, slot.startPoint || 0, slotId);
+      emitVideoPlay(slot.filePath, slot.startPoint || 0, slot.stopPoint || 0, slotId);
       set((state) => ({
         slots: state.slots.map((s) =>
           s.id === slotId ? { ...s, isPlaying: true, pausedAt: null } : s

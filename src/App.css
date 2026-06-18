@@ -938,7 +938,18 @@ body {
   justify-content: center;
 }
 
+/* Miniatura de fons del cue de vídeo (fotograma capturat, object-fit: cover) */
+.slot-video-thumb {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  border-radius: 3px;
+}
+
 .slot-video-badge {
+  position: relative;   /* per sobre de la miniatura */
+  z-index: 1;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -946,6 +957,19 @@ body {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 4px 10px;
+}
+
+/* Amb miniatura: badge més petit i discret a sobre del fotograma */
+.slot-video.has-thumb .slot-video-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  padding: 1px 5px;
+  color: var(--text-primary);
+  background: rgba(10, 10, 12, 0.65);
+  border-color: rgba(244, 244, 245, 0.25);
 }
 
 .slot-playing .slot-video-badge {
@@ -1350,6 +1374,17 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* <video> de previsualització a l'editor (cues de vídeo), sota la capa de
+   marcadors/playhead. object-fit: contain per veure tot el fotograma. */
+.editor-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
 }
 
 /* Barra de desplaçament (pan) del zoom de l'editor */

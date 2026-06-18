@@ -14,6 +14,9 @@ import './VideoOutput.css';
 export function VideoOutput() {
   const videoRef = useRef(null);
   const currentSlot = useRef(null);        // slotId del vídeo en curs (per informar del final)
+  // Punts in/out del cue actual (en segons). En una ref perquè estiguin
+  // disponibles a onLoadedMetadata encara que el <video> es munti després.
+  const playInfo = useRef({ startPoint: 0, stopPoint: 0 });
   const [src, setSrc] = useState(null);   // URL convertida del fitxer (o null = negre)
 
   useEffect(() => {
@@ -28,13 +31,11 @@ export function VideoOutput() {
 
     (async () => {
       unlisteners.push(await listen('video-play', (e) => {
-        const { filePath, startPoint, slotId } = e.payload || {};
+        const { filePath, startPoint, stopPoint, slotId } = e.payload || {};
         if (!filePath) return;
         currentSlot.current = slotId ?? null;
+        playInfo.current = { startPoint: startPoint || 0, stopPoint: stopPoint || 0 };
         setSrc(convertFileSrc(filePath));
-        // El seek a startPoint es fa quan el vídeo té metadades (onLoadedMetadata)
-        const v = videoRef.current;
-        if (v) v.dataset.startPoint = String(startPoint || 0);
       }));
       unlisteners.push(await listen('video-stop', black));
       unlisteners.push(await listen('video-black', black));
@@ -47,13 +48,20 @@ export function VideoOutput() {
   const handleLoaded = () => {
     const v = videoRef.current;
     if (!v) return;
-    const sp = parseFloat(v.dataset.startPoint || '0');
+    const sp = playInfo.current.startPoint;
     if (sp > 0 && isFinite(sp)) { try { v.currentTime = sp; } catch { /* res */ } }
     v.play().catch(() => { /* l'autoplay pot fallar fins a la interacció */ });
   };
 
-  // Final natural del vídeo: torna a negre i informa la finestra principal
-  // perquè reseteji l'estat del cue (isPlaying/activeSlot)
+  // Vigila el punt de stop: en arribar-hi, atura com si hagués acabat
+  const handleTimeUpdate = () => {
+    const v = videoRef.current;
+    const sp = playInfo.current.stopPoint;
+    if (v && sp > 0 && v.currentTime >= sp) handleEnded();
+  };
+
+  // Final (natural o per punt de stop): torna a negre i informa la finestra
+  // principal perquè reseteji l'estat del cue (isPlaying/activeSlot)
   const handleEnded = () => {
     const id = currentSlot.current;
     currentSlot.current = null;
@@ -69,6 +77,7 @@ export function VideoOutput() {
           className="video-output-el"
           src={src}
           onLoadedMetadata={handleLoaded}
+          onTimeUpdate={handleTimeUpdate}
           onEnded={handleEnded}
           onError={(e) => console.warn('[output] error de vídeo', e?.currentTarget?.error)}
           autoPlay

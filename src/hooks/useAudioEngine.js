@@ -29,6 +29,30 @@ function probeDuration(src) {
   });
 }
 
+// Llegeix la durada d'un vídeo amb un <video> temporal (només metadades).
+// Cal perquè slotDuration() retorni durada i l'editor tingui timeline.
+function probeVideoDuration(src) {
+  return new Promise((resolve) => {
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.muted = true;
+    let settled = false;
+    const done = (d) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      v.removeAttribute('src'); v.load();
+      resolve(Number.isFinite(d) ? d : 0);
+    };
+    // Marge de seguretat: si no arriben metadades (còdec no suportat, fitxer
+    // corrupte), no deixis el slot penjat carregant per sempre.
+    const timer = setTimeout(() => done(0), 8000);
+    v.addEventListener('loadedmetadata', () => done(v.duration), { once: true });
+    v.addEventListener('error', () => done(0), { once: true });
+    v.src = src;
+  });
+}
+
 export function useAudioEngine() {
   const initAudioContext = useSoundStore((s) => s.initAudioContext);
   const loadAudio = useSoundStore((s) => s.loadAudio);
@@ -70,10 +94,15 @@ export function useAudioEngine() {
   const decodeAndLoad = async (slotId, file) => {
     setSlotLoading(slotId, true);
     try {
-      // Cue de vídeo (per nom de fitxer): no es descodifica àudio
+      // Cue de vídeo (per nom de fitxer): no es descodifica àudio. Es llegeix
+      // la durada amb un <video> temporal perquè l'editor tingui timeline.
       if (VIDEO_EXT.test(file.name || '')) {
         const url = URL.createObjectURL(file);
-        loadAudio(slotId, file, null, url, null, { mediaType: 'video' });
+        const vdur = await probeVideoDuration(url);
+        loadAudio(slotId, file, null, url, null, {
+          mediaType: 'video',
+          duration: isFinite(vdur) ? vdur : 0,
+        });
         return;
       }
       const url = URL.createObjectURL(file);
@@ -100,9 +129,15 @@ export function useAudioEngine() {
     setSlotLoading(slotId, true);
     try {
       // Cue de vídeo: no es descodifica àudio; el reproduirà la finestra de
-      // sortida. Es desa la ruta i es marca mediaType 'video'.
+      // sortida. Es desa la ruta, es marca mediaType 'video' i es llegeix la
+      // durada amb un <video> temporal (perquè l'editor tingui timeline).
       if (VIDEO_EXT.test(path)) {
-        loadAudio(slotId, { name: basename(path) }, null, null, path, { mediaType: 'video' });
+        const vsrc = convertFileSrc(path);
+        const vdur = await probeVideoDuration(vsrc);
+        loadAudio(slotId, { name: basename(path) }, null, null, path, {
+          mediaType: 'video',
+          duration: isFinite(vdur) ? vdur : 0,
+        });
         return;
       }
       const src = convertFileSrc(path);
