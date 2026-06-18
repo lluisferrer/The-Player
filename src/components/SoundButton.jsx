@@ -64,12 +64,20 @@ export function SoundButton({ slotId }) {
       scrubRef.current = segRatio;
       setScrub(segRatio);
     };
-    const onUp = () => {
+    const onUp = (e) => {
+      // Només fa el salt si es deixa anar dins del rectangle de l'ona;
+      // si es deixa anar fora del cue, cancel·la (no salta ni atura)
+      const wrap = waveRef.current;
+      let inside = false;
+      if (wrap) {
+        const r = wrap.getBoundingClientRect();
+        inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      }
       const v = scrubRef.current;
       setSeeking(false);
       setScrub(null);
       scrubRef.current = null;
-      if (v != null) seekSlot(slotId, v);
+      if (inside && v != null) seekSlot(slotId, v);
       // Neteja el flag després que s'hagi disparat (i ignorat) el click del botó
       setTimeout(() => { suppressClickRef.current = false; }, 0);
     };

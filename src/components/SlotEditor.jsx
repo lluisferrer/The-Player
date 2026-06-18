@@ -34,6 +34,8 @@ export function SlotEditor() {
   const [dragging, setDragging] = useState(null); // 'start' | 'stop' | 'playhead' | null
   const [playScrub, setPlayScrub] = useState(null);
   const playScrubRef = useRef(null);
+  // Evita que el click sintètic en deixar anar el playhead fora del panell tanqui l'editor
+  const suppressCloseRef = useRef(false);
 
   // Zoom de viewport: 'zoom' = factor, 'view' = rati (0..1) del marge esquerre
   const [zoom, setZoom] = useState(1);
@@ -191,6 +193,7 @@ export function SlotEditor() {
 
   // ─── Accions ───
   const handleClose = () => {
+    if (suppressCloseRef.current) return;
     stopSlot(editingSlot);
     useSoundStore.getState().persistSlots();
     setEditingSlot(null);
@@ -256,12 +259,23 @@ export function SlotEditor() {
         setPlayScrub(r);
       }
     };
-    const onUp = () => {
+    const onUp = (e) => {
       if (dragging === 'playhead') {
+        // Només fa el salt si es deixa anar dins del rectangle de l'ona;
+        // si es deixa anar fora, cancel·la (no salta ni atura)
+        const wrap = wrapRef.current;
+        let inside = false;
+        if (wrap) {
+          const r = wrap.getBoundingClientRect();
+          inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+        }
         const v = playScrubRef.current;
         playScrubRef.current = null;
         setPlayScrub(null);
-        if (v != null) seekSlot(editingSlot, v);
+        if (inside && v != null) seekSlot(editingSlot, v);
+        // Bloqueja el click que l'overlay rebria en deixar anar fora del panell
+        suppressCloseRef.current = true;
+        setTimeout(() => { suppressCloseRef.current = false; }, 0);
       }
       setDragging(null);
     };
