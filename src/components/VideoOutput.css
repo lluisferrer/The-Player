@@ -1,0 +1,34 @@
+/* Finestra de sortida de vídeo: fons negre a tota la pantalla */
+.video-output {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  background: #000;
+  overflow: hidden;
+  cursor: none; /* sense cursor a la pantalla de projecció */
+}
+
+/* El vídeo s'ajusta dins el negre sense retallar (object-fit: contain) */
+.video-output-el {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+/* Pantalla d'espera (sense vídeo): text tènue centrat sobre negre */
+.video-output-idle {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #3a3a3a;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  letter-spacing: 0.15em;
+}

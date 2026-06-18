@@ -260,6 +260,16 @@ body {
   color: #fff !important;
 }
 
+/* Negre (go to black): posa la sortida de vídeo en negre */
+.cue-black {
+  color: var(--text-secondary) !important;
+}
+
+.cue-black:hover {
+  background: #000 !important;
+  color: var(--text-primary) !important;
+}
+
 .cue-now {
   display: flex;
   align-items: center;
@@ -919,6 +929,28 @@ body {
   display: flex;
   gap: 4px;
   min-height: 0;
+}
+
+/* Cos d'un cue de vídeo: placeholder centrat (sense forma d'ona) */
+.slot-body.slot-video {
+  position: relative;
+  align-items: center;
+  justify-content: center;
+}
+
+.slot-video-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+
+.slot-playing .slot-video-badge {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .slot-waveform {
@@ -1685,6 +1717,26 @@ body {
 .library-btn:hover {
   background: var(--bg-button-hover);
   border-color: var(--accent);
+}
+
+/* Botó VÍDEO actiu: finestra de sortida oberta */
+.library-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Selector de monitor de sortida (capçalera) */
+.monitor-select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-button);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .library-panel {

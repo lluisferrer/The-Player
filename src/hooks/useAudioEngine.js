@@ -8,6 +8,10 @@ import { getCachedPeaks, putCachedPeaks } from '../lib/peakCache';
 //   > 60s → STREAMING amb <audio> (càrrega quasi instantània, RAM mínima)
 const STREAM_THRESHOLD = 60;
 
+// Extensions de vídeo: aquests cues no es descodifiquen a AudioBuffer; es
+// reprodueixen a la finestra de sortida (vegeu videoOutput.js i la Fase 4a).
+const VIDEO_EXT = /\.(mp4|webm|m4v|mov)$/i;
+
 // Nom de fitxer a partir d'una ruta (Windows o Unix)
 function basename(path) {
   return path.split(/[\\/]/).pop() || path;
@@ -66,6 +70,12 @@ export function useAudioEngine() {
   const decodeAndLoad = async (slotId, file) => {
     setSlotLoading(slotId, true);
     try {
+      // Cue de vídeo (per nom de fitxer): no es descodifica àudio
+      if (VIDEO_EXT.test(file.name || '')) {
+        const url = URL.createObjectURL(file);
+        loadAudio(slotId, file, null, url, null, { mediaType: 'video' });
+        return;
+      }
       const url = URL.createObjectURL(file);
       const dur = await probeDuration(url);
       if (isFinite(dur) && dur > STREAM_THRESHOLD) {
@@ -89,6 +99,12 @@ export function useAudioEngine() {
   const loadFromPath = async (slotId, path) => {
     setSlotLoading(slotId, true);
     try {
+      // Cue de vídeo: no es descodifica àudio; el reproduirà la finestra de
+      // sortida. Es desa la ruta i es marca mediaType 'video'.
+      if (VIDEO_EXT.test(path)) {
+        loadAudio(slotId, { name: basename(path) }, null, null, path, { mediaType: 'video' });
+        return;
+      }
       const src = convertFileSrc(path);
       const dur = await probeDuration(src);
       if (isFinite(dur) && dur > STREAM_THRESHOLD) {

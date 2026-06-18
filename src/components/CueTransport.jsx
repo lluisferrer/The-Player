@@ -1,5 +1,6 @@
-import { SkipBack, SkipForward, Play, Square } from 'lucide-react';
+import { SkipBack, SkipForward, Play, Square, MonitorOff } from 'lucide-react';
 import { useSoundStore } from '../store/useSoundStore';
+import { emitVideoBlack } from '../lib/videoOutput';
 
 // Barra de transport per als cues (sobre la botonera)
 export function CueTransport() {
@@ -31,6 +32,9 @@ export function CueTransport() {
         <button onClick={() => stopSlot(selectedSlot, true)} title="Stop del cue seleccionat"><Square size={16} fill="currentColor" /></button>
         <button className="cue-stop-all" onClick={() => stopAll()} title="Stop ALL (pànic)">
           <Square size={16} fill="currentColor" /> ALL
+        </button>
+        <button className="cue-black" onClick={() => emitVideoBlack()} title="Negre: posa la sortida de vídeo en negre">
+          <MonitorOff size={16} /> NEGRE
         </button>
       </div>
 

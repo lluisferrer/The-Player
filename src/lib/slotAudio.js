@@ -1,9 +1,15 @@
 // Utilitats per tractar slots tant si tenen AudioBuffer (cues curts, ≤60s) com
 // si són en STREAMING (cues llargs, >60s, reproduïts amb un element <audio>).
 
-// Un slot té clip carregat si té buffer descodificat o és en streaming
+// Un slot té clip carregat si té buffer descodificat, és en streaming, o és un
+// cue de vídeo (es reprodueix a la finestra de sortida, sense buffer d'àudio).
 export function hasClip(slot) {
-  return !!(slot && (slot.audioBuffer || slot.isStreaming));
+  return !!(slot && (slot.audioBuffer || slot.isStreaming || slot.mediaType === 'video'));
+}
+
+// Un slot és un cue de vídeo (es disparta a la finestra de sortida)
+export function isVideo(slot) {
+  return !!(slot && slot.mediaType === 'video');
 }
 
 // Durada total del fitxer (segons), vingui del buffer o de les metadades

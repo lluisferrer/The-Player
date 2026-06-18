@@ -11,9 +11,14 @@ import { PlaylistSave } from './components/PlaylistSave';
 import { SettingsModal } from './components/SettingsModal';
 import { slotForKey } from './lib/keyMap';
 import { hasClip } from './lib/slotAudio';
+import { toggleOutputWindow, isOutputOpen, getOutputWindow } from './lib/videoOutput';
+import { availableMonitors } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 import './App.css';
 
-const AUDIO_EXT = /\.(mp3|wav|ogg|flac)$/i;
+// Extensions acceptades pels cues: àudio i vídeo (els de vídeo van a la
+// finestra de sortida; vegeu useAudioEngine + videoOutput.js)
+const MEDIA_EXT = /\.(mp3|wav|ogg|flac|mp4|webm|m4v|mov)$/i;
 
 // Slot (data-slot-id) sota una posició física del drag&drop natiu
 function slotAtPosition(position) {
@@ -32,6 +37,9 @@ export default function App() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showSave, setShowSave] = useState(false);
+  const [outputOpen, setOutputOpen] = useState(false); // estat de la finestra de sortida
+  const [monitors, setMonitors] = useState([]);        // monitors disponibles (per al selector)
+  const [monitorIdx, setMonitorIdx] = useState(null);  // monitor de destí escollit (null = auto)
 
   useEffect(() => {
     const loadDevices = async () => {
@@ -49,6 +57,48 @@ export default function App() {
     navigator.mediaDevices.addEventListener('devicechange', loadDevices);
     return () => navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
   }, [setAudioDevices]);
+
+  // Monitors disponibles (per al selector de la finestra de sortida) i estat
+  // inicial de la finestra output (per si ja estigués oberta).
+  useEffect(() => {
+    (async () => {
+      try { setMonitors(await availableMonitors()); } catch { /* sense API de monitors */ }
+      try { setOutputOpen(await isOutputOpen()); } catch { /* res */ }
+    })();
+  }, []);
+
+  // Obre/tanca la finestra de sortida de vídeo i en sincronitza l'estat del botó
+  const handleToggleOutput = async () => {
+    try {
+      const open = await toggleOutputWindow(monitorIdx);
+      setOutputOpen(open);
+      // Si s'ha tancat (o l'usuari la tanca des de la pròpia finestra),
+      // reflecteix-ho i reseteja els cues de vídeo que quedessin marcats
+      const w = await getOutputWindow();
+      if (w) {
+        w.once('tauri://destroyed', () => {
+          setOutputOpen(false);
+          useSoundStore.getState().clearVideoCues();
+        });
+      }
+    } catch (e) {
+      console.warn('No s\'ha pogut commutar la finestra de sortida:', e);
+    }
+  };
+
+  // La finestra de sortida informa quan un vídeo acaba sol → reseteja el cue
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('video-ended', (e) => {
+          const id = e.payload && e.payload.slotId;
+          if (id != null) useSoundStore.getState().handleVideoEnded(id);
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
 
   // En arrencar: recarrega els cues des de disc (per la ruta desada) i neteja
   // els fantasmes vells (nom sense ruta) perquè no quedin noms penjats.
@@ -160,7 +210,7 @@ export default function App() {
             setDragOverSlot(null);
             const startSlot = slotAtPosition(p.position);
             if (!startSlot) return;
-            const paths = (p.paths || []).filter((p2) => AUDIO_EXT.test(p2));
+            const paths = (p.paths || []).filter((p2) => MEDIA_EXT.test(p2));
             const pageEnd = (Math.floor((startSlot - 1) / 32) + 1) * 32; // no vessar de pàgina
             for (let i = 0; i < paths.length && startSlot + i <= pageEnd; i++) {
               try { await loadFromPath(startSlot + i, paths[i]); }
@@ -197,6 +247,28 @@ export default function App() {
               PLAYLIST
             </button>
           </div>
+
+          {/* Selector de monitor de destí (només si n'hi ha més d'un) */}
+          {monitors.length > 1 && (
+            <select
+              className="monitor-select"
+              value={monitorIdx == null ? 'auto' : String(monitorIdx)}
+              onChange={(e) => setMonitorIdx(e.target.value === 'auto' ? null : Number(e.target.value))}
+              title="Monitor de sortida de vídeo"
+            >
+              <option value="auto">Monitor auto</option>
+              {monitors.map((m, i) => (
+                <option key={i} value={i}>{m.name || `Monitor ${i + 1}`}</option>
+              ))}
+            </select>
+          )}
+          <button
+            className={`library-btn ${outputOpen ? 'active' : ''}`}
+            onClick={handleToggleOutput}
+            title="Obre/tanca la finestra de sortida de vídeo"
+          >
+            VÍDEO
+          </button>
 
           <button className="library-btn" onClick={() => setShowSave(true)}>FILES</button>
           <button className="library-btn" onClick={() => setShowSettings(true)}>SETTINGS</button>

@@ -25,6 +25,7 @@ export function useLibrary() {
         id: s.id,
         filePath: s.filePath,
         label: s.label,
+        mediaType: s.mediaType,
         volume: s.volume,
         startPoint: s.startPoint,
         stopPoint: s.stopPoint,

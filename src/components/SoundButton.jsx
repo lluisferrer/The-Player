@@ -33,6 +33,7 @@ export function SoundButton({ slotId }) {
   const waveRef = useRef(null);
 
   const hasAudio  = hasClip(slot);
+  const isVideoCue = slot.mediaType === 'video';
   const isStreaming = slot.isStreaming;
   const isPlaying = slot.isPlaying;
 
@@ -125,7 +126,7 @@ export function SoundButton({ slotId }) {
     try {
       const path = await open({
         multiple: false,
-        filters: [{ name: 'Àudio', extensions: ['mp3', 'wav', 'ogg', 'flac'] }],
+        filters: [{ name: 'Mèdia', extensions: ['mp3', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov'] }],
       });
       if (path) await loadFromPath(slotId, path);
     } catch (err) {
@@ -219,7 +220,20 @@ export function SoundButton({ slotId }) {
         {keyLabel && <span className="slot-key" title={`Tecla: ${keyLabel}`}>{keyLabel}</span>}
       </div>
 
-      {hasAudio ? (
+      {hasAudio && isVideoCue ? (
+        /* Cue de vídeo: placeholder senzill (la miniatura és Fase 4b).
+           Es reprodueix a la finestra de sortida, no per Web Audio. */
+        <div className="slot-body slot-video">
+          <div className="slot-video-badge">VÍDEO</div>
+          <button
+            className={`slot-edit-btn ${showHover ? 'visible' : ''}`}
+            onClick={handleEdit}
+            title="Editar slot (inici/stop)"
+          >
+            ✎
+          </button>
+        </div>
+      ) : hasAudio ? (
         <>
           {/* Cos: forma d'ona (amb playhead) al centre + picòmetre a la dreta */}
           <div className="slot-body">

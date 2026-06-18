@@ -7,7 +7,8 @@ import {
   csPlay, csStop, csPause, csResume, csSeek, csSetVolume,
   csPreviewStart, csPreviewStop,
 } from '../lib/cueStreamEngine';
-import { hasClip, effFadeIn, effFadeOut } from '../lib/slotAudio';
+import { hasClip, isVideo, effFadeIn, effFadeOut } from '../lib/slotAudio';
+import { emitVideoPlay, emitVideoStop, emitVideoBlack } from '../lib/videoOutput';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
 const NUM_PAGES = 4;         // pàgines de cues (4 × 32 = 128 cues)
@@ -17,6 +18,7 @@ const createEmptySlot = (id) => ({
   id,
   label: '',
   filePath: null,      // ruta absoluta del fitxer (per recarregar des de la Library)
+  mediaType: 'audio',  // 'audio' | 'video' (els cues de vídeo van a la finestra de sortida)
   loading: false,      // s'està llegint/descodificant
   audioUrl: null,
   audioBuffer: null,
@@ -94,6 +96,7 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
       ...base,
       label: savedSlots[i].label || '',
       filePath: savedSlots[i].filePath ?? null,
+      mediaType: savedSlots[i].mediaType ?? 'audio',
       isStreaming: savedSlots[i].isStreaming ?? false,
       streamDuration: savedSlots[i].streamDuration ?? 0,
       volume: savedSlots[i].volume ?? 0.8,
@@ -433,6 +436,7 @@ export const useSoundStore = create((set, get) => ({
               ...s,
               label: cfg.label != null ? cfg.label : s.label,
               filePath: cfg.filePath != null ? cfg.filePath : s.filePath,
+              mediaType: cfg.mediaType === 'video' ? 'video' : s.mediaType,
               volume: cfg.volume != null ? cfg.volume : s.volume,
               startPoint: cfg.startPoint || 0,
               stopPoint: cfg.stopPoint != null ? cfg.stopPoint : null,
@@ -493,6 +497,7 @@ export const useSoundStore = create((set, get) => ({
     // Els nodes (gain/fade/analyser) es construeixen al Play, al context del
     // dispositiu segons el color del cue (routing per grup).
     const streaming = !!opts.streaming;
+    const mediaType = opts.mediaType === 'video' ? 'video' : 'audio';
     // Allibera el blob URL anterior d'aquest slot (si n'hi havia)
     const prev = get().slots.find((s) => s.id === slotId);
     // Si el slot previ sonava (o estava pausat), atura'l abans de reescriure'l:
@@ -509,6 +514,7 @@ export const useSoundStore = create((set, get) => ({
               ...s,
               label: file.name,
               filePath,
+              mediaType,
               loading: false,
               audioUrl,
               audioBuffer,
@@ -557,6 +563,20 @@ export const useSoundStore = create((set, get) => ({
         if (s.id === slotId || (exempt && exempt.has(s.id))) return;
         if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id);
       });
+    }
+
+    // Cue de vídeo: es reprodueix a la finestra de sortida (no per Web Audio).
+    // Emet l'event video-play; si la finestra no està oberta, no passa res.
+    // Marquem isPlaying perquè el tile/transport ho reflecteixin.
+    if (isVideo(slot)) {
+      emitVideoPlay(slot.filePath, slot.startPoint || 0, slotId);
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId ? { ...s, isPlaying: true, pausedAt: null } : s
+        ),
+        activeSlot: slotId,
+      }));
+      return;
     }
 
     // Ducking: si aquest cue abaixa la playlist, incrementa el comptador.
@@ -667,6 +687,8 @@ export const useSoundStore = create((set, get) => ({
   pauseSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !slot.isPlaying) return;
+    // Els cues de vídeo no es pausen (4a): pausar equival a aturar
+    if (isVideo(slot)) { get().stopSlot(slotId); return; }
     // En pausar deixa de sonar → deixa de duckejar (es reincrementa al resume)
     if (slot.duck) duckRemove(get, slotId);
     if (slot.isStreaming) { csPause(get, set, slotId); return; }
@@ -695,6 +717,7 @@ export const useSoundStore = create((set, get) => ({
   resumeSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot) || slot.pausedAt == null) return;
+    if (isVideo(slot)) return; // els cues de vídeo no tenen estat de pausa (4a)
     // Torna a sonar → torna a duckejar (si és un cue de duck)
     if (slot.duck) duckAdd(get, slotId);
     if (slot.isStreaming) { csResume(get, set, slotId); return; }
@@ -800,6 +823,9 @@ export const useSoundStore = create((set, get) => ({
       if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id, true);
     });
     get().stopPreview();
+    // Negre a la sortida de vídeo (pànic: assegura pantalla negra encara que
+    // cap cue de vídeo constés com a actiu)
+    emitVideoBlack();
     // Seguretat: buida el comptador de ducking (recupera la playlist) per si
     // hagués quedat algun id penjat
     duckReset(get);
@@ -819,6 +845,33 @@ export const useSoundStore = create((set, get) => ({
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));
+  },
+
+  // La finestra de sortida informa que un cue de vídeo ha acabat sol: reseteja
+  // el seu estat perquè el tile/transport deixin de marcar-lo com a actiu.
+  handleVideoEnded: (slotId) => {
+    set((state) => ({
+      slots: state.slots.map((s) =>
+        s.id === slotId && s.mediaType === 'video' ? { ...s, isPlaying: false, pausedAt: null } : s
+      ),
+      activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
+    }));
+  },
+
+  // Reseteja l'estat de tots els cues de vídeo (p. ex. en tancar la finestra de
+  // sortida amb la X o pel botó): evita que quedin marcats com a reproduint.
+  clearVideoCues: () => {
+    set((state) => {
+      let activeSlot = state.activeSlot;
+      const slots = state.slots.map((s) => {
+        if (s.mediaType === 'video' && (s.isPlaying || s.pausedAt != null)) {
+          if (activeSlot === s.id) activeSlot = null;
+          return { ...s, isPlaying: false, pausedAt: null };
+        }
+        return s;
+      });
+      return { slots, activeSlot };
+    });
   },
 
   // Avança el standby al següent cue carregat (per id), travessant pàgines.
@@ -883,6 +936,7 @@ export const useSoundStore = create((set, get) => ({
   seekSlot: (slotId, ratio) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot) || !slot.isPlaying) return;
+    if (isVideo(slot)) return; // el vídeo no es busca des d'aquí (4a)
     if (slot.isStreaming) { csSeek(get, set, slotId, ratio); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
     if (!ctx) return;
@@ -1002,6 +1056,17 @@ export const useSoundStore = create((set, get) => ({
     const slot = get().slots.find((s) => s.id === slotId);
     // Res a fer si ja està del tot aturat (sense source ni pausa)
     if (!slot || (!slot.sourceNode && slot.pausedAt == null && !slot.isPlaying)) return;
+    // Cue de vídeo: atura la sortida i marca'l aturat (sense Web Audio)
+    if (isVideo(slot)) {
+      emitVideoStop();
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId ? { ...s, isPlaying: false, pausedAt: null } : s
+        ),
+        activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
+      }));
+      return;
+    }
     // Deixa de duckejar (el Set evita doble compte si ja no hi era)
     if (slot.duck) duckRemove(get, slotId);
     if (slot.isStreaming) { csStop(get, set, slotId, fade); return; }
@@ -1067,6 +1132,7 @@ export const useSoundStore = create((set, get) => ({
     const data = slots.map((s) => ({
       label: s.label,
       filePath: s.filePath,
+      mediaType: s.mediaType,
       isStreaming: s.isStreaming,
       streamDuration: s.streamDuration,
       volume: s.volume,
