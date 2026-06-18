@@ -350,7 +350,11 @@ export const useSoundStore = create((set, get) => ({
       const playlist = state.playlist.filter((t) => t.id !== id);
       let playlistIndex = state.playlistIndex;
       if (idx >= 0 && idx < playlistIndex) playlistIndex -= 1;
-      return { playlist, playlistIndex };
+      // Manté el cursor de selecció coherent amb la nova llista
+      let playlistSelected = state.playlistSelected;
+      if (idx >= 0 && idx < playlistSelected) playlistSelected -= 1;
+      playlistSelected = Math.max(0, Math.min(playlistSelected, playlist.length - 1));
+      return { playlist, playlistIndex, playlistSelected };
     });
     get().persistPlaylist();
   },
@@ -361,14 +365,19 @@ export const useSoundStore = create((set, get) => ({
       if (from < 0 || from >= playlist.length || to < 0 || to >= playlist.length) return {};
       const [item] = playlist.splice(from, 1);
       playlist.splice(to, 0, item);
-      return { playlist };
+      // El cursor de selecció segueix el moviment de les pistes
+      let playlistSelected = state.playlistSelected;
+      if (playlistSelected === from) playlistSelected = to;
+      else if (from < playlistSelected && to >= playlistSelected) playlistSelected -= 1;
+      else if (from > playlistSelected && to <= playlistSelected) playlistSelected += 1;
+      return { playlist, playlistSelected };
     });
     get().persistPlaylist();
   },
 
   clearPlaylist: () => {
     plStop(get, set);
-    set({ playlist: [], playlistIndex: -1 });
+    set({ playlist: [], playlistIndex: -1, playlistSelected: 0 });
     get().persistPlaylist();
   },
 
