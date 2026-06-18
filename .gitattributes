@@ -1,0 +1,14 @@
+# Normalitza els finals de línia: LF al repositori i al working tree.
+# Evita els avisos "LF will be replaced by CRLF" en aquest projecte multiplataforma.
+* text=auto eol=lf
+
+# Binaris habituals (no tocar mai els finals de línia)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.flac binary
+*.ogg binary
