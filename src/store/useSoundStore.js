@@ -568,10 +568,25 @@ export const useSoundStore = create((set, get) => ({
     }
 
     // Cue de vídeo: es reprodueix a la finestra de sortida (no per Web Audio).
-    // Emet l'event video-play; si la finestra no està oberta, no passa res.
+    // Emet l'event video-play amb un payload ric (volum, fades efectius, routing
+    // per color i loop); la finestra de sortida aplica volum/fades/sortida/loop
+    // sobre l'element <video>. Si la finestra no està oberta, no passa res.
     // Marquem isPlaying perquè el tile/transport ho reflecteixin.
     if (isVideo(slot)) {
-      emitVideoPlay(slot.filePath, slot.startPoint || 0, slot.stopPoint || 0, slotId);
+      // Routing per color (com el camí d'àudio); per defecte, bus de Cues
+      const outDev = (slot.color && colorOutputs[slot.color]) || get().selectedDeviceId;
+      // Fades efectius: el propi del cue si és >0, si no el global
+      const effIn = Math.max(0, effFadeIn(slot, globalFadeIn));
+      const effOut = Math.max(0, effFadeOut(slot, globalFadeOut));
+      emitVideoPlay(slot.filePath, slot.startPoint || 0, slot.stopPoint || 0, slotId, {
+        volume: slot.volume,
+        fadeIn: effIn,
+        fadeOut: effOut,
+        deviceId: outDev,
+        loop: !!slot.loop,
+      });
+      // Ducking: si aquest cue de vídeo abaixa la playlist, incrementa el comptador
+      if (slot.duck) duckAdd(get, slotId);
       set((state) => ({
         slots: state.slots.map((s) =>
           s.id === slotId ? { ...s, isPlaying: true, pausedAt: null } : s
@@ -852,6 +867,10 @@ export const useSoundStore = create((set, get) => ({
   // La finestra de sortida informa que un cue de vídeo ha acabat sol: reseteja
   // el seu estat perquè el tile/transport deixin de marcar-lo com a actiu.
   handleVideoEnded: (slotId) => {
+    // El cue de vídeo ha acabat (final natural, stopPoint o stop): deixa de
+    // duckejar (idempotent) abans de resetejar el seu estat.
+    const cur = get().slots.find((s) => s.id === slotId);
+    if (cur && cur.mediaType === 'video' && cur.duck) duckRemove(get, slotId);
     set((state) => ({
       slots: state.slots.map((s) =>
         s.id === slotId && s.mediaType === 'video' ? { ...s, isPlaying: false, pausedAt: null } : s
@@ -863,6 +882,12 @@ export const useSoundStore = create((set, get) => ({
   // Reseteja l'estat de tots els cues de vídeo (p. ex. en tancar la finestra de
   // sortida amb la X o pel botó): evita que quedin marcats com a reproduint.
   clearVideoCues: () => {
+    // Deixa de duckejar qualsevol cue de vídeo actiu (idempotent)
+    get().slots.forEach((s) => {
+      if (s.mediaType === 'video' && (s.isPlaying || s.pausedAt != null) && s.duck) {
+        duckRemove(get, s.id);
+      }
+    });
     set((state) => {
       let activeSlot = state.activeSlot;
       const slots = state.slots.map((s) => {
@@ -1060,6 +1085,8 @@ export const useSoundStore = create((set, get) => ({
     if (!slot || (!slot.sourceNode && slot.pausedAt == null && !slot.isPlaying)) return;
     // Cue de vídeo: atura la sortida i marca'l aturat (sense Web Audio)
     if (isVideo(slot)) {
+      // Deixa de duckejar (idempotent: el Set evita doble compte si ja no hi era)
+      if (slot.duck) duckRemove(get, slotId);
       emitVideoStop();
       set((state) => ({
         slots: state.slots.map((s) =>

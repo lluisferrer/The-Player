@@ -110,10 +110,23 @@ export async function toggleOutputWindow(monitorIndex = null) {
 // simplement no té cap oient).
 
 // Reprodueix un fitxer de vídeo entre startPoint i stopPoint (slotId per
-// identificar el cue quan la sortida informi que ha acabat o ha arribat al stop)
-export async function emitVideoPlay(filePath, startPoint = 0, stopPoint = null, slotId = null) {
-  try { await emit('video-play', { filePath, startPoint: startPoint || 0, stopPoint: stopPoint || 0, slotId }); }
-  catch (e) { console.warn('video-play:', e); }
+// identificar el cue quan la sortida informi que ha acabat o ha arribat al stop).
+// Payload ric (4c): volum base, fades efectius (in/out), dispositiu de sortida
+// (routing per color) i loop. Es passen com a objecte opts per compatibilitat.
+export async function emitVideoPlay(filePath, startPoint = 0, stopPoint = null, slotId = null, opts = {}) {
+  try {
+    await emit('video-play', {
+      filePath,
+      startPoint: startPoint || 0,
+      stopPoint: stopPoint || 0,
+      slotId,
+      volume: opts.volume != null ? opts.volume : 0.8,
+      fadeIn: opts.fadeIn || 0,
+      fadeOut: opts.fadeOut || 0,
+      deviceId: opts.deviceId || 'default',
+      loop: !!opts.loop,
+    });
+  } catch (e) { console.warn('video-play:', e); }
 }
 
 // Atura el vídeo (manté la finestra negra)
