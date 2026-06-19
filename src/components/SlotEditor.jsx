@@ -262,11 +262,14 @@ export function SlotEditor() {
     const onMove = (e) => {
       const t = xToTime(e.clientX);
       if (dragging === 'start') {
-        const ns = Math.min(t, stop - 0.05);
-        updateSlotEdit(editingSlot, { startPoint: Math.max(0, ns) });
+        const ns = Math.max(0, Math.min(t, stop - 0.05));
+        updateSlotEdit(editingSlot, { startPoint: ns });
+        // Scrub del vídeo: mostra el fotograma del punt d'inici mentre s'arrossega
+        if (isVid && videoRef.current) { try { videoRef.current.currentTime = Math.min(total, ns); } catch { /* res */ } }
       } else if (dragging === 'stop') {
-        const ne = Math.max(t, start + 0.05);
-        updateSlotEdit(editingSlot, { stopPoint: Math.min(total, ne) });
+        const ne = Math.min(total, Math.max(t, start + 0.05));
+        updateSlotEdit(editingSlot, { stopPoint: ne });
+        if (isVid && videoRef.current) { try { videoRef.current.currentTime = ne; } catch { /* res */ } }
       } else if (dragging === 'playhead') {
         const r = segDur > 0 ? Math.min(1, Math.max(0, (t - start) / segDur)) : 0;
         playScrubRef.current = r;
@@ -339,6 +342,13 @@ export function SlotEditor() {
     return () => { try { videoRef.current && videoRef.current.pause(); } catch { /* res */ } };
   }, [editingSlot]);
 
+  // Mou el <video> de previsualització a un temps (per fer scrub en ajustar fades)
+  const seekEditorVideo = (t) => {
+    if (isVid && videoRef.current) {
+      try { videoRef.current.currentTime = Math.max(0, Math.min(total, t)); } catch { /* res */ }
+    }
+  };
+
   const toggleVideoPreview = () => {
     const v = videoRef.current;
     if (!v) return;
@@ -367,6 +377,8 @@ export function SlotEditor() {
   };
 
   const label = slot.label || `Slot ${editingSlot}`;
+  // Nom de fitxer (fallback si no hi ha nom custom)
+  const fileName = slot.filePath ? slot.filePath.split(/[\\/]/).pop() : '';
 
   // Posició del playhead. Per a vídeo es deriva del temps real del <video> de
   // preview (segons absoluts); per a àudio, del progrés dins el segment.
@@ -386,7 +398,14 @@ export function SlotEditor() {
     <div className="editor-overlay" onClick={handleClose}>
       <div className="editor-panel" onClick={(e) => e.stopPropagation()}>
         <div className="editor-header">
-          <span className="editor-title">{label}</span>
+          <input
+            className="editor-title-input"
+            value={slot.label || ''}
+            placeholder={fileName || 'Nom del cue'}
+            onChange={(e) => updateSlotEdit(editingSlot, { label: e.target.value })}
+            onBlur={(e) => { if (!e.target.value.trim() && fileName) updateSlotEdit(editingSlot, { label: fileName }); }}
+            title="Nom del cue (buit = nom del fitxer)"
+          />
           <button className="editor-close" onClick={handleClose}>✕</button>
         </div>
 
@@ -513,7 +532,7 @@ export function SlotEditor() {
               <input
                 type="range" min="0" max={Math.min(FADE_MAX, segDur)} step="0.1"
                 value={Math.min(fadeIn, FADE_MAX, segDur)}
-                onChange={(e) => updateSlotEdit(editingSlot, { fadeIn: parseFloat(e.target.value) })}
+                onChange={(e) => { const v = parseFloat(e.target.value); updateSlotEdit(editingSlot, { fadeIn: v }); seekEditorVideo(start + (v || 0)); }}
               />
               {/* Camp numèric per escriure valors exactes, independent de la durada de l'arxiu */}
               <input
@@ -524,6 +543,7 @@ export function SlotEditor() {
                   const v = parseFloat(e.target.value);
                   const clamped = Math.min(Math.max(0, isNaN(v) ? 0 : v), segDur);
                   updateSlotEdit(editingSlot, { fadeIn: clamped });
+                  seekEditorVideo(start + clamped);
                 }}
               />
             </div>
@@ -534,7 +554,7 @@ export function SlotEditor() {
               <input
                 type="range" min="0" max={Math.min(FADE_MAX, segDur)} step="0.1"
                 value={Math.min(fadeOut, FADE_MAX, segDur)}
-                onChange={(e) => updateSlotEdit(editingSlot, { fadeOut: parseFloat(e.target.value) })}
+                onChange={(e) => { const v = parseFloat(e.target.value); updateSlotEdit(editingSlot, { fadeOut: v }); seekEditorVideo(stop - (v || 0)); }}
               />
               {/* Camp numèric per escriure valors exactes, independent de la durada de l'arxiu */}
               <input
@@ -545,6 +565,7 @@ export function SlotEditor() {
                   const v = parseFloat(e.target.value);
                   const clamped = Math.min(Math.max(0, isNaN(v) ? 0 : v), segDur);
                   updateSlotEdit(editingSlot, { fadeOut: clamped });
+                  seekEditorVideo(stop - clamped);
                 }}
               />
             </div>

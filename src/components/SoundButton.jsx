@@ -30,6 +30,9 @@ export function SoundButton({ slotId }) {
   const [seeking, setSeeking] = useState(false);
   const [previewProg, setPreviewProg] = useState(0); // progrés del preview (0..1)
   const [thumb, setThumb] = useState(null); // miniatura del cue de vídeo (dataURL)
+  const [vidElapsed, setVidElapsed] = useState(0); // temps de reproducció estimat del vídeo (s)
+  const [vidSeeking, setVidSeeking] = useState(false); // arrossegant el playhead del vídeo
+  const vidBodyRef = useRef(null);
   const scrubRef = useRef(null);
   const suppressClickRef = useRef(false); // evita que el click post-drag faci play/stop
   const waveRef = useRef(null);
@@ -125,6 +128,47 @@ export function SoundButton({ slotId }) {
     return () => { cancel = true; };
   }, [isVideoCue, slot.filePath, slot.startPoint]);
 
+  // Temps/playhead estimat del cue de vídeo (es reprodueix a la sortida, així que
+  // l'estimem localment des de l'instant de dispar; el vídeo no es pausa).
+  useEffect(() => {
+    if (!(isVideoCue && isPlaying)) { setVidElapsed(0); return; }
+    let raf;
+    const tick = () => {
+      let e = performance.now() / 1000 - (slot.startedAt || 0);
+      if (segDur > 0) e = slot.loop ? (e % segDur) : Math.min(e, segDur);
+      setVidElapsed(Math.max(0, e));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isVideoCue, isPlaying, segDur, slot.startedAt, slot.loop]);
+
+  // Arrossegar el playhead del tile de vídeo: seek en directe (sense aturar)
+  const handleVideoPlayheadDown = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setVidSeeking(true);
+  };
+  useEffect(() => {
+    if (!vidSeeking) return;
+    const seekFromX = (clientX) => {
+      const el = vidBodyRef.current;
+      if (!el || segDur <= 0) return;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+      useSoundStore.getState().seekVideo(slotId, ratio * segDur);
+    };
+    const onMove = (ev) => seekFromX(ev.clientX);
+    const onUp = () => setVidSeeking(false);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, [vidSeeking, segDur, slotId]);
+
   const handleClick = (e) => {
     // Ignora el click immediatament posterior a arrossegar el playhead
     if (suppressClickRef.current) return;
@@ -181,6 +225,10 @@ export function SoundButton({ slotId }) {
   // Reproduint o pausat: temps transcorregut; aturat: durada total
   const timeLabel = hasAudio ? fmtTime((isPlaying || paused) ? elapsed : duration) : '';
 
+  // Tile de vídeo: temps i playhead estimats sobre el segment (in→out)
+  const vidPlayheadPct = segDur > 0 ? Math.min(100, (vidElapsed / segDur) * 100) : 0;
+  const vidTimeLabel = fmtTime(isPlaying ? vidElapsed : segDur);
+
   const occupied = hasAudio || Boolean(slot.label);
 
   let stateClass = 'slot-empty';
@@ -188,7 +236,9 @@ export function SoundButton({ slotId }) {
   if (paused) stateClass = 'slot-paused';
   if (isPlaying) stateClass = 'slot-playing';
 
-  const truncatedLabel = slot.label ? slot.label.replace(/\.[^/.]+$/, '') : '';
+  // Nom mostrat: nom custom si n'hi ha, si no el nom del fitxer (sense extensió)
+  const fileName = slot.filePath ? slot.filePath.split(/[\\/]/).pop() : '';
+  const truncatedLabel = (slot.label || fileName).replace(/\.[^/.]+$/, '');
   const keyLabel = keyForSlot(((slotId - 1) % 32) + 1).toUpperCase();
 
   return (
@@ -237,19 +287,45 @@ export function SoundButton({ slotId }) {
       {hasAudio && isVideoCue ? (
         /* Cue de vídeo: miniatura de fons (si n'hi ha) + badge "VÍDEO".
            Es reprodueix a la finestra de sortida, no per Web Audio. */
-        <div className={`slot-body slot-video ${thumb ? 'has-thumb' : ''}`}>
-          {thumb && (
-            <div className="slot-video-thumb" style={{ backgroundImage: `url(${thumb})` }} />
-          )}
-          <div className="slot-video-badge">VÍDEO</div>
-          <button
-            className={`slot-edit-btn ${showHover ? 'visible' : ''}`}
-            onClick={handleEdit}
-            title="Editar slot (inici/stop)"
-          >
-            ✎
-          </button>
-        </div>
+        <>
+          <div className={`slot-body slot-video ${thumb ? 'has-thumb' : ''}`} ref={vidBodyRef}>
+            {thumb && (
+              <div className="slot-video-thumb" style={{ backgroundImage: `url(${thumb})` }} />
+            )}
+            <span className="slot-time">{vidTimeLabel}</span>
+            {/* Badge de vídeo (mateix estil que STREAM dels àudios llargs) */}
+            <span className="slot-stream-badge">VÍDEO</span>
+            {/* Playhead arrossegable mentre es reprodueix a la sortida */}
+            {isPlaying && (
+              <div
+                className="slot-playhead"
+                style={{ left: `${vidPlayheadPct}%` }}
+                onPointerDown={handleVideoPlayheadDown}
+                title="Arrossega per moure la posició"
+              />
+            )}
+            <button
+              className={`slot-edit-btn ${showHover ? 'visible' : ''}`}
+              onClick={handleEdit}
+              title="Editar slot (inici/stop, fades)"
+            >
+              ✎
+            </button>
+          </div>
+          {/* Slider de volum (igual que els cues d'àudio) */}
+          <div className="slot-volume" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="range" min="0" max="1" step="0.01"
+              value={slot.volume}
+              onChange={handleVolumeChange}
+              title={`Volum: ${Math.round(slot.volume * 100)}%`}
+              style={{ background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)` }}
+            />
+            <span className={`volume-value ${showHover ? 'visible' : ''}`}>
+              {Math.round(slot.volume * 100)}%
+            </span>
+          </div>
+        </>
       ) : hasAudio ? (
         <>
           {/* Cos: forma d'ona (amb playhead) al centre + picòmetre a la dreta */}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { SkipBack, SkipForward, Play, Pause, Square, Repeat, Repeat1, Shuffle } from 'lucide-react';
 import { useSoundStore } from '../store/useSoundStore';
@@ -22,7 +22,37 @@ export function Playlist() {
     setPlaylistVolume, setPlaylistSelected,
     cyclePlaylistRepeat, togglePlaylistShuffle,
     playlistPlayPause, playlistStop, playlistNext, playlistPrev, playlistPlayIndex,
+    playlistSeek,
   } = useSoundStore.getState();
+
+  // Barra de reproducció arrossegable (seek)
+  const barRef = useRef(null);
+  const seekToClientX = (clientX) => {
+    const el = barRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0) return;
+    playlistSeek(Math.max(0, Math.min(1, (clientX - r.left) / r.width)));
+  };
+  const [seekDragging, setSeekDragging] = useState(false);
+  const onBarPointerDown = (e) => {
+    e.preventDefault();
+    seekToClientX(e.clientX);
+    setSeekDragging(true);
+  };
+  // Listeners de drag amb cleanup lligat al cicle de vida (sense fuites si es
+  // desmunta el component a mig arrossegament)
+  useEffect(() => {
+    if (!seekDragging) return;
+    const onMove = (ev) => seekToClientX(ev.clientX);
+    const onUp = () => setSeekDragging(false);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, [seekDragging]);
 
   const [pos, setPos] = useState({ elapsed: 0, duration: 0, index: -1 });
   useEffect(() => {
@@ -103,7 +133,7 @@ export function Playlist() {
             {fmtTime(pos.elapsed)} {pos.duration ? `/ ${fmtTime(pos.duration)}` : ''}
           </span>
         </div>
-        <div className="pl-now-bar">
+        <div className="pl-now-bar" ref={barRef} onPointerDown={onBarPointerDown} style={{ cursor: 'pointer' }}>
           <div className="pl-now-fill" style={{ width: `${progress * 100}%` }} />
         </div>
       </div>

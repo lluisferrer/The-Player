@@ -1281,6 +1281,22 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Camp de nom editable del cue, a la capçalera de l'editor */
+.editor-title-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-button);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
+}
+.editor-title-input:focus { border-color: var(--accent); }
+
 .editor-close {
   border: none;
   background: transparent;

@@ -22,6 +22,8 @@ export function SettingsModal({ onClose }) {
   const globalFadeOut = useSoundStore((s) => s.globalFadeOut);
   const setGlobalFades = useSoundStore((s) => s.setGlobalFades);
   const cuesStopOthers = useSoundStore((s) => s.cuesStopOthers);
+  const cuesDuck = useSoundStore((s) => s.cuesDuck);
+  const setCuesDuck = useSoundStore((s) => s.setCuesDuck);
   const setCuesStopOthers = useSoundStore((s) => s.setCuesStopOthers);
 
   const crossfade = useSoundStore((s) => s.crossfade);
@@ -172,6 +174,14 @@ export function SettingsModal({ onClose }) {
                     onChange={(e) => setCuesStopOthers(e.target.checked)}
                   />
                   Stop Others per defecte (disparar un cue atura la resta)
+                </label>
+                <label className="editor-check">
+                  <input
+                    type="checkbox"
+                    checked={cuesDuck}
+                    onChange={(e) => setCuesDuck(e.target.checked)}
+                  />
+                  Ducking per defecte (abaixa la playlist en disparar un cue)
                 </label>
               </div>
               <div className="settings-note">Els cues nous prenen aquest valor. Cada cue es pot canviar després des de l'editor (✎).</div>

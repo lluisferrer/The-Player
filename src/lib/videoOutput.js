@@ -140,3 +140,15 @@ export async function emitVideoBlack() {
   try { await emit('video-black'); }
   catch (e) { console.warn('video-black:', e); }
 }
+
+// Canvia el volum del vídeo en reproducció a la sortida
+export async function emitVideoVolume(volume) {
+  try { await emit('video-volume', { volume }); }
+  catch (e) { console.warn('video-volume:', e); }
+}
+
+// Salta a un temps (segons, absolut dins el fitxer) del vídeo a la sortida
+export async function emitVideoSeek(time) {
+  try { await emit('video-seek', { time }); }
+  catch (e) { console.warn('video-seek:', e); }
+}

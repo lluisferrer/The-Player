@@ -286,9 +286,20 @@ export function plPrev(get, set) {
 }
 
 export function plPlayIndex(get, set, index) {
-  if (cur) destroy(cur.audio);
-  cur = null; paused = null; clearCf();
-  startTrack(get, set, index, { fadeIn: 0 });
+  // Crossfade amb la pista actual (si n'hi ha), com fa Next/Prev
+  const cf = Math.max(0, get().crossfade || 0);
+  const hadCur = !!cur;
+  if (cur) { const old = cur.audio; rampVol(get, old, old._gain ?? 1, 0, cf, () => destroy(old)); }
+  paused = null; clearCf();
+  startTrack(get, set, index, { fadeIn: hadCur ? cf : 0 });
+}
+
+// Salta a una fracció (0..1) de la pista actual de la playlist
+export function plSeek(get, fraction) {
+  if (cur && isFinite(cur.audio.duration) && cur.audio.duration > 0) {
+    const f = Math.max(0, Math.min(1, fraction));
+    try { cur.audio.currentTime = f * cur.audio.duration; } catch { /* res */ }
+  }
 }
 
 export function plSetVolume(get) {

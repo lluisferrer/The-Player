@@ -158,6 +158,7 @@ export default function App() {
         if (e.key === 'ArrowDown') { e.preventDefault(); store.movePlaylistSelection(1);  return; }
         if (e.key === 'Enter')     { e.preventDefault(); store.playlistPlaySelected();     return; }
         if (e.key === ' ')         { e.preventDefault(); store.playlistPlayPause();        return; }
+        if (e.key === 'Escape')    { e.preventDefault(); store.playlistStop();             return; }
         return;
       }
 

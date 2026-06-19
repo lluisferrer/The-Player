@@ -102,6 +102,23 @@ export function VideoOutput() {
       }));
       unlisteners.push(await listen('video-stop', black));
       unlisteners.push(await listen('video-black', black));
+      // Canvi de volum en directe (slider del tile). Actualitza la base i, si no
+      // s'està fent un fade ara mateix, aplica-ho immediatament.
+      unlisteners.push(await listen('video-volume', (e) => {
+        const vol = e.payload && e.payload.volume;
+        if (vol == null) return;
+        playInfo.current.volume = vol;
+        if (rafRef.current == null && !fadingOut.current) {
+          const v = videoRef.current;
+          if (v) { try { v.volume = vol; } catch { /* res */ } }
+        }
+      }));
+      // Seek en directe (arrossegar el playhead del tile)
+      unlisteners.push(await listen('video-seek', (e) => {
+        const t = e.payload && e.payload.time;
+        const v = videoRef.current;
+        if (v && t != null) { try { v.currentTime = t; } catch { /* res */ } }
+      }));
     })();
 
     return () => {
