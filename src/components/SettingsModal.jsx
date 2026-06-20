@@ -9,7 +9,8 @@ import { PlaylistActionToggle } from './PlaylistActionToggle';
 const DIAG_LIST_STYLE = { display: 'flex', flexDirection: 'column', gap: 6 };
 
 // Una fila del diagnòstic d'àudio (un dispositiu WASAPI o un driver ASIO).
-function DiagRow({ o, onTone }) {
+// Per ASIO, `info` (si està carregat) porta {outs, sample_rate}; `onLoad` el carrega.
+function DiagRow({ o, onTone, info, onLoad }) {
   const isAsio = o.host === 'ASIO';
   return (
     <div style={{
@@ -37,18 +38,30 @@ function DiagRow({ o, onTone }) {
           </span>
         )}
       </div>
-      {o.max_channels > 0 ? (
+      {isAsio ? (
+        info ? (
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5 }}>
+            <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginRight: 4 }}>
+              To de prova · {info.outs} canals · {info.sample_rate} Hz:
+            </span>
+            {Array.from({ length: info.outs }, (_, c) => (
+              <button key={c} className="diag-tone-btn" onClick={() => onTone(o.host, o.name, c)}>{c + 1}</button>
+            ))}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+            <button className="diag-detect-btn" style={{ margin: 0 }} onClick={() => onLoad(o.name)}>Carregar</button>
+            <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>per veure els canals (agafa el dispositiu en exclusiva)</span>
+          </div>
+        )
+      ) : o.max_channels > 0 ? (
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5 }}>
           <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginRight: 4 }}>To de prova:</span>
           {Array.from({ length: o.max_channels }, (_, c) => (
             <button key={c} className="diag-tone-btn" onClick={() => onTone(o.host, o.name, c)}>{c + 1}</button>
           ))}
         </div>
-      ) : (
-        <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-          Carregar per veure canals i provar (pròximament).
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -91,6 +104,7 @@ export function SettingsModal({ onClose }) {
   const [diagError, setDiagError] = useState(null);
   const [asioOut, setAsioOut] = useState(null);   // dispositius ASIO detectats
   const [asioMsg, setAsioMsg] = useState(null);   // estat/error de la detecció ASIO
+  const [asioInfo, setAsioInfo] = useState({});   // info per driver carregat: { [name]: {outs, sample_rate} }
 
   useEffect(() => {
     if (tab !== 'audio' || outputs) return;
@@ -115,8 +129,40 @@ export function SettingsModal({ onClose }) {
   };
 
   const tone = async (host, name, ch) => {
-    try { await invoke('play_test_tone', { host, deviceName: name, channel: ch, seconds: 1.0 }); }
-    catch (e) { setDiagError(String(e)); }
+    try {
+      if (host === 'ASIO') {
+        await invoke('asio_test_tone', { driverName: name, channel: ch, seconds: 1.0 });
+      } else {
+        await invoke('play_test_tone', { host, deviceName: name, channel: ch, seconds: 1.0 });
+      }
+    } catch (e) { setDiagError(String(e)); }
+  };
+
+  // Allibera el driver ASIO carregat al fil dedicat, deixant el dispositiu
+  // lliure per a WASAPI. El driver es manté viu entre tons (per evitar el hang
+  // de recàrrega dels drivers USB ASIO); cal alliberar-lo explícitament.
+  const releaseAsio = async () => {
+    setAsioMsg('Alliberant el driver ASIO…');
+    try {
+      await invoke('asio_release');
+      setAsioInfo({}); // ja no hi ha cap driver carregat
+      setAsioMsg('Driver ASIO alliberat.');
+    } catch (e) {
+      setAsioMsg(String(e));
+    }
+  };
+
+  // Carrega un driver ASIO i en mostra els canals reals (la MixPre, p. ex., en té 4).
+  // Carregar-ne un allibera l'anterior (ASIO només en permet un alhora).
+  const loadAsio = async (name) => {
+    setAsioMsg(`Carregant ${name}…`);
+    try {
+      const info = await invoke('asio_load', { driverName: name });
+      setAsioInfo({ [name]: info }); // només un driver carregat alhora
+      setAsioMsg(null);
+    } catch (e) {
+      setAsioMsg(String(e));
+    }
   };
 
   return (
@@ -200,12 +246,27 @@ export function SettingsModal({ onClose }) {
               <div className="settings-note">
                 Carregar els drivers ASIO és lent i es fa sota demanda. Si uses ASIO4ALL,
                 deixa la interfície com a dispositiu de Windows per defecte perquè hi enviï el so.
+                El driver es manté carregat entre tons (i agafa el dispositiu en exclusiva);
+                prem «Alliberar ASIO» per tornar-lo a deixar disponible per a Windows/WASAPI.
               </div>
-              <button className="diag-detect-btn" onClick={detectAsio}>Detectar ASIO</button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="diag-detect-btn" onClick={detectAsio}>Detectar ASIO</button>
+                {/* Estils inline: les classes del modal no es pinten aquí (patró DiagRow). */}
+                <button
+                  onClick={releaseAsio}
+                  style={{
+                    fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 6,
+                    cursor: 'pointer', color: 'var(--text-primary)',
+                    background: 'var(--bg-button)', border: '1px solid var(--border)',
+                  }}
+                >
+                  Alliberar ASIO
+                </button>
+              </div>
               {asioMsg && <div className="diag-error">⚠ {asioMsg}</div>}
               <div style={DIAG_LIST_STYLE}>
                 {asioOut && asioOut.map((o, i) => (
-                  <DiagRow key={`asio-${i}`} o={o} onTone={tone} />
+                  <DiagRow key={`asio-${i}`} o={o} onTone={tone} info={asioInfo[o.name]} onLoad={loadAsio} />
                 ))}
               </div>
             </>
