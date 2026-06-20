@@ -481,6 +481,42 @@ enum AsioCmd {
 #[cfg(feature = "asio")]
 static ASIO_TX: std::sync::OnceLock<std::sync::mpsc::Sender<AsioCmd>> = std::sync::OnceLock::new();
 
+// Canal per notificar el FINAL NATURAL d'una veu (id) des del callback RT cap a
+// un fil notificador que emet l'event Tauri `asio-voice-ended` a la UI. El
+// callback NO pot emetre events ni bloquejar; només fa un `send` barat (només en
+// acabar una veu, no cada buffer). El fil notificador (amb l'AppHandle) s'arrenca
+// a `run()` via `asio_start_notifier`.
+#[cfg(feature = "asio")]
+static ASIO_ENDED_TX: std::sync::OnceLock<std::sync::mpsc::Sender<u64>> = std::sync::OnceLock::new();
+
+// Notifica (sense bloquejar) que una veu ha acabat de forma natural. Si encara no
+// hi ha fil notificador, l'avís simplement es descarta (no és crític).
+#[cfg(feature = "asio")]
+fn asio_notify_ended(voice_id: u64) {
+    if let Some(tx) = ASIO_ENDED_TX.get() {
+        let _ = tx.send(voice_id);
+    }
+}
+
+// Arrenca el fil que escolta finals de veu i els reenvia a la UI com a events
+// Tauri. Es crida un sol cop a `run()` amb l'AppHandle. Idempotent.
+#[cfg(feature = "asio")]
+fn asio_start_notifier(app: tauri::AppHandle) {
+    use tauri::Emitter;
+    let (tx, rx) = std::sync::mpsc::channel::<u64>();
+    if ASIO_ENDED_TX.set(tx).is_err() {
+        return; // ja arrencat
+    }
+    std::thread::Builder::new()
+        .name("asio-notifier".into())
+        .spawn(move || {
+            while let Ok(voice_id) = rx.recv() {
+                let _ = app.emit("asio-voice-ended", voice_id);
+            }
+        })
+        .ok();
+}
+
 // Estat de l'STREAM de mescla actiu: l'AsioStreams (buffers de sortida), el
 // tipus de mostra del driver, la mida de buffer, el nombre de canals preparats,
 // la freqüència, l'id del callback i la llista de VEUS actives compartida amb el
@@ -699,6 +735,13 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
         if let Ok(mut voices) = cb_voices.lock() {
             for voice in voices.iter_mut() {
                 asio_mix_voice(voice, &mut acc, buffer_size);
+            }
+            // Notifica el final natural de cada veu acabada (id real, no el to de
+            // prova u64::MAX) abans d'eliminar-la, perquè la UI reseteji el tile.
+            for v in voices.iter() {
+                if v.finished && v.voice_id != u64::MAX {
+                    asio_notify_ended(v.voice_id);
+                }
             }
             // Elimina les veus acabades (final natural sense loop, o release fet).
             voices.retain(|v| !v.finished);
@@ -1221,6 +1264,9 @@ pub fn run() {
                 // Arrenca maximitzada (ocupa tota la pantalla, sense retalls)
                 let _ = win.maximize();
             }
+            // Fil notificador de finals de veu ASIO → events Tauri cap a la UI.
+            #[cfg(feature = "asio")]
+            asio_start_notifier(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

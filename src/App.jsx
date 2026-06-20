@@ -100,6 +100,21 @@ export default function App() {
     return () => { if (un) un(); };
   }, []);
 
+  // El motor ASIO natiu informa quan una veu (cue) acaba sola → reseteja el tile
+  // (el voiceId coincideix amb l'id del slot).
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('asio-voice-ended', (e) => {
+          const id = e.payload;
+          if (id != null) useSoundStore.getState().handleEnded(id);
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
   // En arrencar: recarrega els cues des de disc (per la ruta desada) i neteja
   // els fantasmes vells (nom sense ruta) perquè no quedin noms penjats.
   useEffect(() => {
