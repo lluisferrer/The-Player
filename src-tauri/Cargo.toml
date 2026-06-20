@@ -26,7 +26,15 @@ tauri-build = { version = "2", features = [] }
 #   npm run tauri dev -- --features asio
 # (o `cargo build --features asio` dins de src-tauri).
 [features]
-asio = ["cpal/asio", "dep:asio-sys"]
+asio = ["cpal/asio", "dep:asio-sys", "dep:symphonia"]
+
+# Optimitza les DEPENDÈNCIES també en build de debug (el nostre codi segueix sense
+# optimitzar, per compilar ràpid i poder depurar). Imprescindible per a l'àudio:
+# el descodificador MP3 de symphonia és ~30-100× més lent sense optimitzar
+# (descodificar 2 min trigava 30 s en debug; amb això, <1 s). Es compila un cop
+# i queda a la caché.
+[profile.dev.package."*"]
+opt-level = 3
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -39,4 +47,10 @@ cpal = "0.15"
 # cal per llistar els drivers SENSE carregar-los (driver_names) i per carregar
 # NOMÉS el driver triat (load_driver) — cpal no exposa cap d'aquestes dues coses.
 asio-sys = { version = "0.2", optional = true }
+# Descodificació d'àudio a Rust per al render natiu de cues (motor ASIO). Activem
+# només els formats del projecte (MP3/WAV/OGG-Vorbis/FLAC) per no inflar el build.
+# `optional` + lligat a la feature `asio`: el build normal (Web Audio) no el porta.
+symphonia = { version = "0.5", optional = true, default-features = false, features = [
+    "mp3", "wav", "ogg", "vorbis", "flac", "pcm", "isomp4",
+] }
 

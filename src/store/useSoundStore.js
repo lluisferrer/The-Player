@@ -7,7 +7,8 @@ import {
   csPlay, csStop, csPause, csResume, csSeek, csSetVolume,
   csPreviewStart, csPreviewStop,
 } from '../lib/cueStreamEngine';
-import { hasClip, isVideo, effFadeIn, effFadeOut } from '../lib/slotAudio';
+import { invoke } from '@tauri-apps/api/core';
+import { hasClip, isVideo, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
 import { dispatchCue } from '../lib/cueDispatch';
 import { isAsioTarget, resolveCueTargetStr } from '../lib/outputTarget';
 import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek } from '../lib/videoOutput';
@@ -671,12 +672,31 @@ export const useSoundStore = create((set, get) => ({
     // però marca el cue com a "reproduint" perquè la UI/transport ho reflecteixin.
     const decision = dispatchCue(get(), slot, { kind: 'play' });
     if (decision.route === 'asio') {
-      // TODO (pas següent): aquí s'invocarà el render natiu (asio_play_voice)
-      // amb decision.target.{driver,channels}. Veure src/lib/cueDispatch.js.
+      // Render natiu: descodifica i mescla el cue pel motor ASIO (fil
+      // `asio-engine`), cap als canals del target. NO toca Web Audio (regla
+      // anti-duplicació). Fades/volum/segment/loop efectius del store.
+      const total = slotDuration(slot);
+      const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || Infinity));
+      const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
+      const segDur = Math.max(0.02, (stopPoint > 0 ? stopPoint : total) - startPoint);
+      const effIn = Math.max(0, Math.min(effFadeIn(slot, globalFadeIn), segDur));
+      const effOut = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
+      invoke('asio_play_voice', {
+        voiceId: slot.id,
+        driver: decision.target.driver,
+        filePath: slot.filePath,
+        channels: decision.target.channels,
+        gain: slot.volume ?? 0.8,
+        fadeIn: effIn,
+        fadeOut: effOut,
+        loopOn: !!slot.loop,
+        startPoint,
+        stopPoint,
+      }).catch((e) => console.warn('[asio] play_voice:', e));
       set((state) => ({
         slots: state.slots.map((s) =>
           s.id === slotId
-            ? { ...s, isPlaying: true, pausedAt: null, startedAt: get().audioContext ? get().audioContext.currentTime : 0 }
+            ? { ...s, isPlaying: true, pausedAt: null, startedAt: performance.now() / 1000 }
             : s
         ),
         activeSlot: slotId,
@@ -1186,11 +1206,19 @@ export const useSoundStore = create((set, get) => ({
     }
     // Deixa de duckejar (el Set evita doble compte si ja no hi era)
     if (slot.duck) duckRemove(get, slotId);
-    if (slot.isStreaming) { csStop(get, set, slotId, fade); return; }
-    // Cue routejat a ASIO (stub): no té graf Web Audio (ni sourceNode). Marca'l
-    // aturat sense tocar Web Audio. TODO (pas següent): aturar la veu nativa al
-    // fil `asio-engine` (invoke('asio_stop_voice', ...)) amb el fade indicat.
+    // Cue routejat a ASIO: no té graf Web Audio (ni sourceNode). Atura la veu
+    // nativa al fil `asio-engine` amb el fade-out efectiu i marca'l aturat.
+    // IMPORTANT: aquesta comprovació va ABANS de la d'streaming — un cue ASIO
+    // pot ser >60s (marcat isStreaming), però NO té graf Web Audio, així que
+    // csStop no l'aturaria; ha de parar per la via nativa. (A playSlot el
+    // dispatch ASIO també es resol abans de l'streaming.)
     if (isAsioTarget(resolveCueTargetStr(get(), slot)) && !slot.sourceNode) {
+      // Calcula el fade-out: true → efectiu del cue; número → aquests segons.
+      let fadeSec = 0;
+      if (fade === true) fadeSec = Math.max(0, effFadeOut(slot, globalFadeOut));
+      else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
+      invoke('asio_stop_voice', { voiceId: slot.id, fadeOut: fadeSec })
+        .catch((e) => console.warn('[asio] stop_voice:', e));
       set((state) => ({
         slots: state.slots.map((s) =>
           s.id === slotId ? { ...s, isPlaying: false, pausedAt: null } : s
@@ -1199,6 +1227,7 @@ export const useSoundStore = create((set, get) => ({
       }));
       return;
     }
+    if (slot.isStreaming) { csStop(get, set, slotId, fade); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : audioContext;
 
     // Calcula la durada del fade out

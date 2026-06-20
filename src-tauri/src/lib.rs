@@ -1,6 +1,10 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 
+// Descodificació d'àudio a Rust per al render natiu de cues (només amb `asio`).
+#[cfg(feature = "asio")]
+mod asio_decode;
+
 // Llegeix els bytes d'un fitxer pel seu camí absolut (per carregar àudio
 // des de rutes guardades a la Library). Retorna els bytes en brut.
 #[tauri::command]
@@ -244,62 +248,6 @@ fn play_test_tone(
     Ok(())
 }
 
-// Escriu un sinus al buffer d'un canal ASIO, convertint al tipus de mostra natiu
-// (només tipus LSB, que a x86 són little-endian natiu). `base` és la fase inicial.
-#[cfg(feature = "asio")]
-unsafe fn asio_write_sine(
-    ptr: *mut std::ffi::c_void,
-    n: usize,
-    dt: &asio_sys::AsioSampleType,
-    base: f32,
-    step: f32,
-    amp: f32,
-) {
-    use asio_sys::AsioSampleType as T;
-    match dt {
-        T::ASIOSTInt32LSB => {
-            let s = std::slice::from_raw_parts_mut(ptr as *mut i32, n);
-            for (i, v) in s.iter_mut().enumerate() {
-                *v = ((base + step * i as f32).sin() * amp * 2_147_483_647.0) as i32;
-            }
-        }
-        T::ASIOSTInt16LSB => {
-            let s = std::slice::from_raw_parts_mut(ptr as *mut i16, n);
-            for (i, v) in s.iter_mut().enumerate() {
-                *v = ((base + step * i as f32).sin() * amp * 32_767.0) as i16;
-            }
-        }
-        T::ASIOSTFloat32LSB => {
-            let s = std::slice::from_raw_parts_mut(ptr as *mut f32, n);
-            for (i, v) in s.iter_mut().enumerate() {
-                *v = (base + step * i as f32).sin() * amp;
-            }
-        }
-        T::ASIOSTInt24LSB => {
-            let b = std::slice::from_raw_parts_mut(ptr as *mut u8, n * 3);
-            for i in 0..n {
-                let v = ((base + step * i as f32).sin() * amp * 8_388_607.0) as i32;
-                b[i * 3] = (v & 0xff) as u8;
-                b[i * 3 + 1] = ((v >> 8) & 0xff) as u8;
-                b[i * 3 + 2] = ((v >> 16) & 0xff) as u8;
-            }
-        }
-        _ => {}
-    }
-}
-
-// Omple de silenci (zeros) el buffer d'un canal ASIO.
-#[cfg(feature = "asio")]
-unsafe fn asio_silence(ptr: *mut std::ffi::c_void, n: usize, dt: &asio_sys::AsioSampleType) {
-    use asio_sys::AsioSampleType as T;
-    let bytes = match dt {
-        T::ASIOSTInt16LSB => n * 2,
-        T::ASIOSTInt24LSB => n * 3,
-        _ => n * 4,
-    };
-    std::slice::from_raw_parts_mut(ptr as *mut u8, bytes).fill(0);
-}
-
 // ───────────────────────── Motor ASIO persistent ─────────────────────────
 //
 // Molts drivers USB ASIO (MixPre inclòs) NO toleren un load/unload ràpid
@@ -310,16 +258,92 @@ unsafe fn asio_silence(ptr: *mut std::ffi::c_void, n: usize, dt: &asio_sys::Asio
 // sense tornar a load/init. Per alliberar el dispositiu (i deixar-lo a WASAPI)
 // cal una ordre `Release` explícita que fa destroy() del driver.
 
+// ── Model de VEUS no bloquejant ──────────────────────────────────────────────
+//
+// Una `Voice` és una reproducció activa: PCM ja descodificat i resamplejat a la
+// freqüència del DRIVER, planar (un Vec per canal de FONT), més els paràmetres
+// de reproducció (canals destí ASIO, gain, fades, loop, segment start/stop).
+// El callback `buffer_switch` (fil RT del driver) avança totes les veus i les
+// mescla als canals de sortida. Les veus que acaben (i no fan loop) s'eliminen
+// soles dins el callback. PlayVoice afegeix i RETORNA immediatament (no bloca).
+//
+// El driver es manté `start()` mentre estigui carregat (encara que no hi hagi
+// veus): és el més robust amb drivers USB que no toleren start/stop repetits, i
+// el cost d'un callback que escriu silenci és negligible.
+
+// Punts d'inici/stop i fades es porten en MOSTRES (frames) a la freqüència del
+// driver, perquè el callback no hagi de fer cap conversió de temps.
+#[cfg(feature = "asio")]
+struct Voice {
+    voice_id: u64,
+    // PCM planar per canal de FONT (data[ch][frame]), a la freqüència del driver.
+    data: std::sync::Arc<Vec<Vec<f32>>>,
+    src_channels: usize,
+    // Canals de sortida ASIO destí (índexs 0-based). El mapeig font→destí és:
+    //   - mono  → es replica a tots els canals destí.
+    //   - estèreo (o més) → canal i de la font va a out_channels[i] (round-robin
+    //     si hi ha més canals font que destí; normalment 2→2).
+    out_channels: Vec<usize>,
+    pos: usize,            // posició de lectura (frames), relativa a start_frame..stop_frame
+    start_frame: usize,    // primer frame del segment
+    stop_frame: usize,     // últim frame (exclusiu) del segment
+    gain: f32,
+    loop_on: bool,
+    // Fades en frames. fade_in_len: rampa 0→1 des de start. fade_out_len: rampa
+    // 1→0 cap al final del segment (només si no fa loop).
+    fade_in_len: usize,
+    fade_out_len: usize,
+    // Stop amb fade-out demanat en calent: a partir de `releasing_from` (frames
+    // de posició absoluta dins segment) baixem a 0 en `release_len` frames i,
+    // en arribar, la veu s'elimina. None = no s'està alliberant.
+    release_from: Option<usize>,
+    release_len: usize,
+    finished: bool,        // marcada per eliminar al final del callback
+}
+
+#[cfg(feature = "asio")]
+impl Voice {
+    // Frame actual dins el segment (0 = start_frame).
+    fn seg_pos(&self) -> usize {
+        self.pos.saturating_sub(self.start_frame)
+    }
+    // Llargada del segment en frames.
+    fn seg_len(&self) -> usize {
+        self.stop_frame.saturating_sub(self.start_frame)
+    }
+}
+
 // Ordres que el fil ASIO dedicat sap atendre. Cada una porta un canal de
 // resposta perquè la comanda Tauri pugui esperar el resultat amb timeout.
 #[cfg(feature = "asio")]
 enum AsioCmd {
-    // Treu un to de 440 Hz pel canal indicat durant `seconds`. Carrega el
-    // driver si cal (o en canvia), però el manté carregat en acabar.
+    // Treu un to sinus transitori pel canal indicat durant `seconds` (auto-stop).
+    // Internament és una VEU generada (no bloqueja el fil).
     Tone {
         driver_name: String,
         channel: u16,
         seconds: f32,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Reprodueix un cue real: descodifica el fitxer i registra una VEU activa.
+    // No bloqueja: retorna tan bon punt la veu queda enregistrada.
+    PlayVoice {
+        voice_id: u64,
+        driver_name: String,
+        file_path: String,
+        channels: Vec<u16>, // canals ASIO destí (0-based)
+        gain: f32,
+        fade_in: f32,       // segons
+        fade_out: f32,      // segons
+        loop_on: bool,
+        start_point: f32,   // segons dins el fitxer
+        stop_point: f32,    // segons (<=0 = fins al final)
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Atura una veu pel seu id, amb fade-out opcional (segons).
+    StopVoice {
+        voice_id: u64,
+        fade_out: f32,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     // Allibera completament el driver carregat (stop + dispose + destroy) i
@@ -340,22 +364,64 @@ enum AsioCmd {
 #[cfg(feature = "asio")]
 static ASIO_TX: std::sync::OnceLock<std::sync::mpsc::Sender<AsioCmd>> = std::sync::OnceLock::new();
 
+// Estat de l'STREAM de mescla actiu: l'AsioStreams (buffers de sortida), el
+// tipus de mostra del driver, la mida de buffer, el nombre de canals preparats,
+// la freqüència, l'id del callback i la llista de VEUS actives compartida amb el
+// callback. Tot dins Arc/Mutex perquè el callback (fil RT) hi pugui accedir.
+#[cfg(feature = "asio")]
+struct AsioMix {
+    // `streams` cal MANTENIR-LO VIU aquí: el callback en té un clone de l'Arc,
+    // però si aquest handle es deixés caure abans del teardown, el Mutex podria
+    // alliberar-se mentre el driver encara crida el callback. No s'hi llegeix
+    // directament des d'aquí (per això l'allow), però la seva propietat importa.
+    #[allow(dead_code)]
+    streams: std::sync::Arc<std::sync::Mutex<asio_sys::AsioStreams>>,
+    voices: std::sync::Arc<std::sync::Mutex<Vec<Voice>>>,
+    callback_id: asio_sys::CallbackId,
+    // Guardats per a depuració/futur (telemetria, re-prepare): el callback ja en
+    // té còpies pròpies, així que aquí no es llegeixen.
+    #[allow(dead_code)]
+    data_type: asio_sys::AsioSampleType,
+    #[allow(dead_code)]
+    buffer_size: usize,
+    num_channels: usize, // canals de sortida preparats (= sortides del driver)
+    sample_rate: u32,
+}
+
 // Estat propietari del fil ASIO: el driver carregat (si n'hi ha), amb el seu
 // `Asio` i el nom. Mantenir `Asio` viu evita que el seu `Weak<DriverInner>`
 // es perdi; mantenir el `Driver` original (sense clonar-lo) garanteix que
 // `destroy()` pugui consumir l'únic `Arc` i cridar ASIOExit de debò.
+// `mix` és l'stream de mescla persistent (None fins que s'arrenca).
 #[cfg(feature = "asio")]
 struct AsioLoaded {
     asio: asio_sys::Asio,
     driver: asio_sys::Driver,
     name: String,
+    mix: Option<AsioMix>,
+}
+
+// Atura i desmunta l'stream de mescla d'un driver (stop + remove_callback +
+// dispose_buffers). Deixa el driver en estat Initialized, llest per re-preparar.
+#[cfg(feature = "asio")]
+fn asio_teardown_mix(l: &mut AsioLoaded) {
+    if let Some(mix) = l.mix.take() {
+        let _ = l.driver.stop();
+        l.driver.remove_callback(mix.callback_id);
+        let _ = l.driver.dispose_buffers();
+        // Buida les veus (l'Arc del callback ja no s'invocarà).
+        if let Ok(mut v) = mix.voices.lock() {
+            v.clear();
+        }
+    }
 }
 
 // Allibera el driver carregat (si n'hi ha) des del fil ASIO. Torna el resultat
 // del destroy per informar-ne. És idempotent: si no hi ha res, no fa res.
 #[cfg(feature = "asio")]
 fn asio_release_loaded(loaded: &mut Option<AsioLoaded>) -> Result<(), String> {
-    if let Some(l) = loaded.take() {
+    if let Some(mut l) = loaded.take() {
+        asio_teardown_mix(&mut l);
         let _ = l.driver.stop();
         let _ = l.driver.dispose_buffers();
         match l.driver.destroy() {
@@ -394,6 +460,7 @@ fn asio_ensure_loaded(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Res
             asio,
             driver,
             name: driver_name.to_string(),
+            mix: None,
         });
     }
     Ok(())
@@ -409,9 +476,330 @@ fn asio_do_info(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result<As
     Ok(AsioInfo { outs, sample_rate })
 }
 
-// Carrega el driver demanat (si encara no ho està) i en treu un to pel canal
-// indicat durant `seconds`. Manté el driver carregat en acabar. Tota la feina
-// ASIO passa al fil dedicat (és qui crida aquesta funció).
+// Escriu un buffer f32 mesclat [-1,1] al buffer d'un canal ASIO, limitant
+// (clip) i convertint al tipus de mostra natiu del driver. `mix` ha de tenir
+// exactament `n` mostres. Complementa `asio_write_sine` (mateixos tipus).
+#[cfg(feature = "asio")]
+unsafe fn asio_write_mix(
+    ptr: *mut std::ffi::c_void,
+    mix: &[f32],
+    dt: &asio_sys::AsioSampleType,
+) {
+    use asio_sys::AsioSampleType as T;
+    let n = mix.len();
+    let cl = |x: f32| x.clamp(-1.0, 1.0);
+    match dt {
+        T::ASIOSTInt32LSB => {
+            let s = std::slice::from_raw_parts_mut(ptr as *mut i32, n);
+            for (d, &v) in s.iter_mut().zip(mix) {
+                *d = (cl(v) * 2_147_483_647.0) as i32;
+            }
+        }
+        T::ASIOSTInt16LSB => {
+            let s = std::slice::from_raw_parts_mut(ptr as *mut i16, n);
+            for (d, &v) in s.iter_mut().zip(mix) {
+                *d = (cl(v) * 32_767.0) as i16;
+            }
+        }
+        T::ASIOSTFloat32LSB => {
+            let s = std::slice::from_raw_parts_mut(ptr as *mut f32, n);
+            for (d, &v) in s.iter_mut().zip(mix) {
+                *d = cl(v);
+            }
+        }
+        T::ASIOSTInt24LSB => {
+            let b = std::slice::from_raw_parts_mut(ptr as *mut u8, n * 3);
+            for (i, &v) in mix.iter().enumerate() {
+                let q = (cl(v) * 8_388_607.0) as i32;
+                b[i * 3] = (q & 0xff) as u8;
+                b[i * 3 + 1] = ((q >> 8) & 0xff) as u8;
+                b[i * 3 + 2] = ((q >> 16) & 0xff) as u8;
+            }
+        }
+        _ => {}
+    }
+}
+
+// Assegura que l'STREAM de mescla persistent està arrencat per al driver
+// carregat. Prepara TOTS els canals de sortida del driver un sol cop, registra
+// el callback de mescla (que consumeix la llista de veus compartida) i fa
+// start(). Idempotent: si ja hi ha mix, no fa res. Retorna (sample_rate, outs).
+#[cfg(feature = "asio")]
+fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result<(u32, usize), String> {
+    use asio_sys::AsioSampleType as T;
+    use std::sync::{Arc, Mutex};
+
+    asio_ensure_loaded(loaded, driver_name)?;
+    let l = loaded.as_mut().unwrap();
+
+    if let Some(mix) = l.mix.as_ref() {
+        return Ok((mix.sample_rate, mix.num_channels));
+    }
+
+    let driver = &l.driver;
+    let outs = driver.channels().map_err(|e| format!("channels(): {:?}", e))?.outs as usize;
+    if outs == 0 {
+        return Err("El driver no té canals de sortida.".into());
+    }
+    let sample_rate = driver.sample_rate().map_err(|e| format!("sample_rate(): {:?}", e))? as u32;
+    let data_type = driver.output_data_type().map_err(|e| format!("output_data_type(): {:?}", e))?;
+    match data_type {
+        T::ASIOSTInt32LSB | T::ASIOSTInt16LSB | T::ASIOSTFloat32LSB | T::ASIOSTInt24LSB => {}
+        other => return Err(format!("Tipus de mostra ASIO no suportat (de moment): {:?}", other)),
+    }
+
+    // Preparem TOTS els canals de sortida (perquè qualsevol routing hi càpiga).
+    let streams = driver
+        .prepare_output_stream(None, outs, None)
+        .map_err(|e| format!("prepare_output_stream(): {:?}", e))?;
+    let buffer_size = match streams.output.as_ref() {
+        Some(o) => o.buffer_size as usize,
+        None => return Err("El driver no ha donat stream de sortida.".into()),
+    };
+    let streams = Arc::new(Mutex::new(streams));
+    let voices: Arc<Mutex<Vec<Voice>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let cb_streams = streams.clone();
+    let cb_voices = voices.clone();
+    // `AsioSampleType` no és Copy/Clone: en demanem una còpia pròpia per al
+    // callback (consulta barata) i deixem `data_type` per guardar a `AsioMix`.
+    let cb_dt = driver.output_data_type().map_err(|e| format!("output_data_type(): {:?}", e))?;
+    let num = outs;
+
+    // Callback de mescla (fil RT del driver). Per cada buffer:
+    //   1. zera un buffer acumulador per canal de sortida (num × buffer_size).
+    //   2. avança i mescla cada veu activa (gain · fade) als seus canals destí.
+    //   3. escriu cada acumulador al buffer ASIO natiu (amb clip + conversió).
+    // Locks curts (Mutex de veus i de streams), acceptable a aquesta escala.
+    let callback_id = driver.add_callback(move |info: &asio_sys::CallbackInfo| {
+        let bi = info.buffer_index as usize;
+        let mut lock = match cb_streams.lock() { Ok(l) => l, Err(_) => return };
+        let stream = match lock.output { Some(ref mut s) => s, None => return };
+
+        // Acumuladors per canal de sortida (planar).
+        let mut acc: Vec<Vec<f32>> = vec![vec![0.0f32; buffer_size]; num];
+
+        if let Ok(mut voices) = cb_voices.lock() {
+            for voice in voices.iter_mut() {
+                asio_mix_voice(voice, &mut acc, buffer_size);
+            }
+            // Elimina les veus acabades (final natural sense loop, o release fet).
+            voices.retain(|v| !v.finished);
+        }
+
+        // Bolca els acumuladors als buffers ASIO natius.
+        unsafe {
+            for ch in 0..num {
+                let ptr = stream.buffer_infos[ch].buffers[bi];
+                asio_write_mix(ptr, &acc[ch], &cb_dt);
+            }
+        }
+    });
+
+    if let Err(e) = driver.start() {
+        driver.remove_callback(callback_id);
+        let _ = driver.dispose_buffers();
+        return Err(format!("start(): {:?}", e));
+    }
+
+    l.mix = Some(AsioMix {
+        streams,
+        voices,
+        callback_id,
+        data_type,
+        buffer_size,
+        num_channels: outs,
+        sample_rate,
+    });
+    Ok((sample_rate, outs))
+}
+
+// Avança una veu `buffer_size` frames i la mescla als acumuladors de sortida.
+// Aplica gain, fade in/out i, si s'està alliberant (release), la rampa de stop.
+// Marca `finished` si la veu arriba al final (i no fa loop) o acaba el release.
+#[cfg(feature = "asio")]
+fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
+    if voice.finished {
+        return;
+    }
+    let seg_len = voice.seg_len();
+    if seg_len == 0 {
+        voice.finished = true;
+        return;
+    }
+    let data = voice.data.clone();
+    let src_ch = voice.src_channels.max(1);
+
+    for i in 0..buffer_size {
+        // Final del segment?
+        if voice.pos >= voice.stop_frame {
+            if voice.loop_on && voice.release_from.is_none() {
+                voice.pos = voice.start_frame; // reinicia el segment
+            } else {
+                voice.finished = true;
+                break;
+            }
+        }
+
+        let seg_pos = voice.seg_pos();
+
+        // Envolupant de fade (multiplicador 0..1).
+        let mut env = 1.0f32;
+        if voice.fade_in_len > 0 && seg_pos < voice.fade_in_len {
+            env *= seg_pos as f32 / voice.fade_in_len as f32;
+        }
+        if !voice.loop_on && voice.fade_out_len > 0 {
+            let from = seg_len.saturating_sub(voice.fade_out_len);
+            if seg_pos >= from {
+                let into = seg_pos - from;
+                env *= 1.0 - (into as f32 / voice.fade_out_len as f32).min(1.0);
+            }
+        }
+        // Release (stop amb fade en calent): rampa addicional cap a 0.
+        if let Some(rfrom) = voice.release_from {
+            if seg_pos >= rfrom {
+                let into = seg_pos - rfrom;
+                if voice.release_len == 0 || into >= voice.release_len {
+                    voice.finished = true;
+                    break;
+                }
+                env *= 1.0 - into as f32 / voice.release_len as f32;
+            }
+        }
+
+        let g = voice.gain * env;
+        let frame = voice.pos;
+
+        // Mescla la font cap als canals destí.
+        for (di, &out_ch) in voice.out_channels.iter().enumerate() {
+            if out_ch >= acc.len() {
+                continue;
+            }
+            // Mono → replica a tots; multicanal → canal di (round-robin sobre src).
+            let s = if src_ch == 1 {
+                data[0].get(frame).copied().unwrap_or(0.0)
+            } else {
+                let sc = di % src_ch;
+                data[sc].get(frame).copied().unwrap_or(0.0)
+            };
+            acc[out_ch][i] += s * g;
+        }
+
+        voice.pos += 1;
+    }
+}
+
+// Construeix i registra una VEU a partir d'un fitxer descodificat. No bloca.
+#[cfg(feature = "asio")]
+#[allow(clippy::too_many_arguments)]
+fn asio_play_voice_impl(
+    loaded: &mut Option<AsioLoaded>,
+    voice_id: u64,
+    driver_name: &str,
+    file_path: &str,
+    channels: &[u16],
+    gain: f32,
+    fade_in: f32,
+    fade_out: f32,
+    loop_on: bool,
+    start_point: f32,
+    stop_point: f32,
+) -> Result<(), String> {
+    let (sample_rate, outs) = asio_ensure_mix(loaded, driver_name)?;
+
+    // Canals destí vàlids (descarta els que excedeixen les sortides del driver).
+    let out_channels: Vec<usize> = channels
+        .iter()
+        .map(|&c| c as usize)
+        .filter(|&c| c < outs)
+        .collect();
+    if out_channels.is_empty() {
+        return Err(format!(
+            "Cap canal destí vàlid (el driver té {} sortides).",
+            outs
+        ));
+    }
+
+    // Descodifica + resampleja a la freqüència del driver.
+    let decoded = asio_decode::decode_file(file_path, sample_rate)?;
+    let data = std::sync::Arc::new(decoded.data);
+    let total = decoded.frames;
+
+    // Segment en frames.
+    let sr = sample_rate as f32;
+    let start_frame = ((start_point.max(0.0)) * sr) as usize;
+    let start_frame = start_frame.min(total);
+    let stop_frame = if stop_point > 0.0 {
+        ((stop_point * sr) as usize).min(total)
+    } else {
+        total
+    };
+    let stop_frame = stop_frame.max(start_frame + 1).min(total.max(start_frame + 1));
+
+    let seg_len = stop_frame.saturating_sub(start_frame);
+    let fade_in_len = ((fade_in.max(0.0) * sr) as usize).min(seg_len);
+    let fade_out_len = ((fade_out.max(0.0) * sr) as usize).min(seg_len);
+
+    let voice = Voice {
+        voice_id,
+        data,
+        src_channels: decoded.channels,
+        out_channels,
+        pos: start_frame,
+        start_frame,
+        stop_frame,
+        gain: gain.max(0.0),
+        loop_on,
+        fade_in_len,
+        fade_out_len,
+        release_from: None,
+        release_len: 0,
+        finished: false,
+    };
+
+    let mix = loaded.as_ref().unwrap().mix.as_ref().unwrap();
+    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
+    // Si ja hi havia una veu amb aquest id (re-disparo), la substituïm.
+    voices.retain(|v| v.voice_id != voice_id);
+    voices.push(voice);
+    Ok(())
+}
+
+// Atura una veu pel seu id. Amb fade_out > 0, n'inicia la rampa de release des
+// de la posició actual; amb 0, l'elimina immediatament.
+#[cfg(feature = "asio")]
+fn asio_stop_voice_impl(
+    loaded: &mut Option<AsioLoaded>,
+    voice_id: u64,
+    fade_out: f32,
+) -> Result<(), String> {
+    let l = match loaded.as_ref() {
+        Some(l) => l,
+        None => return Ok(()), // res carregat: res a aturar
+    };
+    let mix = match l.mix.as_ref() {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+    let sr = mix.sample_rate as f32;
+    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
+    if fade_out > 0.0 {
+        let rel = (fade_out * sr) as usize;
+        for v in voices.iter_mut() {
+            if v.voice_id == voice_id && v.release_from.is_none() {
+                v.release_from = Some(v.seg_pos());
+                v.release_len = rel.max(1);
+                v.loop_on = false; // un release acaba la veu encara que fes loop
+            }
+        }
+    } else {
+        voices.retain(|v| v.voice_id != voice_id);
+    }
+    Ok(())
+}
+
+// To de prova com a VEU transitòria (sinus 440 Hz generat, auto-stop després de
+// `seconds`). NO bloqueja el fil: genera un PCM curt i el registra com a veu.
 #[cfg(feature = "asio")]
 fn asio_do_tone(
     loaded: &mut Option<AsioLoaded>,
@@ -419,80 +807,39 @@ fn asio_do_tone(
     channel: u16,
     seconds: f32,
 ) -> Result<(), String> {
-    use asio_sys::AsioSampleType as T;
-    use std::sync::{Arc, Mutex};
-
-    asio_ensure_loaded(loaded, driver_name)?;
-    let driver = &loaded.as_ref().unwrap().driver;
-
-    let outs = driver.channels().map_err(|e| format!("channels(): {:?}", e))?.outs as usize;
+    let (sample_rate, outs) = asio_ensure_mix(loaded, driver_name)?;
     let target = channel as usize;
     if target >= outs {
         return Err(format!("El canal {} no existeix (el driver té {} sortides)", channel + 1, outs));
     }
-    let sample_rate = driver.sample_rate().map_err(|e| format!("sample_rate(): {:?}", e))? as f32;
-    let data_type = driver.output_data_type().map_err(|e| format!("output_data_type(): {:?}", e))?;
-    match data_type {
-        T::ASIOSTInt32LSB | T::ASIOSTInt16LSB | T::ASIOSTFloat32LSB | T::ASIOSTInt24LSB => {}
-        other => return Err(format!("Tipus de mostra ASIO no suportat (de moment): {:?}", other)),
+    let sr = sample_rate as f32;
+    let frames = (seconds.max(0.1) * sr) as usize;
+    let step = 2.0 * std::f32::consts::PI * 440.0 / sr;
+    let mut buf = Vec::with_capacity(frames);
+    for i in 0..frames {
+        buf.push((step * i as f32).sin() * 0.2);
     }
-
-    // Preparem els canals 0..=target (només els que calen).
-    let num = target + 1;
-    let streams = driver
-        .prepare_output_stream(None, num, None)
-        .map_err(|e| format!("prepare_output_stream(): {:?}", e))?;
-    let buffer_size = match streams.output.as_ref() {
-        Some(o) => o.buffer_size as usize,
-        None => return Err("El driver no ha donat stream de sortida.".into()),
+    let data = std::sync::Arc::new(vec![buf]);
+    let voice = Voice {
+        voice_id: u64::MAX, // id reservat per als tons de prova
+        data,
+        src_channels: 1,
+        out_channels: vec![target],
+        pos: 0,
+        start_frame: 0,
+        stop_frame: frames,
+        gain: 1.0,
+        loop_on: false,
+        fade_in_len: 0,
+        fade_out_len: (0.01 * sr) as usize, // micro-fade out per evitar el clic final
+        release_from: None,
+        release_len: 0,
+        finished: false,
     };
-    let streams = Arc::new(Mutex::new(streams));
-
-    let step = 2.0 * std::f32::consts::PI * 440.0 / sample_rate;
-    let mut phase = 0.0f32;
-    let cb_streams = streams.clone();
-    let cb_dt = data_type;
-    let callback_id = driver.add_callback(move |info: &asio_sys::CallbackInfo| {
-        let bi = info.buffer_index as usize;
-        let mut lock = match cb_streams.lock() {
-            Ok(l) => l,
-            Err(_) => return,
-        };
-        let stream = match lock.output {
-            Some(ref mut s) => s,
-            None => return,
-        };
-        let base = phase;
-        unsafe {
-            for ch in 0..num {
-                let ptr = stream.buffer_infos[ch].buffers[bi];
-                if ch == target {
-                    asio_write_sine(ptr, buffer_size, &cb_dt, base, step, 0.2);
-                } else {
-                    asio_silence(ptr, buffer_size, &cb_dt);
-                }
-            }
-        }
-        phase = (base + step * buffer_size as f32) % std::f32::consts::TAU;
-    });
-
-    if let Err(e) = driver.start() {
-        driver.remove_callback(callback_id);
-        let _ = driver.dispose_buffers();
-        // No destruïm el driver: el deixem carregat per al pròxim to.
-        return Err(format!("start(): {:?}", e));
-    }
-
-    // Reproduïm el to bloquejant aquest fil. Com que el fil ASIO és serial,
-    // cap altra ordre no s'atendrà fins que aquest to acabi (comportament
-    // volgut: no se solapen tons sobre el mateix driver).
-    std::thread::sleep(std::time::Duration::from_secs_f32(seconds.max(0.1)));
-
-    let _ = driver.stop();
-    driver.remove_callback(callback_id);
-    // dispose_buffers allibera els buffers PERÒ manté el driver inicialitzat
-    // (estat Initialized), llest per a un altre prepare/start sense re-load.
-    let _ = driver.dispose_buffers();
+    let mix = loaded.as_ref().unwrap().mix.as_ref().unwrap();
+    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
+    voices.retain(|v| v.voice_id != u64::MAX);
+    voices.push(voice);
     Ok(())
 }
 
@@ -510,6 +857,26 @@ fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
                     asio_do_tone(&mut loaded, &driver_name, channel, seconds)
                 }))
                 .unwrap_or_else(|_| Err("Pànic processant el to ASIO.".into()));
+                let _ = reply.send(res);
+            }
+            AsioCmd::PlayVoice {
+                voice_id, driver_name, file_path, channels, gain,
+                fade_in, fade_out, loop_on, start_point, stop_point, reply,
+            } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    asio_play_voice_impl(
+                        &mut loaded, voice_id, &driver_name, &file_path, &channels,
+                        gain, fade_in, fade_out, loop_on, start_point, stop_point,
+                    )
+                }))
+                .unwrap_or_else(|_| Err("Pànic reproduint la veu ASIO.".into()));
+                let _ = reply.send(res);
+            }
+            AsioCmd::StopVoice { voice_id, fade_out, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    asio_stop_voice_impl(&mut loaded, voice_id, fade_out)
+                }))
+                .unwrap_or_else(|_| Err("Pànic aturant la veu ASIO.".into()));
                 let _ = reply.send(res);
             }
             AsioCmd::Release { reply } => {
@@ -561,10 +928,71 @@ fn asio_test_tone(driver_name: String, channel: u16, seconds: f32) -> Result<(),
         asio_sender()
             .send(AsioCmd::Tone { driver_name, channel, seconds, reply: reply_tx })
             .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
-        // Esperem que el to acabi (el fil bloqueja durant `seconds`). Marge ampli.
+        // El to ara és una veu transitòria: el fil respon de seguida (no bloca
+        // `seconds`). Esperem només el registre de la veu.
         match reply_rx.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(res) => res,
             Err(_) => Err("Temps esgotat o error processant el to ASIO.".into()),
+        }
+    }
+}
+
+// Reprodueix un cue real pel motor ASIO: descodifica el fitxer a Rust i registra
+// una VEU activa que el callback mescla cap als canals destí. No bloca: torna tan
+// bon punt la veu queda registrada (la descodificació passa al fil ASIO).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn asio_play_voice(
+    voice_id: u64,
+    driver: String,
+    file_path: String,
+    channels: Vec<u16>,
+    gain: f32,
+    fade_in: f32,
+    fade_out: f32,
+    loop_on: bool,
+    start_point: f32,
+    stop_point: f32,
+) -> Result<(), String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        let _ = (voice_id, driver, file_path, channels, gain, fade_in, fade_out, loop_on, start_point, stop_point);
+        Err("Aquesta build no inclou ASIO (cal compilar amb --features asio).".into())
+    }
+    #[cfg(feature = "asio")]
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        asio_sender()
+            .send(AsioCmd::PlayVoice {
+                voice_id, driver_name: driver, file_path, channels, gain,
+                fade_in, fade_out, loop_on, start_point, stop_point, reply: reply_tx,
+            })
+            .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
+        // Marge ampli: inclou descodificar + resamplejar el fitxer.
+        match reply_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(res) => res,
+            Err(_) => Err("Temps esgotat o error reproduint la veu ASIO.".into()),
+        }
+    }
+}
+
+// Atura una veu ASIO pel seu id, amb fade-out opcional (segons).
+#[tauri::command]
+fn asio_stop_voice(voice_id: u64, fade_out: f32) -> Result<(), String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        let _ = (voice_id, fade_out);
+        Err("Aquesta build no inclou ASIO (cal compilar amb --features asio).".into())
+    }
+    #[cfg(feature = "asio")]
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        asio_sender()
+            .send(AsioCmd::StopVoice { voice_id, fade_out, reply: reply_tx })
+            .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
+        match reply_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(res) => res,
+            Err(_) => Err("Temps esgotat o error aturant la veu ASIO.".into()),
         }
     }
 }
@@ -633,6 +1061,8 @@ pub fn run() {
             detect_asio,
             play_test_tone,
             asio_test_tone,
+            asio_play_voice,
+            asio_stop_voice,
             asio_load,
             asio_release
         ])
