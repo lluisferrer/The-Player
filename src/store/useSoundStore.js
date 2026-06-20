@@ -11,6 +11,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { hasClip, isVideo, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
 import { dispatchCue } from '../lib/cueDispatch';
 import { isAsioTarget, resolveCueTargetStr, parseTarget } from '../lib/outputTarget';
+import { clearAsioTelemetry } from '../lib/asioTelemetry';
 import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek } from '../lib/videoOutput';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
@@ -33,6 +34,7 @@ const createEmptySlot = (id) => ({
   analyserNode: null,
   sourceNode: null,
   isPlaying: false,
+  asioActive: false,   // sona pel motor ASIO natiu (playhead/VU venen per telemetria)
   volume: 0.8,
   startedAt: 0,        // instant (audioContext.currentTime) en què va començar a sonar
   pausedAt: null,      // posició (s dins el segment) on s'ha pausat (null = no pausat)
@@ -725,7 +727,7 @@ export const useSoundStore = create((set, get) => ({
       set((state) => ({
         slots: state.slots.map((s) =>
           s.id === slotId
-            ? { ...s, isPlaying: true, pausedAt: null, startedAt: performance.now() / 1000 }
+            ? { ...s, isPlaying: true, asioActive: true, pausedAt: null, startedAt: performance.now() / 1000 }
             : s
         ),
         activeSlot: slotId,
@@ -993,9 +995,10 @@ export const useSoundStore = create((set, get) => ({
     if (!current || !current.isPlaying) return;
     // El cue ha acabat de forma natural: deixa de duckejar (si tocava)
     if (current.duck) duckRemove(get, slotId);
+    if (current.asioActive) clearAsioTelemetry(slotId);
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, isPlaying: false, sourceNode: null } : s
+        s.id === slotId ? { ...s, isPlaying: false, asioActive: false, sourceNode: null } : s
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));
@@ -1248,9 +1251,10 @@ export const useSoundStore = create((set, get) => ({
       else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
       invoke('asio_stop_voice', { voiceId: slot.id, fadeOut: fadeSec })
         .catch((e) => console.warn('[asio] stop_voice:', e));
+      clearAsioTelemetry(slotId);
       set((state) => ({
         slots: state.slots.map((s) =>
-          s.id === slotId ? { ...s, isPlaying: false, pausedAt: null } : s
+          s.id === slotId ? { ...s, isPlaying: false, asioActive: false, pausedAt: null } : s
         ),
         activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
       }));

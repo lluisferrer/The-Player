@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { asioLevel } from '../lib/asioTelemetry';
 
 const VU_GREEN  = '#22c55e';
 const VU_YELLOW = '#eab308';
@@ -27,7 +28,9 @@ function zoneColor(n) {
 
 // Picòmetre vertical (dues barres) amb balística realista: atac ràpid i
 // caiguda lenta, més una marca de retenció de pic que decau amb retard.
-export function VuMeter({ analyserNode, isPlaying }) {
+// `asioId`: si el cue sona pel motor ASIO natiu (sense analyserNode), el nivell
+// es llegeix de la telemetria nativa (asioLevel) en comptes del time-domain.
+export function VuMeter({ analyserNode, isPlaying, asioId = null }) {
   const canvasRef = useRef(null);
   const wrapRef   = useRef(null);
   const rafRef    = useRef(null);
@@ -88,6 +91,12 @@ export function VuMeter({ analyserNode, isPlaying }) {
           }
           target = toNorm(Math.sqrt(sum / data.length));
           instPeak = toNorm(pk);
+        } else if (asioId != null && isPlaying) {
+          // Cue ASIO: nivell (pic lineal) per telemetria nativa. Sense forma
+          // d'ona instantània: fem servir el mateix valor com a RMS i pic.
+          const lin = asioLevel(asioId);
+          target = toNorm(lin);
+          instPeak = toNorm(lin);
         }
 
         // Balística: atac ràpid (puja de pressa), release lent (baixa a poc a poc)
@@ -122,7 +131,7 @@ export function VuMeter({ analyserNode, isPlaying }) {
 
     rafRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [analyserNode, isPlaying]);
+  }, [analyserNode, isPlaying, asioId]);
 
   return (
     <div ref={wrapRef} className="vu-wrap">

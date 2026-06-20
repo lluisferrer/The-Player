@@ -373,7 +373,7 @@ export function SoundButton({ slotId }) {
               </button>
             </div>
             <div className="slot-vu">
-              <VuMeter analyserNode={slot.analyserNode} isPlaying={isPlaying} />
+              <VuMeter analyserNode={slot.analyserNode} isPlaying={isPlaying} asioId={slot.asioActive ? slotId : null} />
             </div>
           </div>
 

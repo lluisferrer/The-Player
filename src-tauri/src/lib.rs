@@ -299,6 +299,9 @@ struct Voice {
     release_from: Option<usize>,
     release_len: usize,
     finished: bool,        // marcada per eliminar al final del callback
+    // Pic d'amplitud (lineal, post gain/fade) de l'últim buffer mesclat. El
+    // fil de telemetria el mostreja per alimentar el picòmetre de la UI.
+    meter: f32,
 }
 
 #[cfg(feature = "asio")]
@@ -498,8 +501,41 @@ fn asio_notify_ended(voice_id: u64) {
     }
 }
 
-// Arrenca el fil que escolta finals de veu i els reenvia a la UI com a events
-// Tauri. Es crida un sol cop a `run()` amb l'AppHandle. Idempotent.
+// Un ítem de telemetria per veu activa: id del slot, posició dins el segment
+// (segons) i nivell (pic d'amplitud lineal 0..1). S'emet en bloc cada ~33 ms.
+#[cfg(feature = "asio")]
+#[derive(Serialize)]
+struct TelemetryItem {
+    id: u64,
+    pos: f32,
+    level: f32,
+}
+
+// Estat compartit que el fil de telemetria mostreja: la llista de veus activa
+// (la mateixa que el callback) i la freqüència del driver per convertir frames
+// a segons. S'estableix en crear el mix i es buida en desmuntar-lo.
+#[cfg(feature = "asio")]
+struct AsioMeterShared {
+    voices: std::sync::Arc<std::sync::Mutex<Vec<Voice>>>,
+    sample_rate: u32,
+}
+
+#[cfg(feature = "asio")]
+static ASIO_METER: std::sync::OnceLock<std::sync::Mutex<Option<AsioMeterShared>>> =
+    std::sync::OnceLock::new();
+
+// Accés mandrós a l'slot compartit de telemetria.
+#[cfg(feature = "asio")]
+fn asio_meter_slot() -> &'static std::sync::Mutex<Option<AsioMeterShared>> {
+    ASIO_METER.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+// Arrenca els fils auxiliars que reenvien estat del motor ASIO a la UI:
+//   · `asio-notifier`  → final natural de veu (event `asio-voice-ended`).
+//   · `asio-telemetry` → playhead + nivell de cada veu (event `asio-telemetry`),
+//     mostrejat a ~30 Hz (NO des del callback RT: aquest només deixa el pic a
+//     `voice.meter` i la posició a `voice.pos`).
+// Es crida un sol cop a `run()` amb l'AppHandle. Idempotent (via ASIO_ENDED_TX).
 #[cfg(feature = "asio")]
 fn asio_start_notifier(app: tauri::AppHandle) {
     use tauri::Emitter;
@@ -507,11 +543,51 @@ fn asio_start_notifier(app: tauri::AppHandle) {
     if ASIO_ENDED_TX.set(tx).is_err() {
         return; // ja arrencat
     }
+
+    // Fil notificador de finals de veu.
+    let app_ended = app.clone();
     std::thread::Builder::new()
         .name("asio-notifier".into())
         .spawn(move || {
             while let Ok(voice_id) = rx.recv() {
-                let _ = app.emit("asio-voice-ended", voice_id);
+                let _ = app_ended.emit("asio-voice-ended", voice_id);
+            }
+        })
+        .ok();
+
+    // Fil de telemetria (playhead + VU) a ~30 Hz.
+    std::thread::Builder::new()
+        .name("asio-telemetry".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(33));
+            // Snapshot curt sota lock: id, posició (s) i nivell de cada veu real.
+            let items: Vec<TelemetryItem> = {
+                let guard = match asio_meter_slot().lock() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                match guard.as_ref() {
+                    Some(sh) => {
+                        let rate = sh.sample_rate.max(1) as f32;
+                        match sh.voices.lock() {
+                            Ok(vs) => vs
+                                .iter()
+                                .filter(|v| v.voice_id != u64::MAX && !v.finished)
+                                .map(|v| TelemetryItem {
+                                    id: v.voice_id,
+                                    pos: v.seg_pos() as f32 / rate,
+                                    level: v.meter,
+                                })
+                                .collect(),
+                            Err(_) => continue,
+                        }
+                    }
+                    None => Vec::new(),
+                }
+            };
+            // Només emetem si hi ha veus (la UI esborra per caducitat si calla).
+            if !items.is_empty() {
+                let _ = app.emit("asio-telemetry", &items);
             }
         })
         .ok();
@@ -559,6 +635,10 @@ struct AsioLoaded {
 #[cfg(feature = "asio")]
 fn asio_teardown_mix(l: &mut AsioLoaded) {
     if let Some(mix) = l.mix.take() {
+        // Deixa de publicar telemetria d'aquest mix abans de desmuntar-lo.
+        if let Ok(mut g) = asio_meter_slot().lock() {
+            *g = None;
+        }
         let _ = l.driver.stop();
         l.driver.remove_callback(mix.callback_id);
         let _ = l.driver.dispose_buffers();
@@ -762,6 +842,12 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
         return Err(format!("start(): {:?}", e));
     }
 
+    // Publica la llista de veus i la freqüència perquè el fil de telemetria les
+    // mostregi (playhead + VU) sense tocar el callback RT.
+    if let Ok(mut g) = asio_meter_slot().lock() {
+        *g = Some(AsioMeterShared { voices: voices.clone(), sample_rate });
+    }
+
     l.mix = Some(AsioMix {
         streams,
         voices,
@@ -789,6 +875,7 @@ fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
     }
     let data = voice.data.clone();
     let src_ch = voice.src_channels.max(1);
+    let mut peak = 0.0f32; // pic d'amplitud d'aquest buffer (per al picòmetre)
 
     for i in 0..buffer_size {
         // Final del segment?
@@ -842,11 +929,18 @@ fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
                 let sc = di % src_ch;
                 data[sc].get(frame).copied().unwrap_or(0.0)
             };
-            acc[out_ch][i] += s * g;
+            let out = s * g;
+            let a = out.abs();
+            if a > peak {
+                peak = a;
+            }
+            acc[out_ch][i] += out;
         }
 
         voice.pos += 1;
     }
+
+    voice.meter = peak;
 }
 
 // Construeix i registra una VEU a partir d'un fitxer descodificat. No bloca.
@@ -916,6 +1010,7 @@ fn asio_play_voice_impl(
         release_from: None,
         release_len: 0,
         finished: false,
+        meter: 0.0,
     };
 
     let mix = loaded.as_ref().unwrap().mix.as_ref().unwrap();
@@ -1013,6 +1108,7 @@ fn asio_do_tone(
         release_from: None,
         release_len: 0,
         finished: false,
+        meter: 0.0,
     };
     let mix = loaded.as_ref().unwrap().mix.as_ref().unwrap();
     let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;

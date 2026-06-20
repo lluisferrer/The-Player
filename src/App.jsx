@@ -14,6 +14,7 @@ import { hasClip } from './lib/slotAudio';
 import { toggleOutputWindow, isOutputOpen, getOutputWindow } from './lib/videoOutput';
 import { availableMonitors } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
+import { applyAsioTelemetry } from './lib/asioTelemetry';
 import './App.css';
 
 // Extensions acceptades pels cues: àudio i vídeo (els de vídeo van a la
@@ -110,6 +111,19 @@ export default function App() {
           const id = e.payload;
           if (id != null) useSoundStore.getState().handleEnded(id);
         });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // Telemetria del motor ASIO (~30 Hz): playhead + nivell de cada veu activa.
+  // Es desa en un Map de mòdul (fora de React) i el consulten el playhead i el
+  // picòmetre cada frame, sense provocar re-renders del store.
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('asio-telemetry', (e) => applyAsioTelemetry(e.payload));
       } catch { /* fora de Tauri */ }
     })();
     return () => { if (un) un(); };
