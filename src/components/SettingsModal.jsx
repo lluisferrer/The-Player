@@ -3,6 +3,65 @@ import { invoke } from '@tauri-apps/api/core';
 import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
+import { makeAsioTargetStr, isAsioTarget, targetLabel } from '../lib/outputTarget';
+
+// A partir de la info dels drivers ASIO carregats ({ [name]: {outs, sample_rate} }),
+// construeix opcions de routing en PARELLS de canals estèreo (1-2, 3-4, …).
+// value = string serialitzat del target ASIO (veure src/lib/outputTarget.js).
+function asioStereoOptions(asioInfo) {
+  const opts = [];
+  for (const [driver, info] of Object.entries(asioInfo || {})) {
+    const outs = info?.outs || 0;
+    for (let c = 0; c + 1 < outs; c += 2) {
+      opts.push({
+        value: makeAsioTargetStr(driver, [c, c + 1]),
+        label: `${driver} · ch ${c + 1}-${c + 2}`,
+      });
+    }
+    // Canal solitari final si el driver té un nombre senar de sortides
+    if (outs % 2 === 1) {
+      opts.push({
+        value: makeAsioTargetStr(driver, [outs - 1]),
+        label: `${driver} · ch ${outs} (mono)`,
+      });
+    }
+  }
+  return opts;
+}
+
+// Selector de sortida reutilitzable: dispositius WASAPI + (opcional) targets ASIO.
+// `extraDefault` és l'opció de capçalera (p. ex. "Bus Cues (per defecte)").
+function OutputSelect({ id, value, onChange, audioDevices, asioOptions, defaultValue, defaultLabel }) {
+  // Si el valor desat és un target ASIO que no surt a les opcions (driver no
+  // carregat en aquesta sessió), l'afegim com a opció "fantasma" perquè el
+  // select el mostri i no es perdi en re-renderitzar (React deixaria el select
+  // sense selecció si el value no casa amb cap option).
+  const orphanAsio =
+    isAsioTarget(value) && !asioOptions.some((o) => o.value === value)
+      ? { value, label: `${targetLabel(value)} (driver no carregat)` }
+      : null;
+
+  return (
+    <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value={defaultValue}>{defaultLabel}</option>
+      <optgroup label="WASAPI (Web Audio)">
+        {audioDevices.map((d) => (
+          <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
+        ))}
+      </optgroup>
+      {(asioOptions.length > 0 || orphanAsio) && (
+        <optgroup label="ASIO (natiu · pendent de render)">
+          {asioOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+          {orphanAsio && (
+            <option key={orphanAsio.value} value={orphanAsio.value}>{orphanAsio.label}</option>
+          )}
+        </optgroup>
+      )}
+    </select>
+  );
+}
 
 // Estils inline per a la llista de diagnòstic (evitem dependre de classes CSS
 // que, per algun motiu, no es pintaven en aquest context del modal).
@@ -106,6 +165,10 @@ export function SettingsModal({ onClose }) {
   const [asioMsg, setAsioMsg] = useState(null);   // estat/error de la detecció ASIO
   const [asioInfo, setAsioInfo] = useState({});   // info per driver carregat: { [name]: {outs, sample_rate} }
 
+  // Opcions de routing ASIO (parells de canals) dels drivers ASIO carregats.
+  // Per oferir-ne, l'usuari ha de carregar el driver a la secció "Dispositius ASIO".
+  const asioOptions = asioStereoOptions(asioInfo);
+
   useEffect(() => {
     if (tab !== 'audio' || outputs) return;
     (async () => {
@@ -186,12 +249,15 @@ export function SettingsModal({ onClose }) {
 
               <div className="settings-row">
                 <label htmlFor="dev-cues">Cues</label>
-                <select id="dev-cues" value={cuesDeviceId} onChange={(e) => setSelectedDevice(e.target.value)}>
-                  <option value="default">Per defecte</option>
-                  {audioDevices.map((d) => (
-                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
-                  ))}
-                </select>
+                <OutputSelect
+                  id="dev-cues"
+                  value={cuesDeviceId}
+                  onChange={setSelectedDevice}
+                  audioDevices={audioDevices}
+                  asioOptions={asioOptions}
+                  defaultValue="default"
+                  defaultLabel="Per defecte"
+                />
               </div>
 
               <div className="settings-row">
@@ -215,21 +281,25 @@ export function SettingsModal({ onClose }) {
               </div>
 
               <div className="settings-subtitle">Routing per color (cues)</div>
-              <div className="settings-note">Els cues sense color, o amb un color sense assignar, sonen pel bus Cues.</div>
+              <div className="settings-note">
+                Els cues sense color, o amb un color sense assignar, sonen pel bus Cues.
+                Per assignar una sortida ASIO cal carregar abans el seu driver a «Dispositius ASIO».
+                El render ASIO encara és pendent: un color assignat a ASIO de moment NO treu so
+                (però tampoc duplica pel bus Cues).
+              </div>
               {CUE_COLORS.map((c) => (
                 <div className="settings-row" key={c.value}>
                   <span className="color-dot" style={{ background: c.value }} />
                   <label htmlFor={`dev-color-${c.value}`}>{c.name}</label>
-                  <select
+                  <OutputSelect
                     id={`dev-color-${c.value}`}
                     value={colorOutputs[c.value] || 'cues'}
-                    onChange={(e) => setColorOutput(c.value, e.target.value)}
-                  >
-                    <option value="cues">Bus Cues (per defecte)</option>
-                    {audioDevices.map((d) => (
-                      <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
-                    ))}
-                  </select>
+                    onChange={(v) => setColorOutput(c.value, v)}
+                    audioDevices={audioDevices}
+                    asioOptions={asioOptions}
+                    defaultValue="cues"
+                    defaultLabel="Bus Cues (per defecte)"
+                  />
                 </div>
               ))}
 

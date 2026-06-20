@@ -26,6 +26,10 @@ function segmentOf(get, slot) {
 
 // Construeix el graf Web Audio per a un element <audio>, al context del
 // dispositiu segons el color del cue (routing per grup).
+// NOTA (Fase B): el dispatch de routing (WASAPI vs ASIO) es resol a playSlot
+// ABANS de cridar csPlay. Per tant, si s'arriba aquí el target és SEMPRE WASAPI;
+// un eventual deviceId ASIO de colorOutputs no s'usa com a sinkId (parseTarget
+// el rebutjaria). Mantenim la resolució WASAPI per deviceId pla com fins ara.
 function buildGraph(get, slot, audio) {
   const outDev = (slot.color && get().colorOutputs[slot.color]) || get().selectedDeviceId;
   const ctx = get().ctxForDevice(outDev);

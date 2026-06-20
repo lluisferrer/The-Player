@@ -8,6 +8,8 @@ import {
   csPreviewStart, csPreviewStop,
 } from '../lib/cueStreamEngine';
 import { hasClip, isVideo, effFadeIn, effFadeOut } from '../lib/slotAudio';
+import { dispatchCue } from '../lib/cueDispatch';
+import { isAsioTarget, resolveCueTargetStr } from '../lib/outputTarget';
 import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek } from '../lib/videoOutput';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
@@ -514,14 +516,17 @@ export const useSoundStore = create((set, get) => ({
   setSelectedDevice: async (deviceId) => {
     const { audioContext } = get();
     set({ selectedDeviceId: deviceId });
-    if (audioContext && audioContext.setSinkId) {
+    // Si el bus de Cues s'assigna a un target ASIO (string "asio:…"), NO és un
+    // sinkId WASAPI vàlid: no toquem el setSinkId del context Web Audio (el
+    // render ASIO és el pas següent). Guardem el valor igualment (routing).
+    if (!isAsioTarget(deviceId) && audioContext && audioContext.setSinkId) {
       try {
         await audioContext.setSinkId(deviceId);
       } catch (e) {
         console.warn('setSinkId no suportat:', e);
       }
     }
-    get().detectOutputChannels();
+    if (!isAsioTarget(deviceId)) get().detectOutputChannels();
     get().persistGlobals();
   },
 
@@ -531,7 +536,8 @@ export const useSoundStore = create((set, get) => ({
   detectOutputChannels: async () => {
     const ctx = get().audioContext || get().initAudioContext();
     const dev = get().selectedDeviceId;
-    if (ctx.setSinkId && dev && dev !== 'default') {
+    // Si el bus de Cues apunta a ASIO, no és un sinkId WASAPI: no el toquem.
+    if (ctx.setSinkId && dev && dev !== 'default' && !isAsioTarget(dev)) {
       try { await ctx.setSinkId(dev); } catch { /* res */ }
     }
     const max = ctx.destination.maxChannelCount;
@@ -621,8 +627,12 @@ export const useSoundStore = create((set, get) => ({
     // sobre l'element <video>. Si la finestra no està oberta, no passa res.
     // Marquem isPlaying perquè el tile/transport ho reflecteixin.
     if (isVideo(slot)) {
-      // Routing per color (com el camí d'àudio); per defecte, bus de Cues
-      const outDev = (slot.color && colorOutputs[slot.color]) || get().selectedDeviceId;
+      // Routing per color (com el camí d'àudio); per defecte, bus de Cues.
+      // Els cues de VÍDEO surten per la finestra de sortida amb <video>.setSinkId,
+      // que només entén deviceIds WASAPI. Si el color apunta a un target ASIO,
+      // no és servible per vídeo → caiem al bus de Cues WASAPI per defecte.
+      const colorOut = slot.color ? colorOutputs[slot.color] : null;
+      const outDev = (colorOut && !isAsioTarget(colorOut)) ? colorOut : get().selectedDeviceId;
       // Fades efectius: el propi del cue si és >0, si no el global
       const effIn = Math.max(0, effFadeIn(slot, globalFadeIn));
       const effOut = Math.max(0, effFadeOut(slot, globalFadeOut));
@@ -653,6 +663,26 @@ export const useSoundStore = create((set, get) => ({
     if (slot.duck) duckAdd(get, slotId);
     // Stop Playlist: si aquest cue atura del tot la playlist, atura-la ara
     if (slot.stopPlaylist) get().playlistStop();
+
+    // ── DISPATCH de routing: WASAPI (Web Audio) vs ASIO (natiu) ──────────────
+    // Regla anti-duplicació: si el target del cue és ASIO, NO l'enviem també per
+    // Web Audio (sonaria dos cops al mateix dispositiu físic). El render ASIO
+    // real és el pas següent; de moment el camí ASIO és un STUB que NO treu so
+    // però marca el cue com a "reproduint" perquè la UI/transport ho reflecteixin.
+    const decision = dispatchCue(get(), slot, { kind: 'play' });
+    if (decision.route === 'asio') {
+      // TODO (pas següent): aquí s'invocarà el render natiu (asio_play_voice)
+      // amb decision.target.{driver,channels}. Veure src/lib/cueDispatch.js.
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId
+            ? { ...s, isPlaying: true, pausedAt: null, startedAt: get().audioContext ? get().audioContext.currentTime : 0 }
+            : s
+        ),
+        activeSlot: slotId,
+      }));
+      return;
+    }
 
     // Cue llarg en streaming: reproducció amb element <audio>
     if (slot.isStreaming) { csPlay(get, set, slotId); return; }
@@ -1157,6 +1187,18 @@ export const useSoundStore = create((set, get) => ({
     // Deixa de duckejar (el Set evita doble compte si ja no hi era)
     if (slot.duck) duckRemove(get, slotId);
     if (slot.isStreaming) { csStop(get, set, slotId, fade); return; }
+    // Cue routejat a ASIO (stub): no té graf Web Audio (ni sourceNode). Marca'l
+    // aturat sense tocar Web Audio. TODO (pas següent): aturar la veu nativa al
+    // fil `asio-engine` (invoke('asio_stop_voice', ...)) amb el fade indicat.
+    if (isAsioTarget(resolveCueTargetStr(get(), slot)) && !slot.sourceNode) {
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId ? { ...s, isPlaying: false, pausedAt: null } : s
+        ),
+        activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
+      }));
+      return;
+    }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : audioContext;
 
     // Calcula la durada del fade out
