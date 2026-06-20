@@ -19,11 +19,11 @@ export function slotDuration(slot) {
   return slot.streamDuration || 0;
 }
 
-// Fades efectius: si el cue té un fade propi (>0) s'usa aquest; si és 0,
-// s'usa el fade global. No hi ha cap interruptor d'override.
+// Fades efectius: si el cue té un fade propi (override no-null) s'usa aquest,
+// fins i tot si és 0 (tall sec explícit); si és null, s'usa el fade global.
 export function effFadeIn(slot, globalIn) {
-  return (slot && slot.fadeIn > 0) ? slot.fadeIn : (globalIn || 0);
+  return (slot && slot.fadeIn != null) ? slot.fadeIn : (globalIn || 0);
 }
 export function effFadeOut(slot, globalOut) {
-  return (slot && slot.fadeOut > 0) ? slot.fadeOut : (globalOut || 0);
+  return (slot && slot.fadeOut != null) ? slot.fadeOut : (globalOut || 0);
 }

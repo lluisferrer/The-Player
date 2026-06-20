@@ -2,6 +2,56 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
+import { PlaylistActionToggle } from './PlaylistActionToggle';
+
+// Estils inline per a la llista de diagnòstic (evitem dependre de classes CSS
+// que, per algun motiu, no es pintaven en aquest context del modal).
+const DIAG_LIST_STYLE = { display: 'flex', flexDirection: 'column', gap: 6 };
+
+// Una fila del diagnòstic d'àudio (un dispositiu WASAPI o un driver ASIO).
+function DiagRow({ o, onTone }) {
+  const isAsio = o.host === 'ASIO';
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: 8,
+      padding: '10px 12px', border: '1px solid var(--border)',
+      borderRadius: 6, background: 'var(--bg-button)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+          <span style={{
+            display: 'inline-block', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px',
+            padding: '1px 5px', marginRight: 6, borderRadius: 3, verticalAlign: 'middle',
+            background: isAsio ? 'var(--accent)' : 'var(--bg-button-hover)',
+            color: isAsio ? '#fff' : 'var(--text-secondary)',
+          }}>{o.host}</span>
+          {o.name}{o.is_default ? '  (per defecte)' : ''}
+        </span>
+        {o.max_channels > 0 && (
+          <span style={{
+            fontSize: 11, whiteSpace: 'nowrap', flexShrink: 0,
+            color: o.max_channels > 2 ? 'var(--vu-green)' : 'var(--text-secondary)',
+            fontWeight: o.max_channels > 2 ? 600 : 400,
+          }}>
+            {o.max_channels} canals · {o.default_sample_rate} Hz
+          </span>
+        )}
+      </div>
+      {o.max_channels > 0 ? (
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5 }}>
+          <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginRight: 4 }}>To de prova:</span>
+          {Array.from({ length: o.max_channels }, (_, c) => (
+            <button key={c} className="diag-tone-btn" onClick={() => onTone(o.host, o.name, c)}>{c + 1}</button>
+          ))}
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+          Carregar per veure canals i provar (pròximament).
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Modal global de configuració amb tres pestanyes: Audio, Cues, Playlist
 export function SettingsModal({ onClose }) {
@@ -23,7 +73,8 @@ export function SettingsModal({ onClose }) {
   const setGlobalFades = useSoundStore((s) => s.setGlobalFades);
   const cuesStopOthers = useSoundStore((s) => s.cuesStopOthers);
   const cuesDuck = useSoundStore((s) => s.cuesDuck);
-  const setCuesDuck = useSoundStore((s) => s.setCuesDuck);
+  const cuesStopPlaylist = useSoundStore((s) => s.cuesStopPlaylist);
+  const setCuesPlaylistAction = useSoundStore((s) => s.setCuesPlaylistAction);
   const setCuesStopOthers = useSoundStore((s) => s.setCuesStopOthers);
 
   const crossfade = useSoundStore((s) => s.crossfade);
@@ -38,6 +89,8 @@ export function SettingsModal({ onClose }) {
 
   const [outputs, setOutputs] = useState(null);
   const [diagError, setDiagError] = useState(null);
+  const [asioOut, setAsioOut] = useState(null);   // dispositius ASIO detectats
+  const [asioMsg, setAsioMsg] = useState(null);   // estat/error de la detecció ASIO
 
   useEffect(() => {
     if (tab !== 'audio' || outputs) return;
@@ -47,8 +100,22 @@ export function SettingsModal({ onClose }) {
     })();
   }, [tab, outputs]);
 
-  const tone = async (name, ch) => {
-    try { await invoke('play_test_tone', { deviceName: name, channel: ch, seconds: 1.0 }); }
+  // Detecció ASIO sota demanda (carregar drivers ASIO és lent i pot bloquejar-se)
+  const detectAsio = async () => {
+    setAsioMsg('Detectant dispositius ASIO…');
+    setAsioOut(null);
+    try {
+      const r = await invoke('detect_asio');
+      setAsioOut(r);
+      setAsioMsg(r.length ? null : 'Cap dispositiu ASIO.');
+    } catch (e) {
+      setAsioOut([]);
+      setAsioMsg(String(e));
+    }
+  };
+
+  const tone = async (host, name, ch) => {
+    try { await invoke('play_test_tone', { host, deviceName: name, channel: ch, seconds: 1.0 }); }
     catch (e) { setDiagError(String(e)); }
   };
 
@@ -120,27 +187,25 @@ export function SettingsModal({ onClose }) {
                 </div>
               ))}
 
-              <div className="settings-subtitle">Diagnòstic natiu (cpal / WASAPI)</div>
+              <div className="settings-subtitle">Diagnòstic natiu (cpal · WASAPI + ASIO)</div>
               {diagError && <div className="diag-error">⚠ {diagError}</div>}
               {!outputs && !diagError && <div className="library-empty">Carregant dispositius…</div>}
-              <div className="library-list">
+              <div style={DIAG_LIST_STYLE}>
                 {outputs && outputs.map((o, i) => (
-                  <div className="diag-item" key={i}>
-                    <div className="diag-head">
-                      <span className="diag-name">{o.name}{o.is_default ? '  (per defecte)' : ''}</span>
-                      <span className={`diag-ch ${o.max_channels > 2 ? 'multi' : ''}`}>
-                        {o.max_channels} canals · {o.default_sample_rate} Hz
-                      </span>
-                    </div>
-                    {o.max_channels > 0 && (
-                      <div className="diag-tones">
-                        <span className="diag-tones-label">To de prova:</span>
-                        {Array.from({ length: o.max_channels }, (_, c) => (
-                          <button key={c} className="diag-tone-btn" onClick={() => tone(o.name, c)}>{c + 1}</button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <DiagRow key={i} o={o} onTone={tone} />
+                ))}
+              </div>
+
+              <div className="settings-subtitle">Dispositius ASIO (latència baixa)</div>
+              <div className="settings-note">
+                Carregar els drivers ASIO és lent i es fa sota demanda. Si uses ASIO4ALL,
+                deixa la interfície com a dispositiu de Windows per defecte perquè hi enviï el so.
+              </div>
+              <button className="diag-detect-btn" onClick={detectAsio}>Detectar ASIO</button>
+              {asioMsg && <div className="diag-error">⚠ {asioMsg}</div>}
+              <div style={DIAG_LIST_STYLE}>
+                {asioOut && asioOut.map((o, i) => (
+                  <DiagRow key={`asio-${i}`} o={o} onTone={tone} />
                 ))}
               </div>
             </>
@@ -165,7 +230,7 @@ export function SettingsModal({ onClose }) {
               </label>
               <div className="settings-note">Cada cue pot definir el seu fade des de l'editor (✎); si és 0, usa el global.</div>
 
-              <div className="settings-subtitle">Comportament</div>
+              <div className="settings-subtitle">Comportament per defecte</div>
               <div className="editor-options">
                 <label className="editor-check">
                   <input
@@ -175,14 +240,11 @@ export function SettingsModal({ onClose }) {
                   />
                   Stop Others per defecte (disparar un cue atura la resta)
                 </label>
-                <label className="editor-check">
-                  <input
-                    type="checkbox"
-                    checked={cuesDuck}
-                    onChange={(e) => setCuesDuck(e.target.checked)}
-                  />
-                  Ducking per defecte (abaixa la playlist en disparar un cue)
-                </label>
+                {/* Acció per defecte sobre la playlist: Ducking o Stop playing */}
+                <PlaylistActionToggle
+                  action={cuesDuck ? 'duck' : cuesStopPlaylist ? 'stop' : 'none'}
+                  onChange={setCuesPlaylistAction}
+                />
               </div>
               <div className="settings-note">Els cues nous prenen aquest valor. Cada cue es pot canviar després des de l'editor (✎).</div>
             </>

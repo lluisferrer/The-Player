@@ -5,6 +5,7 @@ import { drawWavePathRange } from '../lib/waveformDraw';
 import { CUE_COLORS } from '../lib/colors';
 import { hasClip, isVideo, slotDuration } from '../lib/slotAudio';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
+import { PlaylistActionToggle } from './PlaylistActionToggle';
 
 const BG          = '#141416';
 const WAVE_COLOR  = '#6b7280';
@@ -25,7 +26,7 @@ export function SlotEditor() {
   const updateSlotEdit = useSoundStore((s) => s.updateSlotEdit);
   const setLoop        = useSoundStore((s) => s.setLoop);
   const setColor       = useSoundStore((s) => s.setColor);
-  const setDuck        = useSoundStore((s) => s.setDuck);
+  const setPlaylistAction = useSoundStore((s) => s.setPlaylistAction);
   const duckEnabled    = useSoundStore((s) => s.duckEnabled);
   const seekSlot       = useSoundStore((s) => s.seekSlot);
   const playSlot       = useSoundStore((s) => s.playSlot);
@@ -55,8 +56,13 @@ export function SlotEditor() {
   const total    = hasAudio ? slotDuration(slot) : 0;
   const start    = hasAudio ? Math.max(0, slot.startPoint || 0) : 0;
   const stop     = hasAudio ? (slot.stopPoint ?? total) : 0;
-  const fadeIn   = hasAudio ? (slot.fadeIn || 0) : 0;
-  const fadeOut  = hasAudio ? (slot.fadeOut || 0) : 0;
+  // Override propi del fade (null = segueix el global). Distingim null de 0
+  // perquè es pugui forçar un tall sec (0 s) encara que el global no sigui 0.
+  const fadeInOv  = hasAudio ? (slot.fadeIn ?? null) : null;
+  const fadeOutOv = hasAudio ? (slot.fadeOut ?? null) : null;
+  // Valor efectiu: el propi si està definit, si no el global
+  const fadeIn   = fadeInOv  != null ? fadeInOv  : globalFadeIn;
+  const fadeOut  = fadeOutOv != null ? fadeOutOv : globalFadeOut;
   const segDur   = Math.max(0, stop - start);
 
   // Finestra visible (en ratis del fitxer sencer)
@@ -122,9 +128,9 @@ export function SlotEditor() {
       if (xs > 0) ctx.fillRect(0, 0, xs, h);
       if (xe < w) ctx.fillRect(xe, 0, w - xe, h);
 
-      // Rampes de fade efectives (pròpia >0, si no la global)
-      const effIn  = fadeIn > 0 ? fadeIn : globalFadeIn;
-      const effOut = fadeOut > 0 ? fadeOut : globalFadeOut;
+      // Rampes de fade efectives (ja calculades amunt: pròpia o global)
+      const effIn  = fadeIn;
+      const effOut = fadeOut;
       ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
       ctx.lineWidth = 1.5;
       if (effIn > 0) {
@@ -208,13 +214,14 @@ export function SlotEditor() {
   // ─── Accions ───
   const handleClose = () => {
     if (suppressCloseRef.current) return;
-    stopSlot(editingSlot);
+    // No aturem el cue en tancar l'editor: si sonava (preview), continua sonant.
     useSoundStore.getState().persistSlots();
     setEditingSlot(null);
   };
 
   const handleReset = () => {
-    updateSlotEdit(editingSlot, { startPoint: 0, stopPoint: null, fadeIn: 0, fadeOut: 0 });
+    // fadeIn/fadeOut a null = tornen a seguir el fade global
+    updateSlotEdit(editingSlot, { startPoint: 0, stopPoint: null, fadeIn: null, fadeOut: null });
   };
 
   const xToTime = (clientX) => {
@@ -473,38 +480,39 @@ export function SlotEditor() {
             />
             Stop others (talla la resta de cues en disparar)
           </label>
-          <label className="editor-check">
-            <input
-              type="checkbox"
-              checked={!!slot.duck}
-              onChange={(e) => setDuck(editingSlot, e.target.checked)}
-            />
-            Ducking de la playlist (abaixa la playlist mentre sona)
-          </label>
+
+          {/* Auto-continue + Pre-wait a la mateixa fila */}
+          <div className="editor-opt-row">
+            <label className="editor-check">
+              <input
+                type="checkbox"
+                checked={slot.continueMode === 'auto'}
+                onChange={(e) => updateSlotEdit(editingSlot, { continueMode: e.target.checked ? 'auto' : 'none' })}
+              />
+              Auto-continue (dispara el cue següent tot seguit)
+            </label>
+            <label className="editor-prewait">
+              <span>Pre-wait (s)</span>
+              <input
+                className="editor-fade-num"
+                type="number" min="0" step="0.1"
+                value={slot.preWait || 0}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  updateSlotEdit(editingSlot, { preWait: Math.max(0, isNaN(v) ? 0 : v) });
+                }}
+              />
+            </label>
+          </div>
+
+          {/* Acció sobre la playlist: Ducking o Stop playing */}
+          <PlaylistActionToggle
+            action={slot.duck ? 'duck' : slot.stopPlaylist ? 'stop' : 'none'}
+            onChange={(a) => setPlaylistAction(editingSlot, a)}
+          />
           {slot.duck && !duckEnabled && (
             <div className="settings-note">El ducking està desactivat globalment (Settings → Playlist).</div>
           )}
-          <label className="editor-check">
-            <input
-              type="checkbox"
-              checked={slot.continueMode === 'auto'}
-              onChange={(e) => updateSlotEdit(editingSlot, { continueMode: e.target.checked ? 'auto' : 'none' })}
-            />
-            Auto-continue (en disparar-se, dispara el cue següent tot seguit)
-          </label>
-          {/* Pre-wait: retard entre prémer GO i que el cue soni */}
-          <label className="editor-prewait">
-            <span>Pre-wait (s)</span>
-            <input
-              className="editor-fade-num"
-              type="number" min="0" step="0.1"
-              value={slot.preWait || 0}
-              onChange={(e) => {
-                const v = parseFloat(e.target.value);
-                updateSlotEdit(editingSlot, { preWait: Math.max(0, isNaN(v) ? 0 : v) });
-              }}
-            />
-          </label>
         </div>
 
         <div className="editor-colors">
@@ -527,7 +535,17 @@ export function SlotEditor() {
 
         <div className="editor-fades">
           <label>
-            <span>Fade in: {fadeIn > 0 ? `${fadeIn.toFixed(2)}s` : `global (${globalFadeIn.toFixed(2)}s)`}</span>
+            <span className="editor-fade-label">
+              Fade in: {fadeInOv != null ? `${fadeInOv.toFixed(2)}s (propi)` : `${globalFadeIn.toFixed(2)}s (global)`}
+              {fadeInOv != null && (
+                <button
+                  type="button"
+                  className="editor-fade-clear"
+                  onClick={(e) => { e.preventDefault(); updateSlotEdit(editingSlot, { fadeIn: null }); }}
+                  title="Torna al fade global"
+                >↺ global</button>
+              )}
+            </span>
             <div className="editor-fade-row">
               <input
                 type="range" min="0" max={Math.min(FADE_MAX, segDur)} step="0.1"
@@ -549,7 +567,17 @@ export function SlotEditor() {
             </div>
           </label>
           <label>
-            <span>Fade out: {fadeOut > 0 ? `${fadeOut.toFixed(2)}s` : `global (${globalFadeOut.toFixed(2)}s)`}</span>
+            <span className="editor-fade-label">
+              Fade out: {fadeOutOv != null ? `${fadeOutOv.toFixed(2)}s (propi)` : `${globalFadeOut.toFixed(2)}s (global)`}
+              {fadeOutOv != null && (
+                <button
+                  type="button"
+                  className="editor-fade-clear"
+                  onClick={(e) => { e.preventDefault(); updateSlotEdit(editingSlot, { fadeOut: null }); }}
+                  title="Torna al fade global"
+                >↺ global</button>
+              )}
+            </span>
             <div className="editor-fade-row">
               <input
                 type="range" min="0" max={Math.min(FADE_MAX, segDur)} step="0.1"
@@ -570,7 +598,7 @@ export function SlotEditor() {
               />
             </div>
           </label>
-          <div className="editor-fades-note">Un fade a <b>0</b> usa el fade global (Settings → Cues).</div>
+          <div className="editor-fades-note">Per defecte segueix el fade global (Settings → Cues); mou el slider per fixar-ne un de propi (fins i tot <b>0</b> s).</div>
         </div>
 
         <div className="editor-actions">

@@ -1449,8 +1449,103 @@ body {
 
 .editor-options {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Fila amb diverses opcions alineades horitzontalment (p. ex. Auto-continue + Pre-wait) */
+.editor-opt-row {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 18px;
+}
+
+/* ── Control de l'acció sobre la playlist (Ducking / Stop playing) ── */
+.pl-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pl-action-enable {
+  margin: 0;
+}
+
+.pl-action-modes {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.pl-action-modes.disabled {
+  opacity: 0.45;
+}
+
+.pl-action-modes span.active {
+  color: var(--text-primary);
+}
+
+/* Interruptor lliscant entre els dos modes */
+.pl-switch {
+  position: relative;
+  width: 40px;
+  height: 20px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-button);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.pl-switch:disabled {
+  cursor: default;
+}
+
+.pl-switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.pl-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transition: transform 0.15s ease;
+}
+
+.pl-switch.on .pl-switch-knob {
+  transform: translateX(20px);
+}
+
+/* Etiqueta del fade + enllaç per tornar al global */
+.editor-fade-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-fade-clear {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.editor-fade-clear:hover {
+  text-decoration: underline;
 }
 
 .editor-check {
@@ -1696,6 +1791,25 @@ body {
   white-space: nowrap;
 }
 
+/* Etiqueta del backend (WASAPI / ASIO) davant del nom del dispositiu */
+.diag-host {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  margin-right: 6px;
+  border-radius: 3px;
+  background: var(--bg-button-hover);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+
+.diag-host.asio {
+  background: var(--accent);
+  color: #fff;
+}
+
 .diag-ch {
   font-size: 11px;
   color: var(--text-secondary);
@@ -1736,6 +1850,25 @@ body {
 .diag-tone-btn:hover {
   background: var(--accent);
   border-color: var(--accent);
+  color: #fff;
+}
+
+.diag-detect-btn {
+  align-self: flex-start;
+  margin: 4px 0 8px;
+  padding: 5px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.diag-detect-btn:hover {
+  background: var(--accent);
   color: #fff;
 }
 

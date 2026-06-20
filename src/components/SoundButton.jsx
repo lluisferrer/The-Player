@@ -147,6 +147,7 @@ export function SoundButton({ slotId }) {
   const handleVideoPlayheadDown = (e) => {
     e.stopPropagation();
     e.preventDefault();
+    suppressClickRef.current = true; // evita que el click post-drag aturi el cue
     setVidSeeking(true);
   };
   useEffect(() => {
@@ -160,7 +161,11 @@ export function SoundButton({ slotId }) {
       useSoundStore.getState().seekVideo(slotId, ratio * segDur);
     };
     const onMove = (ev) => seekFromX(ev.clientX);
-    const onUp = () => setVidSeeking(false);
+    const onUp = () => {
+      setVidSeeking(false);
+      // Neteja el flag després que s'hagi disparat (i ignorat) el click del botó
+      setTimeout(() => { suppressClickRef.current = false; }, 0);
+    };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     return () => {

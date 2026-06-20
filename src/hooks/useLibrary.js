@@ -35,6 +35,7 @@ export function useLibrary() {
         color: s.color,
         stopOthers: s.stopOthers,
         duck: s.duck,
+        stopPlaylist: s.stopPlaylist,
         preWait: s.preWait,
         continueMode: s.continueMode,
       }))

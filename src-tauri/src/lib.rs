@@ -12,6 +12,7 @@ fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
 
 #[derive(Serialize)]
 struct AudioOutput {
+    host: String, // "WASAPI" o "ASIO" — el backend que exposa el dispositiu
     name: String,
     max_channels: u16,
     default_channels: u16,
@@ -19,17 +20,14 @@ struct AudioOutput {
     is_default: bool,
 }
 
-// Llista els dispositius de sortida natius (WASAPI) amb els seus canals
-// REALS — per saber si podem fer routing multicanal / cue de debò.
-#[tauri::command]
-fn list_audio_outputs() -> Result<Vec<AudioOutput>, String> {
-    let host = cpal::default_host();
-    let default_name = host
-        .default_output_device()
-        .and_then(|d| d.name().ok());
-
-    let devices = host.output_devices().map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
+// Recull els dispositius de sortida d'un host concret i els afegeix a `out`,
+// etiquetats amb el nom del backend (host_label). No falla si el host no en té.
+fn collect_outputs(host: &cpal::Host, host_label: &str, out: &mut Vec<AudioOutput>) {
+    let default_name = host.default_output_device().and_then(|d| d.name().ok());
+    let devices = match host.output_devices() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
     for dev in devices {
         let name = dev.name().unwrap_or_else(|_| "?".into());
         let mut max_channels = 0u16;
@@ -46,6 +44,7 @@ fn list_audio_outputs() -> Result<Vec<AudioOutput>, String> {
         };
         let is_default = default_name.as_deref() == Some(name.as_str());
         out.push(AudioOutput {
+            host: host_label.to_string(),
             name,
             max_channels,
             default_channels,
@@ -53,39 +52,134 @@ fn list_audio_outputs() -> Result<Vec<AudioOutput>, String> {
             is_default,
         });
     }
-    Ok(out)
+}
+
+// Selecciona el host de cpal pel seu nom ("ASIO" → backend ASIO; qualsevol
+// altre → host per defecte, que a Windows és WASAPI).
+fn select_host(host_name: &str) -> Result<cpal::Host, String> {
+    match host_name {
+        #[cfg(feature = "asio")]
+        "ASIO" => cpal::host_from_id(cpal::HostId::Asio).map_err(|e| e.to_string()),
+        _ => Ok(cpal::default_host()),
+    }
+}
+
+// Llista els dispositius de sortida natius amb els seus canals REALS — per saber
+// si podem fer routing multicanal / cue de debò. Inclou WASAPI i, si l'app s'ha
+// compilat amb `--features asio`, també els dispositius ASIO (latència baixa).
+#[tauri::command]
+fn list_audio_outputs() -> Result<Vec<AudioOutput>, String> {
+    // Només WASAPI: ràpid. Els dispositius ASIO s'obtenen sota demanda amb
+    // `detect_asio` (carregar drivers ASIO és lent i pot bloquejar-se).
+    //
+    // IMPORTANT: cal enumerar en un FIL NOU. El fil de comandes de Tauri té COM
+    // inicialitzat com a STA (pel WebView2) i, sota STA, l'enumeració WASAPI de
+    // cpal torna BUIDA. En un fil nou sense COM previ, cpal l'inicialitza com a
+    // MTA i els dispositius apareixen (com passa en un binari de consola).
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut out = Vec::new();
+            let default = cpal::default_host();
+            collect_outputs(&default, default.id().name(), &mut out);
+            out
+        }))
+        .map_err(|_| "Pànic enumerant dispositius WASAPI.".to_string());
+        let _ = tx.send(res);
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "Temps esgotat enumerant dispositius WASAPI.".to_string())?
+}
+
+// Llista els NOMS dels drivers ASIO registrats al sistema. Usa
+// `Asio::driver_names()`, que llegeix el registre SENSE carregar cap DLL —
+// per això és instantani i no es penja (a diferència d'enumerar amb cpal, que
+// carrega i inicialitza tots els drivers, i un sol driver problemàtic
+// —SoundGrid sense servidor, Dante sense servei, interfície desconnectada—
+// bloqueja tota l'enumeració). L'usuari en tria un i només es carrega aquell.
+#[tauri::command]
+fn detect_asio() -> Result<Vec<AudioOutput>, String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        Err("Aquesta build no inclou ASIO (cal compilar amb --features asio).".into())
+    }
+    #[cfg(feature = "asio")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let asio = asio_sys::Asio::new();
+                asio.driver_names()
+            }))
+            .map_err(|_| "Pànic llegint els noms dels drivers ASIO.".to_string());
+            let _ = tx.send(res);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(names)) if names.is_empty() => {
+                Err("No hi ha cap driver ASIO registrat al sistema.".into())
+            }
+            Ok(Ok(names)) => Ok(names
+                .into_iter()
+                .map(|name| AudioOutput {
+                    host: "ASIO".to_string(),
+                    name,
+                    max_channels: 0, // desconegut fins a carregar el driver
+                    default_channels: 0,
+                    default_sample_rate: 0,
+                    is_default: false,
+                })
+                .collect()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("Temps esgotat llegint els noms dels drivers ASIO.".into()),
+        }
+    }
 }
 
 // Treu un to sinusoïdal (440 Hz) NOMÉS pel canal indicat (0-based) del
 // dispositiu donat, durant `seconds`. Serveix per verificar el routing
-// real per canals abans de migrar el motor d'àudio a natiu.
+// real per canals abans de migrar el motor d'àudio a natiu. `host` tria el
+// backend ("ASIO" o WASAPI per defecte).
 #[tauri::command]
-fn play_test_tone(device_name: String, channel: u16, seconds: f32) -> Result<(), String> {
-    let host = cpal::default_host();
-    let device = host
-        .output_devices()
-        .map_err(|e| e.to_string())?
-        .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
-        .ok_or_else(|| format!("Dispositiu no trobat: {}", device_name))?;
-
-    let supported = device
-        .default_output_config()
-        .map_err(|e| e.to_string())?;
-    let sample_format = supported.sample_format();
-    let config: cpal::StreamConfig = supported.into();
-    let channels = config.channels as usize;
-    let target = channel as usize;
-    if target >= channels {
-        return Err(format!(
-            "El canal {} no existeix (el dispositiu en té {})",
-            channel + 1,
-            channels
-        ));
-    }
-    let sample_rate = config.sample_rate.0 as f32;
-    let dur = seconds.max(0.1);
-
+fn play_test_tone(
+    host: String,
+    device_name: String,
+    channel: u16,
+    seconds: f32,
+) -> Result<(), String> {
+    // Tota la feina de cpal (resolució del dispositiu + stream) va en un FIL NOU:
+    // el fil de comandes de Tauri és STA i l'enumeració WASAPI hi falla; en un
+    // fil nou cpal inicialitza COM com a MTA. El to és "dispara i oblida"; els
+    // errors es registren per stderr.
     std::thread::spawn(move || {
+        let host = match select_host(&host) {
+            Ok(h) => h,
+            Err(e) => return eprintln!("To de prova: {}", e),
+        };
+        let device = match host.output_devices().map(|mut devs| {
+            devs.find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
+        }) {
+            Ok(Some(d)) => d,
+            Ok(None) => return eprintln!("To de prova: dispositiu no trobat: {}", device_name),
+            Err(e) => return eprintln!("To de prova: {}", e),
+        };
+        let supported = match device.default_output_config() {
+            Ok(c) => c,
+            Err(e) => return eprintln!("To de prova: {}", e),
+        };
+        let sample_format = supported.sample_format();
+        let config: cpal::StreamConfig = supported.into();
+        let channels = config.channels as usize;
+        let target = channel as usize;
+        if target >= channels {
+            return eprintln!(
+                "To de prova: el canal {} no existeix (el dispositiu en té {})",
+                channel + 1,
+                channels
+            );
+        }
+        let sample_rate = config.sample_rate.0 as f32;
+        let dur = seconds.max(0.1);
+
         let mut phase: f32 = 0.0;
         let step = 2.0 * std::f32::consts::PI * 440.0 / sample_rate;
 
@@ -160,6 +254,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_file_bytes,
             list_audio_outputs,
+            detect_asio,
             play_test_tone
         ])
         .run(tauri::generate_context!())

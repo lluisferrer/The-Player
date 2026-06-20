@@ -20,6 +20,14 @@ crate-type = ["rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# ASIO està DESACTIVAT per defecte: requereix l'ASIO SDK de Steinberg + LLVM/clang
+# i el toolchain MSVC (no funciona amb GNU/MinGW). El build normal segueix igual.
+# Quan l'entorn de la Fase 0 estigui a punt, compila amb:
+#   npm run tauri dev -- --features asio
+# (o `cargo build --features asio` dins de src-tauri).
+[features]
+asio = ["cpal/asio", "dep:asio-sys"]
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
@@ -27,4 +35,8 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.15"
+# Accés directe a l'API ASIO de baix nivell (mateixa versió que usa cpal). Ens
+# cal per llistar els drivers SENSE carregar-los (driver_names) i per carregar
+# NOMÉS el driver triat (load_driver) — cpal no exposa cap d'aquestes dues coses.
+asio-sys = { version = "0.2", optional = true }
 

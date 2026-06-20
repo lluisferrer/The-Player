@@ -37,21 +37,35 @@ const createEmptySlot = (id) => ({
   color: null,         // color del cue (organització + futur routing per grup)
   stopOthers: false,   // en disparar, atura la resta de cues (QLab)
   duck: false,         // en sonar, abaixa el volum de la Playlist (ducking)
+  stopPlaylist: false, // en disparar, atura del tot la Playlist (alternatiu al duck)
   // Edició del slot (segons l'editor) — tot en segons
   startPoint: 0,       // punt d'inici dins el buffer
   stopPoint: null,     // punt de stop (null = final del buffer)
-  fadeIn: 0,           // fade in propi (0 = usa el fade in global)
-  fadeOut: 0,          // fade out propi (0 = usa el fade out global)
+  fadeIn: null,        // fade in propi (null = usa el global; 0 = tall sec explícit)
+  fadeOut: null,       // fade out propi (null = usa el global; 0 = tall sec explícit)
   // Seqüència estil QLab (mode GO)
   preWait: 0,          // retard (s) entre prémer GO i que el cue soni
   continueMode: 'none',// 'none' | 'auto' (auto-continue: dispara el següent tot seguit)
 });
 
+// Versió de l'esquema de persistència dels slots. v2 introdueix el fade com a
+// override nullable (null = segueix el global; 0 = tall sec explícit). Abans, 0
+// volia dir "segueix el global", per això migrem els 0 antics a null.
+const SLOTS_SCHEMA = 2;
 const loadPersistedSlots = () => {
   try {
     const saved = localStorage.getItem('the-player-slots');
     if (!saved) return null;
-    return JSON.parse(saved);
+    const parsed = JSON.parse(saved);
+    // Format antic (array directe, sense versió): migra fadeIn/fadeOut 0 → null
+    if (Array.isArray(parsed)) {
+      return parsed.map((s) => (s ? {
+        ...s,
+        fadeIn: s.fadeIn ? s.fadeIn : null,
+        fadeOut: s.fadeOut ? s.fadeOut : null,
+      } : s));
+    }
+    return Array.isArray(parsed.slots) ? parsed.slots : null;
   } catch {
     return null;
   }
@@ -104,10 +118,11 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
       color: savedSlots[i].color ?? null,
       stopOthers: savedSlots[i].stopOthers ?? false,
       duck: savedSlots[i].duck ?? false,
+      stopPlaylist: savedSlots[i].stopPlaylist ?? false,
       startPoint: savedSlots[i].startPoint ?? 0,
       stopPoint: savedSlots[i].stopPoint ?? null,
-      fadeIn: savedSlots[i].fadeIn ?? 0,
-      fadeOut: savedSlots[i].fadeOut ?? 0,
+      fadeIn: savedSlots[i].fadeIn ?? null,
+      fadeOut: savedSlots[i].fadeOut ?? null,
       preWait: savedSlots[i].preWait ?? 0,
       continueMode: savedSlots[i].continueMode ?? 'none',
     };
@@ -121,6 +136,7 @@ export const useSoundStore = create((set, get) => ({
   globalFadeOut: savedGlobals.globalFadeOut ?? 0,
   cuesStopOthers: savedGlobals.cuesStopOthers ?? false, // Stop Others global per a tots els cues
   cuesDuck: savedGlobals.cuesDuck ?? false,             // Ducking per defecte dels cues nous
+  cuesStopPlaylist: savedGlobals.cuesStopPlaylist ?? false, // Stop Playlist per defecte dels cues nous
   // ── Ducking de la Playlist (híbrid: paràmetres globals + activador per cue) ──
   duckEnabled: savedGlobals.duckEnabled ?? false,  // activa el ducking globalment
   duckAmount: savedGlobals.duckAmount ?? 0.3,       // volum al qual baixa la playlist (factor lineal 0..1; 0.3 = 30%)
@@ -171,11 +187,11 @@ export const useSoundStore = create((set, get) => ({
 
   persistGlobals: () => {
     const {
-      globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
+      globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
-      globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck,
+      globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold,
@@ -184,7 +200,12 @@ export const useSoundStore = create((set, get) => ({
 
   // Stop Others global: en disparar qualsevol cue, atura la resta
   setCuesStopOthers: (on) => { set({ cuesStopOthers: !!on }); get().persistGlobals(); },
-  setCuesDuck: (on) => { set({ cuesDuck: !!on }); get().persistGlobals(); },
+  // Acció per defecte dels cues nous sobre la Playlist: 'none' | 'duck' | 'stop'
+  // (duck i stop són mútuament excloents)
+  setCuesPlaylistAction: (action) => {
+    set({ cuesDuck: action === 'duck', cuesStopPlaylist: action === 'stop' });
+    get().persistGlobals();
+  },
 
   // Paràmetres globals del ducking. Reaplica el factor de duck al motor de la
   // playlist (p. ex. canviar duckAmount mentre està duckejat, o desactivar-lo).
@@ -194,17 +215,22 @@ export const useSoundStore = create((set, get) => ({
     duckRefresh(get);
   },
 
-  // Activador per cue: marca/desmarca un slot com a cue de ducking. Si el cue
-  // ja sona i canvia l'estat, ajusta el comptador en calent.
-  setDuck: (slotId, on) => {
+  // Acció d'un cue sobre la Playlist: 'none' | 'duck' | 'stop'. Duck (abaixa) i
+  // stop (atura del tot) són mútuament excloents. Si el cue ja sona, ajusta el
+  // comptador de ducking en calent i, si passa a 'stop', atura la playlist ara.
+  setPlaylistAction: (slotId, action) => {
     const slot = get().slots.find((s) => s.id === slotId);
     const wasPlaying = slot && (slot.isPlaying || slot.pausedAt != null);
+    const wasDuck = !!(slot && slot.duck);
+    const duck = action === 'duck';
+    const stopPlaylist = action === 'stop';
     set((state) => ({
-      slots: state.slots.map((s) => (s.id === slotId ? { ...s, duck: !!on } : s)),
+      slots: state.slots.map((s) => (s.id === slotId ? { ...s, duck, stopPlaylist } : s)),
     }));
     if (wasPlaying) {
-      if (on) duckAdd(get, slotId);
-      else duckRemove(get, slotId);
+      if (duck && !wasDuck) duckAdd(get, slotId);
+      else if (!duck && wasDuck) duckRemove(get, slotId);
+      if (stopPlaylist) get().playlistStop();
     }
     get().persistSlots();
   },
@@ -459,12 +485,13 @@ export const useSoundStore = create((set, get) => ({
               volume: cfg.volume != null ? cfg.volume : s.volume,
               startPoint: cfg.startPoint || 0,
               stopPoint: cfg.stopPoint != null ? cfg.stopPoint : null,
-              fadeIn: cfg.fadeIn || 0,
-              fadeOut: cfg.fadeOut || 0,
+              fadeIn: cfg.fadeIn ?? null,
+              fadeOut: cfg.fadeOut ?? null,
               loop: !!cfg.loop,
               color: cfg.color != null ? cfg.color : null,
               stopOthers: !!cfg.stopOthers,
               duck: !!cfg.duck,
+              stopPlaylist: !!cfg.stopPlaylist,
               preWait: cfg.preWait || 0,
               continueMode: cfg.continueMode === 'auto' ? 'auto' : 'none',
             }
@@ -547,14 +574,15 @@ export const useSoundStore = create((set, get) => ({
               analyserNode: null,
               sourceNode: null,
               isPlaying: false,
-              // Cue nou: Stop Others i Ducking prenen el valor per defecte global (Settings)
+              // Cue nou: Stop Others i acció de Playlist prenen el valor per defecte global (Settings)
               stopOthers: get().cuesStopOthers,
               duck: get().cuesDuck,
+              stopPlaylist: get().cuesStopPlaylist,
               // Un fitxer nou reinicia els punts d'edició
               startPoint: 0,
               stopPoint: null,
-              fadeIn: 0,
-              fadeOut: 0,
+              fadeIn: null,
+              fadeOut: null,
               // ...i les opcions de seqüència
               preWait: 0,
               continueMode: 'none',
@@ -607,6 +635,8 @@ export const useSoundStore = create((set, get) => ({
       });
       // Ducking: si aquest cue de vídeo abaixa la playlist, incrementa el comptador
       if (slot.duck) duckAdd(get, slotId);
+      // Stop Playlist: si aquest cue atura del tot la playlist, atura-la ara
+      if (slot.stopPlaylist) get().playlistStop();
       set((state) => ({
         slots: state.slots.map((s) =>
           // startedAt en rellotge de paret (s) per estimar el playhead/temps al tile
@@ -621,6 +651,8 @@ export const useSoundStore = create((set, get) => ({
     // (Vàlid tant per a cues en buffer com en streaming; el decrement es fa a
     // stopSlot / handleEnded / final natural de l'streaming.)
     if (slot.duck) duckAdd(get, slotId);
+    // Stop Playlist: si aquest cue atura del tot la playlist, atura-la ara
+    if (slot.stopPlaylist) get().playlistStop();
 
     // Cue llarg en streaming: reproducció amb element <audio>
     if (slot.isStreaming) { csPlay(get, set, slotId); return; }
@@ -1197,6 +1229,7 @@ export const useSoundStore = create((set, get) => ({
       color: s.color,
       stopOthers: s.stopOthers,
       duck: s.duck,
+      stopPlaylist: s.stopPlaylist,
       startPoint: s.startPoint,
       stopPoint: s.stopPoint,
       fadeIn: s.fadeIn,
@@ -1204,6 +1237,6 @@ export const useSoundStore = create((set, get) => ({
       preWait: s.preWait,
       continueMode: s.continueMode,
     }));
-    localStorage.setItem('the-player-slots', JSON.stringify(data));
+    localStorage.setItem('the-player-slots', JSON.stringify({ v: SLOTS_SCHEMA, slots: data }));
   },
 }));
