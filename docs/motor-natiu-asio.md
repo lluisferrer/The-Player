@@ -107,12 +107,15 @@ El diagnòstic existent (`list_audio_outputs`, `play_test_tone` a `src-tauri/src
   - `cargo build --features asio` → verd (cpal+asio-sys+tauri-app, ~1m).
   - NOTA: cal terminal NOU perquè reculli les variables persistides; un procés
     ja viu no les veu (per això el 1r intent va fallar amb "Unable to find libclang").
-- [~] Fase A — PoC de sortida ASIO (codi FET, pendent validació en runtime)
-  - `list_audio_outputs` enumera WASAPI + ASIO (camp `host`); `play_test_tone`
-    rep `host` i obre el dispositiu pel backend triat. UI: etiqueta de backend
-    + botons de to per canal a Settings → Audio → Diagnòstic.
-  - Validar: `npm run tauri dev -- --features asio` (terminal NOU) → ha d'aparèixer
-    "ASIO4ALL v2" (i/o driver ASIO de la MixPre-6) i sonar el to per ASIO.
+- [x] **Fase A — sortida ASIO nativa (FETA i VALIDADA, commits 85a4ee8 + 28f353d)**
+  - `list_audio_outputs` (WASAPI, fil MTA), `detect_asio` (noms via `driver_names()`,
+    sense carregar), `play_test_tone` (WASAPI per canal).
+  - **Motor ASIO persistent**: fil dedicat `asio-engine` propietari del driver;
+    carrega un cop i manté (resol el hang de re-load dels drivers USB). Comandes
+    `asio_test_tone` / `asio_load` (canals reals) / `asio_release`.
+  - Validat amb MixPre: WASAPI 2ch sense ASIO; ASIO natiu → 4 sortides reals, to OK
+    als 4, tons repetits sense penjar-se; release torna la interfície a WASAPI.
+  - ASIO i WASAPI són exclusius sobre el mateix dispositiu (esperat).
 - [ ] Fase B — mixer multicanal
 - [ ] Fase C — pont de control + telemetria
 - [ ] Fase D — paritat i retirada de Web Audio
