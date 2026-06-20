@@ -27,7 +27,11 @@ use symphonia::core::sample::Sample;
 // PCM descodificat, planar (un Vec<f32> per canal) i ja a la freqüència del
 // driver (després de resamplejar). `channels` és la llargada de `data`.
 pub struct DecodedAudio {
+    // channels/frames es deriven de `data` al motor (data.len() i la llargada
+    // màxima); es mantenen per diagnòstic i ús futur.
+    #[allow(dead_code)]
     pub channels: usize,
+    #[allow(dead_code)]
     pub frames: usize,        // mostres per canal
     pub data: Vec<Vec<f32>>,  // data[ch][frame]
     // == driver_rate (ja resamplejat). Es guarda per claredat/diagnòstic.

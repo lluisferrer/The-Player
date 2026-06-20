@@ -10,7 +10,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { hasClip, isVideo, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
 import { dispatchCue } from '../lib/cueDispatch';
-import { isAsioTarget, resolveCueTargetStr } from '../lib/outputTarget';
+import { isAsioTarget, resolveCueTargetStr, parseTarget } from '../lib/outputTarget';
 import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek } from '../lib/videoOutput';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
@@ -264,6 +264,8 @@ export const useSoundStore = create((set, get) => ({
       return { colorOutputs };
     });
     get().persistGlobals();
+    // El routing per color ha canviat: pre-descodifica els cues que ara són ASIO.
+    get().preloadAllAsioCues();
   },
 
   setGlobalFades: (patch) => {
@@ -502,6 +504,8 @@ export const useSoundStore = create((set, get) => ({
       ),
     }));
     get().persistSlots();
+    // El fitxer o el color (→ routing) poden haver canviat: re-preload si és ASIO.
+    get().preloadAsioSlot(slotId);
   },
 
   // Actualitza els camps d'edició d'un slot (startPoint, stopPoint, fadeIn, fadeOut)
@@ -513,6 +517,27 @@ export const useSoundStore = create((set, get) => ({
     })),
 
   setAudioDevices: (devices) => set({ audioDevices: devices }),
+
+  // ── Pre-decode ASIO (dispar instantani) ───────────────────────────────────
+  // Demana a Rust que descodifiqui i deixi a la cau el PCM d'un cue que routeja
+  // a ASIO, perquè el seu GO no carregui la latència de descodificació (~2 s).
+  // No fa res per a cues WASAPI, sense fitxer o en streaming a un altre camí.
+  preloadAsioSlot: (slotId) => {
+    const slot = get().slots.find((s) => s.id === slotId);
+    if (!slot || !slot.filePath) return;
+    const target = parseTarget(resolveCueTargetStr(get(), slot));
+    if (target.kind !== 'asio') return;
+    invoke('asio_preload', { driver: target.driver, filePath: slot.filePath })
+      .catch((e) => console.warn('[asio] preload:', e));
+  },
+
+  // Pre-descodifica tots els cues carregats que routegen a ASIO. S'hi crida en
+  // canviar el routing (bus de Cues o routing per color) a un driver ASIO.
+  preloadAllAsioCues: () => {
+    for (const s of get().slots) {
+      if (s.filePath) get().preloadAsioSlot(s.id);
+    }
+  },
 
   setSelectedDevice: async (deviceId) => {
     const { audioContext } = get();
@@ -529,6 +554,8 @@ export const useSoundStore = create((set, get) => ({
     }
     if (!isAsioTarget(deviceId)) get().detectOutputChannels();
     get().persistGlobals();
+    // El bus de Cues ha canviat: pre-descodifica els cues que ara routegen a ASIO.
+    get().preloadAllAsioCues();
   },
 
   // Detecta quants canals de sortida exposa el dispositiu seleccionat.
@@ -599,6 +626,8 @@ export const useSoundStore = create((set, get) => ({
     }));
 
     get().persistSlots();
+    // Si aquest cue routeja a ASIO, pre-descodifica'l ja per a un GO instantani.
+    get().preloadAsioSlot(slotId);
   },
 
   playSlot: (slotId, opts = {}) => {

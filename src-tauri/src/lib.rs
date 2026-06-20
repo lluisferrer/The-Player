@@ -313,6 +313,116 @@ impl Voice {
     }
 }
 
+// ── Cau de PCM descodificat (pre-decode per a dispar instantani) ─────────────
+//
+// Descodificar un MP3 de 2 min triga ~2 s; fer-ho a l'hora de DISPARAR introdueix
+// aquesta latència al GO. La cau guarda el PCM ja descodificat i resamplejat a la
+// freqüència del DRIVER, indexat per (ruta, freqüència). Així el segon cop (i el
+// preload) el `PlayVoice` només clona un `Arc` i registra la veu: GO instantani.
+//
+// Clau = (ruta, freqüència del driver) perquè un canvi de driver amb una altra
+// freqüència no reutilitzi PCM resamplejat a la freqüència anterior.
+//
+// Acotació: el PCM f32 ocupa molt (un cue estèreo de 2 min ≈ 42 MB). Limitem la
+// cau per BYTES amb desallotjament LRU (el menys usat recentment surt primer).
+// Desallotjar de la cau és SEMPRE segur encara que la veu soni: les veus actives
+// tenen el seu propi clone de l'`Arc` i continuen reproduint-se.
+#[cfg(feature = "asio")]
+type PcmKey = (String, u32);
+
+// Pressupost de memòria de la cau (~1,5 GB de PCM f32). En una màquina d'àudio
+// pro és assumible; acota cues molt llargs i evita créixer sense límit.
+#[cfg(feature = "asio")]
+const PCM_CACHE_BUDGET_BYTES: usize = 1_500_000_000;
+
+#[cfg(feature = "asio")]
+struct PcmCache {
+    map: std::collections::HashMap<PcmKey, std::sync::Arc<Vec<Vec<f32>>>>,
+    // Ordre d'ús (front = menys usat recentment, back = més recent).
+    order: std::collections::VecDeque<PcmKey>,
+    bytes: usize,
+}
+
+// Bytes aproximats que ocupa un PCM planar f32.
+#[cfg(feature = "asio")]
+fn pcm_bytes(data: &[Vec<f32>]) -> usize {
+    data.iter().map(|c| c.len() * 4).sum()
+}
+
+#[cfg(feature = "asio")]
+impl PcmCache {
+    fn new() -> Self {
+        PcmCache {
+            map: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            bytes: 0,
+        }
+    }
+
+    // Mou una clau al final de l'ordre (marca com a usada ara mateix).
+    fn touch(&mut self, key: &PcmKey) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            if let Some(k) = self.order.remove(pos) {
+                self.order.push_back(k);
+            }
+        }
+    }
+
+    // Recupera (i marca com a recent) el PCM si hi és.
+    fn get(&mut self, key: &PcmKey) -> Option<std::sync::Arc<Vec<Vec<f32>>>> {
+        if let Some(v) = self.map.get(key).cloned() {
+            self.touch(key);
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    // Insereix un PCM nou i desallotja els menys usats fins a cabre al pressupost.
+    fn insert(&mut self, key: PcmKey, val: std::sync::Arc<Vec<Vec<f32>>>) {
+        if self.map.contains_key(&key) {
+            self.touch(&key);
+            return;
+        }
+        self.bytes += pcm_bytes(&val);
+        self.map.insert(key.clone(), val);
+        self.order.push_back(key);
+        self.evict();
+    }
+
+    // Desallotja des del front (LRU) mentre se superi el pressupost. Conserva
+    // sempre almenys una entrada (la que s'acaba d'inserir).
+    fn evict(&mut self) {
+        while self.bytes > PCM_CACHE_BUDGET_BYTES && self.order.len() > 1 {
+            if let Some(k) = self.order.pop_front() {
+                if let Some(v) = self.map.remove(&k) {
+                    self.bytes = self.bytes.saturating_sub(pcm_bytes(&v));
+                }
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+// Obté el PCM d'un fitxer a la freqüència del driver, descodificant-lo només si
+// no és a la cau. Retorna un `Arc` compartit (barat de clonar per a cada veu).
+#[cfg(feature = "asio")]
+fn asio_get_pcm(
+    cache: &mut PcmCache,
+    file_path: &str,
+    rate: u32,
+) -> Result<std::sync::Arc<Vec<Vec<f32>>>, String> {
+    let key: PcmKey = (file_path.to_string(), rate);
+    if let Some(v) = cache.get(&key) {
+        return Ok(v);
+    }
+    let decoded = asio_decode::decode_file(file_path, rate)?;
+    let arc = std::sync::Arc::new(decoded.data);
+    cache.insert(key, arc.clone());
+    Ok(arc)
+}
+
 // Ordres que el fil ASIO dedicat sap atendre. Cada una porta un canal de
 // resposta perquè la comanda Tauri pugui esperar el resultat amb timeout.
 #[cfg(feature = "asio")]
@@ -344,6 +454,13 @@ enum AsioCmd {
     StopVoice {
         voice_id: u64,
         fade_out: f32,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Pre-descodifica un fitxer a la freqüència del driver i el deixa a la cau
+    // (sense reproduir-lo), perquè el GO posterior sigui instantani.
+    Preload {
+        driver_name: String,
+        file_path: String,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     // Allibera completament el driver carregat (stop + dispose + destroy) i
@@ -694,6 +811,7 @@ fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
 #[allow(clippy::too_many_arguments)]
 fn asio_play_voice_impl(
     loaded: &mut Option<AsioLoaded>,
+    cache: &mut PcmCache,
     voice_id: u64,
     driver_name: &str,
     file_path: &str,
@@ -720,10 +838,10 @@ fn asio_play_voice_impl(
         ));
     }
 
-    // Descodifica + resampleja a la freqüència del driver.
-    let decoded = asio_decode::decode_file(file_path, sample_rate)?;
-    let data = std::sync::Arc::new(decoded.data);
-    let total = decoded.frames;
+    // PCM de la cau (pre-descodificat) o descodifica+resampleja si no hi és.
+    let data = asio_get_pcm(cache, file_path, sample_rate)?;
+    let total = data.iter().map(|c| c.len()).max().unwrap_or(0);
+    let src_channels = data.len();
 
     // Segment en frames.
     let sr = sample_rate as f32;
@@ -743,7 +861,7 @@ fn asio_play_voice_impl(
     let voice = Voice {
         voice_id,
         data,
-        src_channels: decoded.channels,
+        src_channels,
         out_channels,
         pos: start_frame,
         start_frame,
@@ -762,6 +880,23 @@ fn asio_play_voice_impl(
     // Si ja hi havia una veu amb aquest id (re-disparo), la substituïm.
     voices.retain(|v| v.voice_id != voice_id);
     voices.push(voice);
+    Ok(())
+}
+
+// Pre-descodifica un fitxer i el deixa a la cau, SENSE reproduir-lo. Carrega el
+// driver demanat (si cal) només per conèixer-ne la freqüència i descodificar-hi
+// al rate correcte; no engega cap stream de mescla. El GO posterior d'aquest cue
+// trobarà el PCM a la cau i serà instantani.
+#[cfg(feature = "asio")]
+fn asio_preload_impl(
+    loaded: &mut Option<AsioLoaded>,
+    cache: &mut PcmCache,
+    driver_name: &str,
+    file_path: &str,
+) -> Result<(), String> {
+    // Necessitem la freqüència del driver per descodificar al rate definitiu.
+    let info = asio_do_info(loaded, driver_name)?;
+    asio_get_pcm(cache, file_path, info.sample_rate)?;
     Ok(())
 }
 
@@ -850,6 +985,8 @@ fn asio_do_tone(
 #[cfg(feature = "asio")]
 fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
     let mut loaded: Option<AsioLoaded> = None;
+    // Cau de PCM descodificat, propietat exclusiva d'aquest fil (sense locks).
+    let mut cache = PcmCache::new();
     while let Ok(cmd) = rx.recv() {
         match cmd {
             AsioCmd::Tone { driver_name, channel, seconds, reply } => {
@@ -865,11 +1002,18 @@ fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
             } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     asio_play_voice_impl(
-                        &mut loaded, voice_id, &driver_name, &file_path, &channels,
+                        &mut loaded, &mut cache, voice_id, &driver_name, &file_path, &channels,
                         gain, fade_in, fade_out, loop_on, start_point, stop_point,
                     )
                 }))
                 .unwrap_or_else(|_| Err("Pànic reproduint la veu ASIO.".into()));
+                let _ = reply.send(res);
+            }
+            AsioCmd::Preload { driver_name, file_path, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    asio_preload_impl(&mut loaded, &mut cache, &driver_name, &file_path)
+                }))
+                .unwrap_or_else(|_| Err("Pànic pre-descodificant la veu ASIO.".into()));
                 let _ = reply.send(res);
             }
             AsioCmd::StopVoice { voice_id, fade_out, reply } => {
@@ -976,6 +1120,30 @@ fn asio_play_voice(
     }
 }
 
+// Pre-descodifica un cue a la cau del motor ASIO (sense reproduir-lo), perquè el
+// GO posterior sigui instantani. S'hi crida en carregar/armar un cue amb routing
+// ASIO. És idempotent: si ja és a la cau, no fa res costós.
+#[tauri::command]
+fn asio_preload(driver: String, file_path: String) -> Result<(), String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        let _ = (driver, file_path);
+        Err("Aquesta build no inclou ASIO (cal compilar amb --features asio).".into())
+    }
+    #[cfg(feature = "asio")]
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        asio_sender()
+            .send(AsioCmd::Preload { driver_name: driver, file_path, reply: reply_tx })
+            .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
+        // Marge ampli: inclou descodificar + resamplejar el fitxer sencer.
+        match reply_rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(res) => res,
+            Err(_) => Err("Temps esgotat o error pre-descodificant la veu ASIO.".into()),
+        }
+    }
+}
+
 // Atura una veu ASIO pel seu id, amb fade-out opcional (segons).
 #[tauri::command]
 fn asio_stop_voice(voice_id: u64, fade_out: f32) -> Result<(), String> {
@@ -1062,6 +1230,7 @@ pub fn run() {
             play_test_tone,
             asio_test_tone,
             asio_play_voice,
+            asio_preload,
             asio_stop_voice,
             asio_load,
             asio_release
