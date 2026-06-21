@@ -15,6 +15,7 @@ import { hasClip, isVideo, effFadeIn, effFadeOut, slotDuration } from '../lib/sl
 import { dispatchCue } from '../lib/cueDispatch';
 import { isAsioTarget, resolveCueTargetStr, parseTarget } from '../lib/outputTarget';
 import { clearAsioTelemetry, asioPosition } from '../lib/asioTelemetry';
+import { PREVIEW_VOICE_ID } from '../lib/asioIds';
 import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek } from '../lib/videoOutput';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
@@ -319,9 +320,15 @@ export const useSoundStore = create((set, get) => ({
   },
 
   setPreviewDevice: async (deviceId) => {
+    // En canviar de dispositiu, atura qualsevol preview en curs (no es pot
+    // migrar en calent entre WASAPI i ASIO).
+    if (get().previewingSlot != null) get().stopPreview();
     set({ previewDeviceId: deviceId });
-    const ctx = get().previewCtx;
-    if (ctx && ctx.setSinkId) { try { await ctx.setSinkId(deviceId); } catch (e) { console.warn(e); } }
+    // ASIO no és un sinkId WASAPI vàlid: no toquem el setSinkId del context.
+    if (!isAsioTarget(deviceId)) {
+      const ctx = get().previewCtx;
+      if (ctx && ctx.setSinkId) { try { await ctx.setSinkId(deviceId); } catch (e) { console.warn(e); } }
+    }
     get().persistGlobals();
   },
 
@@ -334,6 +341,31 @@ export const useSoundStore = create((set, get) => ({
 
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot)) return;
+
+    // Preview per ASIO: toca el cue pel motor natiu cap als canals del bus de
+    // preview (un sol preview alhora, voice id reservat). Cobreix curt i streaming.
+    if (isAsioTarget(get().previewDeviceId)) {
+      get().stopPreview();
+      const tgt = parseTarget(get().previewDeviceId);
+      const total = slotDuration(slot);
+      const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || 0));
+      const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
+      invoke('asio_play_voice', {
+        voiceId: PREVIEW_VOICE_ID,
+        driver: tgt.driver,
+        filePath: slot.filePath,
+        channels: tgt.channels,
+        gain: slot.volume ?? 0.8,
+        fadeIn: 0,
+        fadeOut: 0,
+        loopOn: !!slot.loop,
+        startPoint,
+        stopPoint,
+        streaming: !!slot.isStreaming,
+      }).catch((e) => console.warn('[asio] preview:', e));
+      set({ previewingSlot: slotId, previewStartedAt: 0 });
+      return;
+    }
 
     // Cue en streaming: preview amb element <audio> al bus de preview
     if (slot.isStreaming) {
@@ -371,8 +403,15 @@ export const useSoundStore = create((set, get) => ({
   stopPreview: () => {
     if (previewSource) { try { previewSource.onended = null; previewSource.stop(); } catch { /* res */ } previewSource = null; }
     csPreviewStop();
+    // Atura també un possible preview pel motor ASIO (no-op si no n'hi ha).
+    if (isAsioTarget(get().previewDeviceId)) {
+      invoke('asio_stop_voice', { voiceId: PREVIEW_VOICE_ID, fadeOut: 0 }).catch(() => {});
+    }
     set({ previewingSlot: null });
   },
+
+  // El motor ASIO informa que el preview ha acabat sol → neteja l'estat.
+  previewEnded: () => set({ previewingSlot: null }),
 
   setViewMode: (viewMode) => set({ viewMode }),
 

@@ -6,6 +6,9 @@ import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { keyForSlot } from '../lib/keyMap';
 import { hasClip, slotDuration } from '../lib/slotAudio';
 import { getVideoThumb } from '../lib/videoThumb';
+import { isAsioTarget } from '../lib/outputTarget';
+import { asioPosition } from '../lib/asioTelemetry';
+import { PREVIEW_VOICE_ID } from '../lib/asioIds';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
 
@@ -101,12 +104,17 @@ export function SoundButton({ slotId }) {
     let raf;
     const tick = () => {
       const st = useSoundStore.getState();
-      const ctx = st.previewCtx;
-      if (ctx && segDur > 0) {
-        let pos = ctx.currentTime - st.previewStartedAt;
-        if (slot.loop) pos = pos % segDur;
-        pos = Math.max(0, Math.min(pos, segDur));
-        setPreviewProg(pos / segDur);
+      if (segDur > 0) {
+        if (isAsioTarget(st.previewDeviceId)) {
+          // Preview pel motor ASIO: posició per telemetria nativa.
+          const pos = asioPosition(PREVIEW_VOICE_ID);
+          setPreviewProg(pos != null ? Math.min(1, pos / segDur) : 0);
+        } else if (st.previewCtx) {
+          let pos = st.previewCtx.currentTime - st.previewStartedAt;
+          if (slot.loop) pos = pos % segDur;
+          pos = Math.max(0, Math.min(pos, segDur));
+          setPreviewProg(pos / segDur);
+        }
       }
       raf = requestAnimationFrame(tick);
     };

@@ -275,12 +275,15 @@ export function SettingsModal({ onClose }) {
 
               <div className="settings-row">
                 <label htmlFor="dev-preview">Preview</label>
-                <select id="dev-preview" value={previewDeviceId} onChange={(e) => setPreviewDevice(e.target.value)}>
-                  <option value="default">Per defecte</option>
-                  {audioDevices.map((d) => (
-                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
-                  ))}
-                </select>
+                <OutputSelect
+                  id="dev-preview"
+                  value={previewDeviceId}
+                  onChange={setPreviewDevice}
+                  audioDevices={audioDevices}
+                  asioOptions={asioOptions}
+                  defaultValue="default"
+                  defaultLabel="Per defecte"
+                />
               </div>
 
               <div className="settings-subtitle">Routing per color (cues)</div>
