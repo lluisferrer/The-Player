@@ -202,6 +202,13 @@ export function SoundButton({ slotId }) {
     setVolume(slotId, parseFloat(e.target.value));
   };
 
+  // En deixar anar el slider, treu-li el focus perquè les tecles de transport
+  // (espai/enter/fletxes) tornin a actuar sobre el slot i no sobre el range.
+  const handleVolumeRelease = (e) => {
+    e.stopPropagation();
+    e.currentTarget.blur();
+  };
+
   const handleEdit = (e) => {
     e.stopPropagation();
     setEditingSlot(slotId);
@@ -323,6 +330,8 @@ export function SoundButton({ slotId }) {
               type="range" min="0" max="1" step="0.01"
               value={slot.volume}
               onChange={handleVolumeChange}
+              onMouseUp={handleVolumeRelease}
+              onTouchEnd={handleVolumeRelease}
               title={`Volum: ${Math.round(slot.volume * 100)}%`}
               style={{ background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)` }}
             />
@@ -386,6 +395,8 @@ export function SoundButton({ slotId }) {
               step="0.01"
               value={slot.volume}
               onChange={handleVolumeChange}
+              onMouseUp={handleVolumeRelease}
+              onTouchEnd={handleVolumeRelease}
               title={`Volum: ${Math.round(slot.volume * 100)}%`}
               style={{
                 background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)`,

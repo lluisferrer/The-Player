@@ -466,6 +466,18 @@ enum AsioCmd {
         file_path: String,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
+    // Canvia el gain (volum) d'una veu activa en calent.
+    SetGain {
+        voice_id: u64,
+        gain: f32,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Reposiciona el playhead d'una veu activa (segons dins el segment).
+    Seek {
+        voice_id: u64,
+        position: f32,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
     // Allibera completament el driver carregat (stop + dispose + destroy) i
     // deixa el dispositiu lliure perquè WASAPI hi pugui treure so.
     Release {
@@ -1071,6 +1083,52 @@ fn asio_stop_voice_impl(
     Ok(())
 }
 
+// Canvia el gain (volum lineal) d'una veu activa en calent. El callback ja
+// multiplica per `voice.gain` a cada frame, així que el canvi és immediat.
+#[cfg(feature = "asio")]
+fn asio_set_gain_impl(
+    loaded: &mut Option<AsioLoaded>,
+    voice_id: u64,
+    gain: f32,
+) -> Result<(), String> {
+    let mix = match loaded.as_ref().and_then(|l| l.mix.as_ref()) {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
+    for v in voices.iter_mut() {
+        if v.voice_id == voice_id {
+            v.gain = gain.max(0.0);
+        }
+    }
+    Ok(())
+}
+
+// Reposiciona el playhead d'una veu activa: `position` són segons dins el
+// segment (0 = inici del tram). Es limita a [start_frame, stop_frame).
+#[cfg(feature = "asio")]
+fn asio_seek_impl(
+    loaded: &mut Option<AsioLoaded>,
+    voice_id: u64,
+    position: f32,
+) -> Result<(), String> {
+    let mix = match loaded.as_ref().and_then(|l| l.mix.as_ref()) {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+    let rate = mix.sample_rate as f32;
+    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
+    for v in voices.iter_mut() {
+        if v.voice_id == voice_id {
+            let off = (position.max(0.0) * rate) as usize;
+            let target = v.start_frame.saturating_add(off);
+            let max = v.stop_frame.saturating_sub(1).max(v.start_frame);
+            v.pos = target.clamp(v.start_frame, max);
+        }
+    }
+    Ok(())
+}
+
 // To de prova com a VEU transitòria (sinus 440 Hz generat, auto-stop després de
 // `seconds`). NO bloqueja el fil: genera un PCM curt i el registra com a veu.
 #[cfg(feature = "asio")]
@@ -1160,6 +1218,20 @@ fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
                     asio_stop_voice_impl(&mut loaded, voice_id, fade_out)
                 }))
                 .unwrap_or_else(|_| Err("Pànic aturant la veu ASIO.".into()));
+                let _ = reply.send(res);
+            }
+            AsioCmd::SetGain { voice_id, gain, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    asio_set_gain_impl(&mut loaded, voice_id, gain)
+                }))
+                .unwrap_or_else(|_| Err("Pànic canviant el gain ASIO.".into()));
+                let _ = reply.send(res);
+            }
+            AsioCmd::Seek { voice_id, position, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    asio_seek_impl(&mut loaded, voice_id, position)
+                }))
+                .unwrap_or_else(|_| Err("Pànic fent seek ASIO.".into()));
                 let _ = reply.send(res);
             }
             AsioCmd::Release { reply } => {
@@ -1304,6 +1376,48 @@ fn asio_stop_voice(voice_id: u64, fade_out: f32) -> Result<(), String> {
     }
 }
 
+// Canvia el volum (gain lineal) d'una veu ASIO activa en calent.
+#[tauri::command]
+fn asio_set_gain(voice_id: u64, gain: f32) -> Result<(), String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        let _ = (voice_id, gain);
+        Err("Aquesta build no inclou ASIO (cal compilar amb --features asio).".into())
+    }
+    #[cfg(feature = "asio")]
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        asio_sender()
+            .send(AsioCmd::SetGain { voice_id, gain, reply: reply_tx })
+            .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
+        match reply_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(res) => res,
+            Err(_) => Err("Temps esgotat o error canviant el volum ASIO.".into()),
+        }
+    }
+}
+
+// Reposiciona el playhead d'una veu ASIO activa (segons dins el segment).
+#[tauri::command]
+fn asio_seek(voice_id: u64, position: f32) -> Result<(), String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        let _ = (voice_id, position);
+        Err("Aquesta build no inclou ASIO (cal compilar amb --features asio).".into())
+    }
+    #[cfg(feature = "asio")]
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        asio_sender()
+            .send(AsioCmd::Seek { voice_id, position, reply: reply_tx })
+            .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
+        match reply_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(res) => res,
+            Err(_) => Err("Temps esgotat o error fent seek ASIO.".into()),
+        }
+    }
+}
+
 // Allibera el driver ASIO carregat (stop + dispose + destroy) i deixa el
 // dispositiu lliure perquè WASAPI hi pugui treure so. Cal cridar-la quan es
 // vol tornar a fer servir la interfície fora d'ASIO.
@@ -1374,6 +1488,8 @@ pub fn run() {
             asio_play_voice,
             asio_preload,
             asio_stop_voice,
+            asio_set_gain,
+            asio_seek,
             asio_load,
             asio_release
         ])

@@ -1104,6 +1104,19 @@ export const useSoundStore = create((set, get) => ({
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot) || !slot.isPlaying) return;
     if (isVideo(slot)) return; // el vídeo no es busca des d'aquí (4a)
+    // Cue ASIO actiu: reposiciona la veu nativa (no té graf Web Audio). El
+    // playhead s'actualitzarà sol per la telemetria. Va ABANS de l'streaming
+    // (un cue ASIO pot ser >60s i estar marcat isStreaming sense graf Web Audio).
+    if (slot.asioActive) {
+      const total = slotDuration(slot);
+      const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || 0));
+      const stopPoint = slot.stopPoint != null ? Math.min(slot.stopPoint, total) : total;
+      const segDur = Math.max(0.02, stopPoint - startPoint);
+      const r = Math.min(1, Math.max(0, ratio));
+      invoke('asio_seek', { voiceId: slotId, position: r * segDur })
+        .catch((e) => console.warn('[asio] seek:', e));
+      return;
+    }
     if (slot.isStreaming) { csSeek(get, set, slotId, ratio); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
     if (!ctx) return;
@@ -1308,6 +1321,11 @@ export const useSoundStore = create((set, get) => ({
     const slot = slots.find((s) => s.id === slotId);
     if (slot?.gainNode) {
       slot.gainNode.gain.value = volume;
+    }
+    // Cue ASIO actiu: aplica el volum a la veu nativa en calent (no té gainNode)
+    if (slot?.asioActive) {
+      invoke('asio_set_gain', { voiceId: slotId, gain: volume })
+        .catch((e) => console.warn('[asio] set_gain:', e));
     }
     if (slot?.isStreaming) csSetVolume(get, slotId, volume);
     // Cue de vídeo en reproducció: aplica el volum a la finestra de sortida
