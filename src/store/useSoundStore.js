@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume, plSetDevice, plSeek,
+  plPosition, plStartAt,
   duckAdd, duckRemove, duckReset, duckRefresh,
 } from '../lib/playlistEngine';
 import {
@@ -9,6 +10,7 @@ import {
 } from '../lib/cueStreamEngine';
 import {
   plaPlayPause, plaStop, plaNext, plaPrev, plaPlayIndex, plaSetVolume, plaSeek, plaSetDevice,
+  plaPosition, plaStartAt,
 } from '../lib/playlistAsio';
 import { invoke } from '@tauri-apps/api/core';
 import { hasClip, isVideo, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
@@ -319,16 +321,34 @@ export const useSoundStore = create((set, get) => ({
   },
 
   setPlaylistDevice: (deviceId) => {
-    const wasAsio = isAsioTarget(get().playlistDeviceId);
+    const oldDev = get().playlistDeviceId;
+    if (oldDev === deviceId) return;
+    const wasAsio = isAsioTarget(oldDev);
     const willAsio = isAsioTarget(deviceId);
-    // Canvi de TIPUS (WASAPI↔ASIO): atura el motor que estava actiu (no es pot
-    // migrar la reproducció en calent entre camins diferents).
-    if (wasAsio !== willAsio) get().playlistStop();
+
+    // WASAPI → WASAPI: canvi de sink en calent, sense cap tall.
+    if (!wasAsio && !willAsio) {
+      set({ playlistDeviceId: deviceId });
+      plSetDevice(get);
+      get().persistGlobals();
+      return;
+    }
+
+    // Canvi que implica ASIO (o de tipus): captura la posició actual, fa fade-out
+    // a la sortida antiga i reprèn a la nova des de la mateixa posició (crossfade
+    // entre sortides). Si estava en pausa, simplement atura (no es reprèn).
+    const wasPlaying = get().playlistPlaying;
+    let resumeIndex = -1, resumePos = 0;
+    if (wasPlaying) {
+      const p = wasAsio ? plaPosition() : plPosition();
+      if (p && p.index >= 0) { resumeIndex = p.index; resumePos = Math.max(0, p.elapsed); }
+    }
+    get().playlistStop(); // atura el motor antic (routeja amb el deviceId encara antic)
     set({ playlistDeviceId: deviceId });
-    // Mateix tipus: canvi de sortida en calent. WASAPI canvia el sinkId de
-    // l'<audio>; ASIO encara no suporta canvi de canals en calent (atura).
-    if (wasAsio === willAsio) {
-      if (willAsio) plaSetDevice(get); else plSetDevice(get);
+    if (wasPlaying && resumeIndex >= 0) {
+      const cf = Math.max(0, get().crossfade || 0);
+      if (willAsio) plaStartAt(get, set, resumeIndex, resumePos, cf);
+      else plStartAt(get, set, resumeIndex, resumePos, cf);
     }
     get().persistGlobals();
   },

@@ -259,9 +259,15 @@ export function plaApplyDuck(duckGain) {
 // mòdul, en UNA sola direcció (sense import circular).
 setAsioDuckListener(plaApplyDuck);
 
-// Canvi de dispositiu en calent no suportat al motor natiu (Fase 2): atura.
+// Canvi de dispositiu en calent: el gestiona el store (capturant la posició i
+// reprenent a la nova sortida). Aquí només atura per si de cas.
 export function plaSetDevice(get) {
   if ((curA || pausedA) && sRef) plaStop(get, sRef);
+}
+
+// Arrenca una pista a un offset concret (per canvi de dispositiu en calent).
+export function plaStartAt(get, set, index, offset, fadeIn = 0) {
+  startTrackA(get, set, index, { fadeIn, offset });
 }
 
 export function plaPosition() {

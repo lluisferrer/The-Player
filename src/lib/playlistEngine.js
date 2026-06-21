@@ -304,3 +304,8 @@ export function plPosition() {
   if (paused) return { elapsed: paused.pos, duration: 0, index: paused.index };
   return { elapsed: 0, duration: 0, index: -1 };
 }
+
+// Arrenca una pista a un offset concret (per canvi de dispositiu en calent).
+export function plStartAt(get, set, index, offset, fadeIn = 0) {
+  startTrack(get, set, index, { fadeIn, offset });
+}
