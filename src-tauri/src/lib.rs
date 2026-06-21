@@ -338,6 +338,13 @@ struct StreamVoice {
     fade_in_len: usize, // frames de sortida (driver rate)
     played_out: usize,  // frames de sortida consumits (per a fades i telemetria)
     frac: f64,          // posició fraccionària dins el frame de FONT actual
+    // Segment (punts d'edició del cue) i loop, en temps de FONT (segons).
+    start_secs: f64,    // inici del tram (per re-seek en loop)
+    stop_secs: f64,     // out-point (0 = fins al final del fitxer)
+    loop_on: bool,
+    fade_out_secs: f64, // fade cap a l'out-point (només sense loop)
+    src_consumed: usize, // frames de FONT consumits dins el tram actual
+    file_rate: u32,     // freqüència del fitxer (0 fins que el callback la sap)
     release_from: Option<usize>,
     release_len: usize,
     paused: bool,
@@ -365,6 +372,7 @@ fn asio_mix_stream_voice(v: &mut StreamVoice, acc: &mut [Vec<f32>], buffer_size:
     };
     let ch = ring.channels;
     let file_rate = ring.file_rate;
+    v.file_rate = file_rate; // el seek el necessita per reposicionar src_consumed
     if ch == 0 || file_rate == 0 {
         // Encara no hi ha dades (probe en marxa). Si ja és eof i buit → fitxer dolent.
         if ring.eof && ring.samples.is_empty() {
@@ -375,26 +383,52 @@ fn asio_mix_stream_voice(v: &mut StreamVoice, acc: &mut [Vec<f32>], buffer_size:
         return;
     }
     let step = file_rate as f64 / v.driver_rate.max(1) as f64;
+    // Llargada del tram en frames de FONT (0 = fins al final del fitxer).
+    let seg_frames = if v.stop_secs > 0.0 {
+        (((v.stop_secs - v.start_secs).max(0.0)) * file_rate as f64) as usize
+    } else {
+        0
+    };
+    let fade_out_src = (v.fade_out_secs.max(0.0) * file_rate as f64) as usize;
     let mut peak = 0.0f32;
 
     for i in 0..buffer_size {
         let avail = ring.avail_frames();
-        if avail < 2 {
-            if ring.eof && avail == 0 {
-                v.finished = true;
-                v.ctrl.stop.store(true, Ordering::Relaxed);
-                break;
+        let at_outpoint = seg_frames > 0 && v.src_consumed >= seg_frames;
+        let at_eof = ring.eof && avail == 0;
+
+        // Final del tram (out-point) o del fitxer: fa loop o acaba.
+        if at_outpoint || at_eof {
+            if v.loop_on && v.release_from.is_none() {
+                // Torna a l'inici del tram: demana el seek al fil i buida el ring.
+                let ms = (v.start_secs * 1000.0) as i64;
+                v.ctrl.seek_ms.store(ms, Ordering::Relaxed);
+                ring.samples.clear();
+                ring.eof = false;
+                v.src_consumed = 0;
+                v.frac = 0.0;
+                break; // la resta del buffer queda en silenci fins que el ring s'ompli
             }
-            if !ring.eof {
-                break; // underrun: silenci la resta del buffer
-            }
-            // eof amb 1 frame: el drenem com a constant (s1 = s0)
+            v.finished = true;
+            v.ctrl.stop.store(true, Ordering::Relaxed);
+            break;
         }
 
-        // Envolupant: fade-in + release.
+        if avail < 2 && !ring.eof {
+            break; // underrun: silenci la resta del buffer
+        }
+
+        // Envolupant: fade-in + fade-out cap a l'out-point (sense loop) + release.
         let mut env = 1.0f32;
         if v.fade_in_len > 0 && v.played_out < v.fade_in_len {
             env *= v.played_out as f32 / v.fade_in_len as f32;
+        }
+        if !v.loop_on && seg_frames > 0 && fade_out_src > 0 {
+            let from = seg_frames.saturating_sub(fade_out_src);
+            if v.src_consumed >= from {
+                let into = v.src_consumed - from;
+                env *= 1.0 - (into as f32 / fade_out_src as f32).min(1.0);
+            }
         }
         if let Some(rfrom) = v.release_from {
             if v.played_out >= rfrom {
@@ -433,10 +467,12 @@ fn asio_mix_stream_voice(v: &mut StreamVoice, acc: &mut [Vec<f32>], buffer_size:
             if a2 <= 1 {
                 if ring.eof {
                     ring.pop_frames(a2);
+                    v.src_consumed += a2;
                 }
                 break;
             }
             ring.pop_frames(1);
+            v.src_consumed += 1;
             v.frac -= 1.0;
         }
     }
@@ -830,7 +866,8 @@ fn asio_start_notifier(app: tauri::AppHandle) {
                         if let Ok(svs) = sh.stream_voices.lock() {
                             v.extend(svs.iter().filter(|s| !s.finished).map(|s| TelemetryItem {
                                 id: s.voice_id,
-                                pos: s.played_out as f32 / rate,
+                                // src_consumed/file_rate = posició dins el tram; plega en loop.
+                                pos: if s.file_rate > 0 { s.src_consumed as f32 / s.file_rate as f32 } else { 0.0 },
                                 level: s.meter,
                             }));
                         }
@@ -1266,7 +1303,8 @@ fn asio_play_voice_impl(
 
     // ── Camí STREAMING (pistes llargues): decode-ahead, sense carregar tot a RAM.
     if streaming {
-        let handle = asio_stream::spawn_stream(file_path.to_string(), start_point.max(0.0) as f64);
+        let start_secs = start_point.max(0.0) as f64;
+        let handle = asio_stream::spawn_stream(file_path.to_string(), start_secs);
         let fade_in_len = (fade_in.max(0.0) * sample_rate as f32) as usize;
         let sv = StreamVoice {
             voice_id,
@@ -1278,6 +1316,12 @@ fn asio_play_voice_impl(
             fade_in_len,
             played_out: 0,
             frac: 0.0,
+            start_secs,
+            stop_secs: if stop_point > 0.0 { stop_point as f64 } else { 0.0 },
+            loop_on,
+            fade_out_secs: fade_out.max(0.0) as f64,
+            src_consumed: 0,
+            file_rate: 0,
             release_from: None,
             release_len: 0,
             paused: false,
@@ -1446,25 +1490,30 @@ fn asio_seek_impl(
         None => return Ok(()),
     };
     let rate = mix.sample_rate as f32;
+    // `position` és ABSOLUT (segons dins el fitxer), igual per a veus en memòria i
+    // streaming, perquè cues i playlist no interpretin el seek de manera diferent.
     if let Ok(mut voices) = mix.voices.lock() {
         for v in voices.iter_mut() {
             if v.voice_id == voice_id {
-                let off = (position.max(0.0) * rate) as usize;
-                let target = v.start_frame.saturating_add(off);
+                let target = (position.max(0.0) * rate) as usize;
                 let max = v.stop_frame.saturating_sub(1).max(v.start_frame);
                 v.pos = target.clamp(v.start_frame, max);
             }
         }
     }
-    // Veus en streaming: demana el seek al fil descodificador (en ms) i ajusta la
-    // posició de sortida perquè la telemetria hi quadri.
+    // Veus en streaming: `position` són segons dins el TRAM (0 = start_secs). Demana
+    // el seek absolut al fil (start_secs + position) i ajusta posició/consum perquè
+    // la telemetria i l'out-point hi quadrin. Buida el ring per no sentir el tram vell.
     if let Ok(mut svs) = mix.stream_voices.lock() {
         for sv in svs.iter_mut() {
             if sv.voice_id == voice_id {
-                let ms = (position.max(0.0) * 1000.0) as i64;
-                sv.ctrl.seek_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
-                sv.played_out = (position.max(0.0) * rate) as usize;
+                let abs = position.max(0.0) as f64;            // posició absoluta dins el fitxer
+                let rel = (abs - sv.start_secs).max(0.0);      // dins el tram actual
+                sv.ctrl.seek_ms.store((abs * 1000.0) as i64, std::sync::atomic::Ordering::Relaxed);
+                sv.played_out = (rel * rate as f64) as usize;
                 sv.frac = 0.0;
+                sv.src_consumed = if sv.file_rate > 0 { (rel * sv.file_rate as f64) as usize } else { 0 };
+                if let Ok(mut r) = sv.ring.lock() { r.samples.clear(); r.eof = false; }
             }
         }
     }

@@ -1202,7 +1202,8 @@ export const useSoundStore = create((set, get) => ({
       const stopPoint = slot.stopPoint != null ? Math.min(slot.stopPoint, total) : total;
       const segDur = Math.max(0.02, stopPoint - startPoint);
       const r = Math.min(1, Math.max(0, ratio));
-      invoke('asio_seek', { voiceId: slotId, position: r * segDur })
+      // position ABSOLUTA dins el fitxer (inici del tram + offset dins el tram)
+      invoke('asio_seek', { voiceId: slotId, position: startPoint + r * segDur })
         .catch((e) => console.warn('[asio] seek:', e));
       return;
     }
