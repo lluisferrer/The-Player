@@ -6,6 +6,7 @@
 // crossfade ramping audio.volume (no passem per Web Audio → sense problemes
 // de CORS amb el protocol asset).
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { nextIndex, prevIndex } from './playlistSeq';
 
 let cur = null;        // { audio, index }
 let paused = null;     // { index, pos }
@@ -127,35 +128,6 @@ function makeAudio(get, filePath) {
   const dev = get().playlistDeviceId;
   if (audio.setSinkId && dev && dev !== 'default') audio.setSinkId(dev).catch(() => {});
   return audio;
-}
-
-// auto=true quan és un avanç automàtic (final de pista); auto=false en saltar
-// manualment amb el botó Next. En mode 'song' només l'avanç automàtic repeteix
-// la pista actual: el botó Next sempre salta de debò.
-function nextIndex(get, idx, auto = false) {
-  const st = get();
-  const n = st.playlist.length;
-  if (n === 0) return null;
-  if (auto && st.playlistRepeatMode === 'song') return idx;
-  const loop = st.playlistRepeatMode === 'list';
-  if (st.playlistShuffle) {
-    if (n === 1) return loop ? 0 : null;
-    let r = idx;
-    while (r === idx) r = Math.floor(Math.random() * n);
-    return r;
-  }
-  const next = idx + 1;
-  if (next >= n) return loop ? 0 : null;
-  return next;
-}
-
-function prevIndex(get, idx) {
-  const st = get();
-  const n = st.playlist.length;
-  if (n === 0) return null;
-  const p = idx - 1;
-  if (p < 0) return st.playlistRepeatMode === 'list' ? n - 1 : 0;
-  return p;
 }
 
 function startTrack(get, set, index, { fadeIn = 0, offset = 0 } = {}) {

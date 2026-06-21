@@ -262,12 +262,15 @@ export function SettingsModal({ onClose }) {
 
               <div className="settings-row">
                 <label htmlFor="dev-playlist">Playlist</label>
-                <select id="dev-playlist" value={playlistDeviceId} onChange={(e) => setPlaylistDevice(e.target.value)}>
-                  <option value="default">Per defecte</option>
-                  {audioDevices.map((d) => (
-                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}</option>
-                  ))}
-                </select>
+                <OutputSelect
+                  id="dev-playlist"
+                  value={playlistDeviceId}
+                  onChange={setPlaylistDevice}
+                  audioDevices={audioDevices}
+                  asioOptions={asioOptions}
+                  defaultValue="default"
+                  defaultLabel="Per defecte"
+                />
               </div>
 
               <div className="settings-row">
@@ -284,8 +287,9 @@ export function SettingsModal({ onClose }) {
               <div className="settings-note">
                 Els cues sense color, o amb un color sense assignar, sonen pel bus Cues.
                 Per assignar una sortida ASIO cal carregar abans el seu driver a «Dispositius ASIO».
-                El render ASIO encara és pendent: un color assignat a ASIO de moment NO treu so
-                (però tampoc duplica pel bus Cues).
+                Els cues i la Playlist routejats a ASIO sonen pel motor natiu (canals reals del
+                driver). Nota: només es pot tenir UN driver ASIO carregat alhora, així que cues i
+                Playlist a ASIO han de compartir el mateix driver.
               </div>
               {CUE_COLORS.map((c) => (
                 <div className="settings-row" key={c.value}>

@@ -3,6 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { SkipBack, SkipForward, Play, Pause, Square, Repeat, Repeat1, Shuffle } from 'lucide-react';
 import { useSoundStore } from '../store/useSoundStore';
 import { plPosition } from '../lib/playlistEngine';
+import { plaPosition, plaActive } from '../lib/playlistAsio';
 import { fmtTime } from '../hooks/usePlaybackTime';
 
 function basename(p) { return p.split(/[\\/]/).pop() || p; }
@@ -58,7 +59,8 @@ export function Playlist() {
   useEffect(() => {
     let raf;
     const tick = () => {
-      setPos(plPosition());
+      // Si la playlist sona pel motor natiu (ASIO), la posició ve d'allà.
+      setPos(plaActive() ? plaPosition() : plPosition());
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

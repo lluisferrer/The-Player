@@ -7,6 +7,9 @@ import {
   csPlay, csStop, csPause, csResume, csSeek, csSetVolume,
   csPreviewStart, csPreviewStop,
 } from '../lib/cueStreamEngine';
+import {
+  plaPlayPause, plaStop, plaNext, plaPrev, plaPlayIndex, plaSetVolume, plaSeek, plaSetDevice,
+} from '../lib/playlistAsio';
 import { invoke } from '@tauri-apps/api/core';
 import { hasClip, isVideo, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
 import { dispatchCue } from '../lib/cueDispatch';
@@ -301,8 +304,17 @@ export const useSoundStore = create((set, get) => ({
   },
 
   setPlaylistDevice: (deviceId) => {
+    const wasAsio = isAsioTarget(get().playlistDeviceId);
+    const willAsio = isAsioTarget(deviceId);
+    // Canvi de TIPUS (WASAPI↔ASIO): atura el motor que estava actiu (no es pot
+    // migrar la reproducció en calent entre camins diferents).
+    if (wasAsio !== willAsio) get().playlistStop();
     set({ playlistDeviceId: deviceId });
-    plSetDevice(get);
+    // Mateix tipus: canvi de sortida en calent. WASAPI canvia el sinkId de
+    // l'<audio>; ASIO encara no suporta canvi de canals en calent (atura).
+    if (wasAsio === willAsio) {
+      if (willAsio) plaSetDevice(get); else plSetDevice(get);
+    }
     get().persistGlobals();
   },
 
@@ -414,10 +426,13 @@ export const useSoundStore = create((set, get) => ({
   },
 
   clearPlaylist: () => {
-    plStop(get, set);
+    get().playlistStop();
     set({ playlist: [], playlistIndex: -1, playlistSelected: 0 });
     get().persistPlaylist();
   },
+
+  // Cert si la playlist routeja a un dispositiu ASIO (→ motor natiu de veus).
+  plIsAsio: () => isAsioTarget(get().playlistDeviceId),
 
   setCrossfade: (sec) => { set({ crossfade: Math.max(0, sec) }); get().persistPlaylist(); },
   // Cicla el mode de repetició: off → song → list → off
@@ -427,13 +442,20 @@ export const useSoundStore = create((set, get) => ({
     get().persistPlaylist();
   },
   togglePlaylistShuffle: () => { set((s) => ({ playlistShuffle: !s.playlistShuffle })); get().persistPlaylist(); },
-  setPlaylistVolume: (v) => { set({ playlistVolume: v }); plSetVolume(get); get().persistPlaylist(); },
+  setPlaylistVolume: (v) => {
+    set({ playlistVolume: v });
+    if (get().plIsAsio()) plaSetVolume(get); else plSetVolume(get);
+    get().persistPlaylist();
+  },
 
-  playlistPlayPause: () => plPlayPause(get, set),
-  playlistStop: () => plStop(get, set),
-  playlistNext: () => plNext(get, set),
-  playlistPrev: () => plPrev(get, set),
-  playlistPlayIndex: (i) => { set({ playlistSelected: i }); plPlayIndex(get, set, i); },
+  playlistPlayPause: () => (get().plIsAsio() ? plaPlayPause(get, set) : plPlayPause(get, set)),
+  playlistStop: () => (get().plIsAsio() ? plaStop(get, set) : plStop(get, set)),
+  playlistNext: () => (get().plIsAsio() ? plaNext(get, set) : plNext(get, set)),
+  playlistPrev: () => (get().plIsAsio() ? plaPrev(get, set) : plPrev(get, set)),
+  playlistPlayIndex: (i) => {
+    set({ playlistSelected: i });
+    if (get().plIsAsio()) plaPlayIndex(get, set, i); else plPlayIndex(get, set, i);
+  },
 
   // Selecció (cursor) de la llista: clic o fletxes
   setPlaylistSelected: (i) => {
@@ -451,10 +473,10 @@ export const useSoundStore = create((set, get) => ({
     const { playlist, playlistSelected } = get();
     if (playlist.length === 0) return;
     const i = Math.max(0, Math.min(playlistSelected || 0, playlist.length - 1));
-    plPlayIndex(get, set, i);
+    if (get().plIsAsio()) plaPlayIndex(get, set, i); else plPlayIndex(get, set, i);
   },
   // Salta a una fracció (0..1) de la pista que sona ara
-  playlistSeek: (fraction) => plSeek(get, fraction),
+  playlistSeek: (fraction) => (get().plIsAsio() ? plaSeek(get, fraction) : plSeek(get, fraction)),
 
   // Salta un cue de vídeo en reproducció a "elapsed" segons dins el segment.
   // Emet el seek a la sortida i ajusta startedAt perquè el playhead del tile hi quadri.
@@ -723,6 +745,8 @@ export const useSoundStore = create((set, get) => ({
         loopOn: !!slot.loop,
         startPoint,
         stopPoint,
+        // Cue llarg (>60s): render natiu en streaming (decode-ahead), no a RAM sencer
+        streaming: !!slot.isStreaming,
       }).catch((e) => console.warn('[asio] play_voice:', e));
       set((state) => ({
         slots: state.slots.map((s) =>

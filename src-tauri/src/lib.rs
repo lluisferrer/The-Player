@@ -5,6 +5,10 @@ use serde::Serialize;
 #[cfg(feature = "asio")]
 mod asio_decode;
 
+// Descodificació en STREAMING (decode-ahead) per a pistes llargues a ASIO.
+#[cfg(feature = "asio")]
+mod asio_stream;
+
 // Llegeix els bytes d'un fitxer pel seu camí absolut (per carregar àudio
 // des de rutes guardades a la Library). Retorna els bytes en brut.
 #[tauri::command]
@@ -319,6 +323,127 @@ impl Voice {
     }
 }
 
+// ── Veu en STREAMING (decode-ahead) ──────────────────────────────────────────
+// Per a pistes llargues: en comptes de tenir tot el PCM a `data`, llegeix d'un
+// ring buffer que un fil descodificador va omplint (asio_stream). El callback
+// resampleja al consumidor (interpolació lineal) a la freqüència del driver.
+#[cfg(feature = "asio")]
+struct StreamVoice {
+    voice_id: u64,
+    ring: std::sync::Arc<std::sync::Mutex<asio_stream::StreamRing>>,
+    ctrl: std::sync::Arc<asio_stream::StreamCtrl>,
+    out_channels: Vec<usize>,
+    driver_rate: u32,
+    gain: f32,
+    fade_in_len: usize, // frames de sortida (driver rate)
+    played_out: usize,  // frames de sortida consumits (per a fades i telemetria)
+    frac: f64,          // posició fraccionària dins el frame de FONT actual
+    release_from: Option<usize>,
+    release_len: usize,
+    paused: bool,
+    finished: bool,
+    meter: f32,
+}
+
+// Mescla una veu de streaming als acumuladors de sortida. Llegeix del ring amb
+// interpolació lineal (resample file_rate → driver_rate). Marca `finished` en
+// arribar al final (eof i buit) o en acabar el release; aleshores atura el fil
+// descodificador. Underrun (buffer buit sense eof) → silenci sense avançar.
+#[cfg(feature = "asio")]
+fn asio_mix_stream_voice(v: &mut StreamVoice, acc: &mut [Vec<f32>], buffer_size: usize) {
+    use std::sync::atomic::Ordering;
+    if v.finished {
+        return;
+    }
+    if v.paused {
+        v.meter = 0.0;
+        return;
+    }
+    let mut ring = match v.ring.lock() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let ch = ring.channels;
+    let file_rate = ring.file_rate;
+    if ch == 0 || file_rate == 0 {
+        // Encara no hi ha dades (probe en marxa). Si ja és eof i buit → fitxer dolent.
+        if ring.eof && ring.samples.is_empty() {
+            v.finished = true;
+            v.ctrl.stop.store(true, Ordering::Relaxed);
+        }
+        v.meter = 0.0;
+        return;
+    }
+    let step = file_rate as f64 / v.driver_rate.max(1) as f64;
+    let mut peak = 0.0f32;
+
+    for i in 0..buffer_size {
+        let avail = ring.avail_frames();
+        if avail < 2 {
+            if ring.eof && avail == 0 {
+                v.finished = true;
+                v.ctrl.stop.store(true, Ordering::Relaxed);
+                break;
+            }
+            if !ring.eof {
+                break; // underrun: silenci la resta del buffer
+            }
+            // eof amb 1 frame: el drenem com a constant (s1 = s0)
+        }
+
+        // Envolupant: fade-in + release.
+        let mut env = 1.0f32;
+        if v.fade_in_len > 0 && v.played_out < v.fade_in_len {
+            env *= v.played_out as f32 / v.fade_in_len as f32;
+        }
+        if let Some(rfrom) = v.release_from {
+            if v.played_out >= rfrom {
+                let into = v.played_out - rfrom;
+                if v.release_len == 0 || into >= v.release_len {
+                    v.finished = true;
+                    v.ctrl.stop.store(true, Ordering::Relaxed);
+                    break;
+                }
+                env *= 1.0 - into as f32 / v.release_len as f32;
+            }
+        }
+
+        let g = v.gain * env;
+        let frac = v.frac as f32;
+        for (di, &out_ch) in v.out_channels.iter().enumerate() {
+            if out_ch >= acc.len() {
+                continue;
+            }
+            let sc = if ch == 1 { 0 } else { di % ch };
+            let s0 = ring.sample(0, sc);
+            let s1 = if avail >= 2 { ring.sample(1, sc) } else { s0 };
+            let out = (s0 + (s1 - s0) * frac) * g;
+            let a = out.abs();
+            if a > peak {
+                peak = a;
+            }
+            acc[out_ch][i] += out;
+        }
+
+        v.played_out += 1;
+        v.frac += step;
+        // Consumeix frames de font segons avança la posició fraccionària.
+        while v.frac >= 1.0 {
+            let a2 = ring.avail_frames();
+            if a2 <= 1 {
+                if ring.eof {
+                    ring.pop_frames(a2);
+                }
+                break;
+            }
+            ring.pop_frames(1);
+            v.frac -= 1.0;
+        }
+    }
+
+    v.meter = peak;
+}
+
 // ── Cau de PCM descodificat (pre-decode per a dispar instantani) ─────────────
 //
 // Descodificar un MP3 de 2 min triga ~2 s; fer-ho a l'hora de DISPARAR introdueix
@@ -411,22 +536,105 @@ impl PcmCache {
     }
 }
 
-// Obté el PCM d'un fitxer a la freqüència del driver, descodificant-lo només si
-// no és a la cau. Retorna un `Arc` compartit (barat de clonar per a cada veu).
+// Paràmetres d'una veu a registrar (tot menys el PCM): es porten des de la
+// comanda fins al moment de construir la `Voice` (potser després d'un decode
+// en un fil a part). Send perquè pugui viatjar a un fil de treball.
 #[cfg(feature = "asio")]
-fn asio_get_pcm(
-    cache: &mut PcmCache,
-    file_path: &str,
+struct VoiceSpec {
+    voice_id: u64,
+    out_channels: Vec<usize>,
+    gain: f32,
+    fade_in: f32,
+    fade_out: f32,
+    loop_on: bool,
+    start_point: f32,
+    stop_point: f32,
+}
+
+// Clon del sender cap al fil del motor (per als fils de decode, que hi tornen el
+// PCM). None si el motor encara no ha arrencat.
+#[cfg(feature = "asio")]
+fn asio_tx_clone() -> Option<std::sync::mpsc::Sender<AsioCmd>> {
+    ASIO_TX.get().cloned()
+}
+
+// Descodifica un fitxer en un FIL DE TREBALL i n'envia el resultat al motor amb
+// `make_cmd` (RegisterDecoded per reproduir, o CacheStore per pre-carregar). El
+// fil del motor no queda mai bloquejat descodificant (clau per a pistes llargues).
+#[cfg(feature = "asio")]
+fn asio_spawn_decode<F>(file_path: String, rate: u32, make_cmd: F)
+where
+    F: FnOnce(std::sync::Arc<Vec<Vec<f32>>>) -> AsioCmd + Send + 'static,
+{
+    let tx = match asio_tx_clone() {
+        Some(t) => t,
+        None => return,
+    };
+    std::thread::Builder::new()
+        .name("asio-decode".into())
+        .spawn(move || match asio_decode::decode_file(&file_path, rate) {
+            Ok(d) => {
+                let _ = tx.send(make_cmd(std::sync::Arc::new(d.data)));
+            }
+            Err(e) => eprintln!("[asio-decode] '{}': {}", file_path, e),
+        })
+        .ok();
+}
+
+// Construeix una `Voice` a partir del PCM ja descodificat + els paràmetres i
+// l'afegeix a la mescla (substituint qualsevol veu amb el mateix id). Si entre
+// la petició i ara el mix s'ha desmuntat, no fa res.
+#[cfg(feature = "asio")]
+fn asio_build_and_push_voice(
+    loaded: &mut Option<AsioLoaded>,
+    data: std::sync::Arc<Vec<Vec<f32>>>,
     rate: u32,
-) -> Result<std::sync::Arc<Vec<Vec<f32>>>, String> {
-    let key: PcmKey = (file_path.to_string(), rate);
-    if let Some(v) = cache.get(&key) {
-        return Ok(v);
+    spec: VoiceSpec,
+) {
+    let mix = match loaded.as_ref().and_then(|l| l.mix.as_ref()) {
+        Some(m) => m,
+        None => {
+            eprintln!("[asio-voice] voice={} SENSE MIX → descartada", spec.voice_id);
+            return;
+        }
+    };
+    let total = data.iter().map(|c| c.len()).max().unwrap_or(0);
+    let src_channels = data.len();
+    let sr = rate as f32;
+    let start_frame = (((spec.start_point.max(0.0)) * sr) as usize).min(total);
+    let stop_frame = if spec.stop_point > 0.0 {
+        ((spec.stop_point * sr) as usize).min(total)
+    } else {
+        total
+    };
+    let stop_frame = stop_frame.max(start_frame + 1).min(total.max(start_frame + 1));
+    let seg_len = stop_frame.saturating_sub(start_frame);
+    let fade_in_len = ((spec.fade_in.max(0.0) * sr) as usize).min(seg_len);
+    let fade_out_len = ((spec.fade_out.max(0.0) * sr) as usize).min(seg_len);
+
+    let voice = Voice {
+        voice_id: spec.voice_id,
+        data,
+        src_channels,
+        out_channels: spec.out_channels,
+        pos: start_frame,
+        start_frame,
+        stop_frame,
+        gain: spec.gain.max(0.0),
+        loop_on: spec.loop_on,
+        fade_in_len,
+        fade_out_len,
+        release_from: None,
+        release_len: 0,
+        finished: false,
+        paused: false,
+        meter: 0.0,
+    };
+
+    if let Ok(mut voices) = mix.voices.lock() {
+        voices.retain(|v| v.voice_id != spec.voice_id);
+        voices.push(voice);
     }
-    let decoded = asio_decode::decode_file(file_path, rate)?;
-    let arc = std::sync::Arc::new(decoded.data);
-    cache.insert(key, arc.clone());
-    Ok(arc)
 }
 
 // Ordres que el fil ASIO dedicat sap atendre. Cada una porta un canal de
@@ -454,6 +662,7 @@ enum AsioCmd {
         loop_on: bool,
         start_point: f32,   // segons dins el fitxer
         stop_point: f32,    // segons (<=0 = fins al final)
+        streaming: bool,    // true = decode-ahead (pistes llargues)
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     // Atura una veu pel seu id, amb fade-out opcional (segons).
@@ -468,6 +677,21 @@ enum AsioCmd {
         driver_name: String,
         file_path: String,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Enviat per un fil de DECODE quan acaba de descodificar un fitxer: el motor
+    // l'insereix a la cau i registra la veu. Així descodificar mai bloqueja el
+    // fil del motor (clau per a pistes llargues de la Playlist). Fire-and-forget.
+    RegisterDecoded {
+        file_path: String,
+        rate: u32,
+        data: std::sync::Arc<Vec<Vec<f32>>>,
+        spec: VoiceSpec,
+    },
+    // Enviat per un fil de DECODE en pre-càrrega: només desa el PCM a la cau.
+    CacheStore {
+        file_path: String,
+        rate: u32,
+        data: std::sync::Arc<Vec<Vec<f32>>>,
     },
     // Canvia el gain (volum) d'una veu activa en calent.
     SetGain {
@@ -538,6 +762,7 @@ struct TelemetryItem {
 #[cfg(feature = "asio")]
 struct AsioMeterShared {
     voices: std::sync::Arc<std::sync::Mutex<Vec<Voice>>>,
+    stream_voices: std::sync::Arc<std::sync::Mutex<Vec<StreamVoice>>>,
     sample_rate: u32,
 }
 
@@ -590,7 +815,7 @@ fn asio_start_notifier(app: tauri::AppHandle) {
                 match guard.as_ref() {
                     Some(sh) => {
                         let rate = sh.sample_rate.max(1) as f32;
-                        match sh.voices.lock() {
+                        let mut v: Vec<TelemetryItem> = match sh.voices.lock() {
                             Ok(vs) => vs
                                 .iter()
                                 .filter(|v| v.voice_id != u64::MAX && !v.finished)
@@ -601,7 +826,15 @@ fn asio_start_notifier(app: tauri::AppHandle) {
                                 })
                                 .collect(),
                             Err(_) => continue,
+                        };
+                        if let Ok(svs) = sh.stream_voices.lock() {
+                            v.extend(svs.iter().filter(|s| !s.finished).map(|s| TelemetryItem {
+                                id: s.voice_id,
+                                pos: s.played_out as f32 / rate,
+                                level: s.meter,
+                            }));
                         }
+                        v
                     }
                     None => Vec::new(),
                 }
@@ -627,6 +860,8 @@ struct AsioMix {
     #[allow(dead_code)]
     streams: std::sync::Arc<std::sync::Mutex<asio_sys::AsioStreams>>,
     voices: std::sync::Arc<std::sync::Mutex<Vec<Voice>>>,
+    // Veus en STREAMING (pistes llargues): llista separada de les veus en memòria.
+    stream_voices: std::sync::Arc<std::sync::Mutex<Vec<StreamVoice>>>,
     callback_id: asio_sys::CallbackId,
     // Guardats per a depuració/futur (telemetria, re-prepare): el callback ja en
     // té còpies pròpies, així que aquí no es llegeixen.
@@ -666,6 +901,13 @@ fn asio_teardown_mix(l: &mut AsioLoaded) {
         // Buida les veus (l'Arc del callback ja no s'invocarà).
         if let Ok(mut v) = mix.voices.lock() {
             v.clear();
+        }
+        // Atura els fils descodificadors de les veus en streaming i buida-les.
+        if let Ok(mut svs) = mix.stream_voices.lock() {
+            for sv in svs.iter() {
+                sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            svs.clear();
         }
     }
 }
@@ -812,9 +1054,11 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
     };
     let streams = Arc::new(Mutex::new(streams));
     let voices: Arc<Mutex<Vec<Voice>>> = Arc::new(Mutex::new(Vec::new()));
+    let stream_voices: Arc<Mutex<Vec<StreamVoice>>> = Arc::new(Mutex::new(Vec::new()));
 
     let cb_streams = streams.clone();
     let cb_voices = voices.clone();
+    let cb_stream_voices = stream_voices.clone();
     // `AsioSampleType` no és Copy/Clone: en demanem una còpia pròpia per al
     // callback (consulta barata) i deixem `data_type` per guardar a `AsioMix`.
     let cb_dt = driver.output_data_type().map_err(|e| format!("output_data_type(): {:?}", e))?;
@@ -848,6 +1092,19 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
             voices.retain(|v| !v.finished);
         }
 
+        // Veus en STREAMING (pistes llargues).
+        if let Ok(mut svs) = cb_stream_voices.lock() {
+            for sv in svs.iter_mut() {
+                asio_mix_stream_voice(sv, &mut acc, buffer_size);
+            }
+            for sv in svs.iter() {
+                if sv.finished {
+                    asio_notify_ended(sv.voice_id);
+                }
+            }
+            svs.retain(|sv| !sv.finished);
+        }
+
         // Bolca els acumuladors als buffers ASIO natius.
         unsafe {
             for ch in 0..num {
@@ -866,12 +1123,17 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
     // Publica la llista de veus i la freqüència perquè el fil de telemetria les
     // mostregi (playhead + VU) sense tocar el callback RT.
     if let Ok(mut g) = asio_meter_slot().lock() {
-        *g = Some(AsioMeterShared { voices: voices.clone(), sample_rate });
+        *g = Some(AsioMeterShared {
+            voices: voices.clone(),
+            stream_voices: stream_voices.clone(),
+            sample_rate,
+        });
     }
 
     l.mix = Some(AsioMix {
         streams,
         voices,
+        stream_voices,
         callback_id,
         data_type,
         buffer_size,
@@ -985,6 +1247,7 @@ fn asio_play_voice_impl(
     loop_on: bool,
     start_point: f32,
     stop_point: f32,
+    streaming: bool,
 ) -> Result<(), String> {
     let (sample_rate, outs) = asio_ensure_mix(loaded, driver_name)?;
 
@@ -1001,57 +1264,73 @@ fn asio_play_voice_impl(
         ));
     }
 
-    // PCM de la cau (pre-descodificat) o descodifica+resampleja si no hi és.
-    let data = asio_get_pcm(cache, file_path, sample_rate)?;
-    let total = data.iter().map(|c| c.len()).max().unwrap_or(0);
-    let src_channels = data.len();
+    // ── Camí STREAMING (pistes llargues): decode-ahead, sense carregar tot a RAM.
+    if streaming {
+        let handle = asio_stream::spawn_stream(file_path.to_string(), start_point.max(0.0) as f64);
+        let fade_in_len = (fade_in.max(0.0) * sample_rate as f32) as usize;
+        let sv = StreamVoice {
+            voice_id,
+            ring: handle.ring,
+            ctrl: handle.ctrl,
+            out_channels,
+            driver_rate: sample_rate,
+            gain: gain.max(0.0),
+            fade_in_len,
+            played_out: 0,
+            frac: 0.0,
+            release_from: None,
+            release_len: 0,
+            paused: false,
+            finished: false,
+            meter: 0.0,
+        };
+        if let Some(mix) = loaded.as_ref().and_then(|l| l.mix.as_ref()) {
+            if let Ok(mut svs) = mix.stream_voices.lock() {
+                // Re-disparo del mateix id: atura el fil antic abans de substituir.
+                for old in svs.iter().filter(|x| x.voice_id == voice_id) {
+                    old.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                svs.retain(|x| x.voice_id != voice_id);
+                svs.push(sv);
+            }
+        }
+        return Ok(());
+    }
 
-    // Segment en frames.
-    let sr = sample_rate as f32;
-    let start_frame = ((start_point.max(0.0)) * sr) as usize;
-    let start_frame = start_frame.min(total);
-    let stop_frame = if stop_point > 0.0 {
-        ((stop_point * sr) as usize).min(total)
-    } else {
-        total
-    };
-    let stop_frame = stop_frame.max(start_frame + 1).min(total.max(start_frame + 1));
-
-    let seg_len = stop_frame.saturating_sub(start_frame);
-    let fade_in_len = ((fade_in.max(0.0) * sr) as usize).min(seg_len);
-    let fade_out_len = ((fade_out.max(0.0) * sr) as usize).min(seg_len);
-
-    let voice = Voice {
+    let spec = VoiceSpec {
         voice_id,
-        data,
-        src_channels,
         out_channels,
-        pos: start_frame,
-        start_frame,
-        stop_frame,
-        gain: gain.max(0.0),
+        gain,
+        fade_in,
+        fade_out,
         loop_on,
-        fade_in_len,
-        fade_out_len,
-        release_from: None,
-        release_len: 0,
-        finished: false,
-        paused: false,
-        meter: 0.0,
+        start_point,
+        stop_point,
     };
 
-    let mix = loaded.as_ref().unwrap().mix.as_ref().unwrap();
-    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
-    // Si ja hi havia una veu amb aquest id (re-disparo), la substituïm.
-    voices.retain(|v| v.voice_id != voice_id);
-    voices.push(voice);
+    // Si el PCM ja és a la cau (p. ex. pre-carregat), registra la veu A L'INSTANT.
+    let key: PcmKey = (file_path.to_string(), sample_rate);
+    if let Some(data) = cache.get(&key) {
+        asio_build_and_push_voice(loaded, data, sample_rate, spec);
+        return Ok(());
+    }
+
+    // Si no, descodifica en un FIL a part i registra la veu quan arribi el PCM
+    // (RegisterDecoded). El fil del motor no es bloqueja descodificant: un fitxer
+    // llarg o problemàtic no penja la reproducció ni els cues.
+    let path = file_path.to_string();
+    asio_spawn_decode(path.clone(), sample_rate, move |data| AsioCmd::RegisterDecoded {
+        file_path: path,
+        rate: sample_rate,
+        data,
+        spec,
+    });
     Ok(())
 }
 
 // Pre-descodifica un fitxer i el deixa a la cau, SENSE reproduir-lo. Carrega el
-// driver demanat (si cal) només per conèixer-ne la freqüència i descodificar-hi
-// al rate correcte; no engega cap stream de mescla. El GO posterior d'aquest cue
-// trobarà el PCM a la cau i serà instantani.
+// driver demanat (si cal) només per conèixer-ne la freqüència; el decode va en un
+// fil a part (CacheStore). El GO posterior trobarà el PCM a la cau i serà instantani.
 #[cfg(feature = "asio")]
 fn asio_preload_impl(
     loaded: &mut Option<AsioLoaded>,
@@ -1061,7 +1340,17 @@ fn asio_preload_impl(
 ) -> Result<(), String> {
     // Necessitem la freqüència del driver per descodificar al rate definitiu.
     let info = asio_do_info(loaded, driver_name)?;
-    asio_get_pcm(cache, file_path, info.sample_rate)?;
+    let rate = info.sample_rate;
+    let key: PcmKey = (file_path.to_string(), rate);
+    if cache.get(&key).is_some() {
+        return Ok(()); // ja a la cau
+    }
+    let path = file_path.to_string();
+    asio_spawn_decode(path.clone(), rate, move |data| AsioCmd::CacheStore {
+        file_path: path,
+        rate,
+        data,
+    });
     Ok(())
 }
 
@@ -1082,18 +1371,35 @@ fn asio_stop_voice_impl(
         None => return Ok(()),
     };
     let sr = mix.sample_rate as f32;
-    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
-    if fade_out > 0.0 {
-        let rel = (fade_out * sr) as usize;
-        for v in voices.iter_mut() {
-            if v.voice_id == voice_id && v.release_from.is_none() {
-                v.release_from = Some(v.seg_pos());
-                v.release_len = rel.max(1);
-                v.loop_on = false; // un release acaba la veu encara que fes loop
+    let rel = (fade_out.max(0.0) * sr) as usize;
+    if let Ok(mut voices) = mix.voices.lock() {
+        if fade_out > 0.0 {
+            for v in voices.iter_mut() {
+                if v.voice_id == voice_id && v.release_from.is_none() {
+                    v.release_from = Some(v.seg_pos());
+                    v.release_len = rel.max(1);
+                    v.loop_on = false; // un release acaba la veu encara que fes loop
+                }
             }
+        } else {
+            voices.retain(|v| v.voice_id != voice_id);
         }
-    } else {
-        voices.retain(|v| v.voice_id != voice_id);
+    }
+    // Veus en streaming: release amb fade, o atura el fil i elimina si fade 0.
+    if let Ok(mut svs) = mix.stream_voices.lock() {
+        if fade_out > 0.0 {
+            for sv in svs.iter_mut() {
+                if sv.voice_id == voice_id && sv.release_from.is_none() {
+                    sv.release_from = Some(sv.played_out);
+                    sv.release_len = rel.max(1);
+                }
+            }
+        } else {
+            for sv in svs.iter().filter(|x| x.voice_id == voice_id) {
+                sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            svs.retain(|sv| sv.voice_id != voice_id);
+        }
     }
     Ok(())
 }
@@ -1110,10 +1416,18 @@ fn asio_set_gain_impl(
         Some(m) => m,
         None => return Ok(()),
     };
-    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
-    for v in voices.iter_mut() {
-        if v.voice_id == voice_id {
-            v.gain = gain.max(0.0);
+    if let Ok(mut voices) = mix.voices.lock() {
+        for v in voices.iter_mut() {
+            if v.voice_id == voice_id {
+                v.gain = gain.max(0.0);
+            }
+        }
+    }
+    if let Ok(mut svs) = mix.stream_voices.lock() {
+        for sv in svs.iter_mut() {
+            if sv.voice_id == voice_id {
+                sv.gain = gain.max(0.0);
+            }
         }
     }
     Ok(())
@@ -1132,13 +1446,26 @@ fn asio_seek_impl(
         None => return Ok(()),
     };
     let rate = mix.sample_rate as f32;
-    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
-    for v in voices.iter_mut() {
-        if v.voice_id == voice_id {
-            let off = (position.max(0.0) * rate) as usize;
-            let target = v.start_frame.saturating_add(off);
-            let max = v.stop_frame.saturating_sub(1).max(v.start_frame);
-            v.pos = target.clamp(v.start_frame, max);
+    if let Ok(mut voices) = mix.voices.lock() {
+        for v in voices.iter_mut() {
+            if v.voice_id == voice_id {
+                let off = (position.max(0.0) * rate) as usize;
+                let target = v.start_frame.saturating_add(off);
+                let max = v.stop_frame.saturating_sub(1).max(v.start_frame);
+                v.pos = target.clamp(v.start_frame, max);
+            }
+        }
+    }
+    // Veus en streaming: demana el seek al fil descodificador (en ms) i ajusta la
+    // posició de sortida perquè la telemetria hi quadri.
+    if let Ok(mut svs) = mix.stream_voices.lock() {
+        for sv in svs.iter_mut() {
+            if sv.voice_id == voice_id {
+                let ms = (position.max(0.0) * 1000.0) as i64;
+                sv.ctrl.seek_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
+                sv.played_out = (position.max(0.0) * rate) as usize;
+                sv.frac = 0.0;
+            }
         }
     }
     Ok(())
@@ -1156,10 +1483,18 @@ fn asio_set_paused_impl(
         Some(m) => m,
         None => return Ok(()),
     };
-    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
-    for v in voices.iter_mut() {
-        if v.voice_id == voice_id {
-            v.paused = paused;
+    if let Ok(mut voices) = mix.voices.lock() {
+        for v in voices.iter_mut() {
+            if v.voice_id == voice_id {
+                v.paused = paused;
+            }
+        }
+    }
+    if let Ok(mut svs) = mix.stream_voices.lock() {
+        for sv in svs.iter_mut() {
+            if sv.voice_id == voice_id {
+                sv.paused = paused;
+            }
         }
     }
     Ok(())
@@ -1232,12 +1567,12 @@ fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
             }
             AsioCmd::PlayVoice {
                 voice_id, driver_name, file_path, channels, gain,
-                fade_in, fade_out, loop_on, start_point, stop_point, reply,
+                fade_in, fade_out, loop_on, start_point, stop_point, streaming, reply,
             } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     asio_play_voice_impl(
                         &mut loaded, &mut cache, voice_id, &driver_name, &file_path, &channels,
-                        gain, fade_in, fade_out, loop_on, start_point, stop_point,
+                        gain, fade_in, fade_out, loop_on, start_point, stop_point, streaming,
                     )
                 }))
                 .unwrap_or_else(|_| Err("Pànic reproduint la veu ASIO.".into()));
@@ -1249,6 +1584,19 @@ fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
                 }))
                 .unwrap_or_else(|_| Err("Pànic pre-descodificant la veu ASIO.".into()));
                 let _ = reply.send(res);
+            }
+            AsioCmd::RegisterDecoded { file_path, rate, data, spec } => {
+                // Un fil de decode ha acabat: desa a la cau i registra la veu.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cache.insert((file_path, rate), data.clone());
+                    asio_build_and_push_voice(&mut loaded, data, rate, spec);
+                }));
+            }
+            AsioCmd::CacheStore { file_path, rate, data } => {
+                // Pre-càrrega acabada en un fil: només desa el PCM a la cau.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cache.insert((file_path, rate), data);
+                }));
             }
             AsioCmd::StopVoice { voice_id, fade_out, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1352,10 +1700,11 @@ fn asio_play_voice(
     loop_on: bool,
     start_point: f32,
     stop_point: f32,
+    streaming: bool,
 ) -> Result<(), String> {
     #[cfg(not(feature = "asio"))]
     {
-        let _ = (voice_id, driver, file_path, channels, gain, fade_in, fade_out, loop_on, start_point, stop_point);
+        let _ = (voice_id, driver, file_path, channels, gain, fade_in, fade_out, loop_on, start_point, stop_point, streaming);
         Err("Aquesta build no inclou ASIO (cal compilar amb --features asio).".into())
     }
     #[cfg(feature = "asio")]
@@ -1364,7 +1713,7 @@ fn asio_play_voice(
         asio_sender()
             .send(AsioCmd::PlayVoice {
                 voice_id, driver_name: driver, file_path, channels, gain,
-                fade_in, fade_out, loop_on, start_point, stop_point, reply: reply_tx,
+                fade_in, fade_out, loop_on, start_point, stop_point, streaming, reply: reply_tx,
             })
             .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
         // Marge ampli: inclou descodificar + resamplejar el fitxer.
