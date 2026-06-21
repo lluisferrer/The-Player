@@ -31,9 +31,23 @@ let duckRaf = null;        // requestAnimationFrame del ramp del duck
 let duckGetRef = null;     // referència a get() per reaplicar el volum durant el ramp
 const duckSet = new Set(); // ids de cues de ducking actius (evita doble compte)
 
-// Reaplica el volum a la pista actual amb el duckGain vigent
+// Listener opcional perquè el motor ASIO reapliqui el duck a la seva veu (el
+// registra playlistAsio amb setAsioDuckListener). Evitem un import circular:
+// playlistEngine NO importa playlistAsio; aquest s'hi registra en una direcció.
+let asioDuckApply = null;
+export function setAsioDuckListener(fn) { asioDuckApply = fn; }
+
+// Reaplica el volum a la pista actual amb el duckGain vigent. Toca tant la pista
+// WASAPI (<audio>) com la veu ASIO nativa (si la playlist va per ASIO).
 function duckReapply() {
   if (cur && duckGetRef) applyVol(duckGetRef, cur.audio, cur.audio._gain ?? 1);
+  if (asioDuckApply) asioDuckApply(duckGain);
+}
+
+// Factor de ducking vigent (1 = sense duck), perquè el motor ASIO el pugui
+// incorporar al gain en crear/actualitzar veus.
+export function currentDuckGain() {
+  return duckGain;
 }
 
 // Ramp del duckGain de l'actual cap a "to" durant "dur" segons (lineal)

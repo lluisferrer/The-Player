@@ -21,6 +21,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { parseTarget } from './outputTarget';
 import { asioPosition } from './asioTelemetry';
 import { nextIndex, prevIndex } from './playlistSeq';
+import { currentDuckGain, setAsioDuckListener } from './playlistEngine';
 
 // Ids de veu reservats per a la playlist (no col·lideixen amb els cues 1..128 ni
 // amb el to de prova u64::MAX). Comptador creixent: cada pista nova en pren un de
@@ -82,7 +83,8 @@ function startTrackA(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
   if (!tgt) return;
 
   const voiceId = nextVoiceId();
-  const gain = st.playlistVolume ?? 1;
+  // El gain inclou el factor de ducking vigent (música de fons sota els cues).
+  const gain = (st.playlistVolume ?? 1) * currentDuckGain();
   invoke('asio_play_voice', {
     voiceId,
     driver: tgt.driver,
@@ -241,8 +243,21 @@ export function plaSeek(get, fraction) {
 
 export function plaSetVolume(get) {
   stash(get);
-  if (curA) invoke('asio_set_gain', { voiceId: curA.voiceId, gain: get().playlistVolume ?? 1 }).catch(() => {});
+  if (curA) invoke('asio_set_gain', { voiceId: curA.voiceId, gain: (get().playlistVolume ?? 1) * currentDuckGain() }).catch(() => {});
 }
+
+// Reaplica el factor de ducking a la veu ASIO actual (cridat per playlistEngine
+// durant el ramp del duck). No fa res si la playlist no va per ASIO o està en pausa.
+export function plaApplyDuck(duckGain) {
+  if (curA && !curA.paused && gRef) {
+    const vol = (gRef().playlistVolume ?? 1) * duckGain;
+    invoke('asio_set_gain', { voiceId: curA.voiceId, gain: vol }).catch(() => {});
+  }
+}
+
+// Registra plaApplyDuck al motor de ducking (playlistEngine) en carregar el
+// mòdul, en UNA sola direcció (sense import circular).
+setAsioDuckListener(plaApplyDuck);
 
 // Canvi de dispositiu en calent no suportat al motor natiu (Fase 2): atura.
 export function plaSetDevice(get) {

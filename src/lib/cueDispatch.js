@@ -37,26 +37,10 @@ export function dispatchCue(state, slot, ctx = {}) {
     return { route: 'wasapi', target };
   }
 
-  // ── Camí ASIO (STUB) ──────────────────────────────────────────────────────
-  // TODO (pas següent — render ASIO natiu):
-  //   Aquí hi anirà el render natiu del cue pel fil `asio-engine`:
-  //     1. Descodificar el fitxer (ja el tenim com a AudioBuffer per als cues
-  //        curts; per a streaming caldrà descodificar a Rust amb symphonia o
-  //        enviar PCM per blocs).
-  //     2. invoke('asio_play_voice', { driver, channels, pcm/voiceId, gain,
-  //        fadeIn, fadeOut, loop, startPoint, stopPoint }) → el fil `asio-engine`
-  //        registra una VEU activa i la mescla al callback `buffer_switch`
-  //        (model no bloquejant, en comptes del `sleep` actual d'`asio_do_tone`).
-  //     3. Telemetria de playhead/VU per events Tauri (Fase C).
-  //   Mentre això no existeixi, NO traiem so per ASIO. El que SÍ garantim és que
-  //   NO el traiem tampoc per WASAPI (retornant 'asio' aquí), evitant la
-  //   duplicació de so al mateix dispositiu físic.
-  if (typeof console !== 'undefined') {
-    console.info(
-      `[cueDispatch] Cue ${slot.id} routejat a ASIO (${target.driver} ch ` +
-      `${target.channels.map((c) => c + 1).join('-')}) — render natiu pendent ` +
-      `(pas següent). De moment silenci controlat per evitar duplicació WASAPI.`
-    );
-  }
+  // ── Camí ASIO ─────────────────────────────────────────────────────────────
+  // El render natiu JA existeix: el cridador (playSlot/cueStreamEngine) fa
+  // invoke('asio_play_voice', …) cap al fil `asio-engine`, que registra una VEU
+  // (en memòria o streaming) i la mescla al callback. Aquí només decidim el camí
+  // i garantim que el cue NO surt també per WASAPI (regla anti-duplicació).
   return { route: 'asio', target };
 }
