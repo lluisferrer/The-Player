@@ -61,6 +61,9 @@ export default function App() {
     return () => navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
   }, [setAudioDevices]);
 
+  // Aplica el gain mestre ASIO desat al motor natiu en arrencar.
+  useEffect(() => { useSoundStore.getState().initAsioMaster(); }, []);
+
   // Monitors disponibles (per al selector de la finestra de sortida) i estat
   // inicial de la finestra output (per si ja estigués oberta).
   useEffect(() => {

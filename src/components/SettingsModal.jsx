@@ -139,6 +139,8 @@ export function SettingsModal({ onClose }) {
   const colorOutputs     = useSoundStore((s) => s.colorOutputs);
   const setColorOutput   = useSoundStore((s) => s.setColorOutput);
   const outputChannels   = useSoundStore((s) => s.outputChannels);
+  const asioMasterGain   = useSoundStore((s) => s.asioMasterGain);
+  const setAsioMasterGain = useSoundStore((s) => s.setAsioMasterGain);
 
   const globalFadeIn  = useSoundStore((s) => s.globalFadeIn);
   const globalFadeOut = useSoundStore((s) => s.globalFadeOut);
@@ -284,6 +286,24 @@ export function SettingsModal({ onClose }) {
                   defaultValue="default"
                   defaultLabel="Per defecte"
                 />
+              </div>
+
+              <div className="settings-row">
+                <label htmlFor="asio-master">Volum mestre ASIO</label>
+                <input
+                  id="asio-master"
+                  type="range" min="0" max="1.5" step="0.01"
+                  value={asioMasterGain}
+                  onChange={(e) => setAsioMasterGain(parseFloat(e.target.value))}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ fontSize: 11, color: 'var(--text-secondary)', minWidth: 38, textAlign: 'right' }}>
+                  {Math.round((asioMasterGain ?? 1) * 100)}%
+                </span>
+              </div>
+              <div className="settings-note">
+                Nivell global del bus ASIO (abans del soft clip). Baixa'l si satura
+                en sumar moltes veus; per sobre del 100% és pre-amplificació.
               </div>
 
               <div className="settings-subtitle">Routing per color (cues)</div>

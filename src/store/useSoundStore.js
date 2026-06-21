@@ -164,6 +164,7 @@ export const useSoundStore = create((set, get) => ({
   selectedDeviceId: savedGlobals.cuesDeviceId ?? 'default',  // sortida dels CUES
   playlistDeviceId: savedGlobals.playlistDeviceId ?? 'default',
   previewDeviceId: savedGlobals.previewDeviceId ?? 'default',
+  asioMasterGain: savedGlobals.asioMasterGain ?? 1,  // gain mestre del bus ASIO (0..1)
   audioContext: null,      // context dels cues
   playlistCtx: null,       // context de la playlist
   previewCtx: null,        // context del preview
@@ -197,14 +198,27 @@ export const useSoundStore = create((set, get) => ({
   persistGlobals: () => {
     const {
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain,
     }));
+  },
+
+  // Gain mestre del bus ASIO (0..1). S'aplica al motor natiu (abans del soft clip)
+  // i es desa. També es reaplica en arrencar (initAsioMaster).
+  setAsioMasterGain: (v) => {
+    const gain = Math.max(0, Math.min(1.5, v));
+    set({ asioMasterGain: gain });
+    invoke('asio_set_master_gain', { gain }).catch(() => { /* sense ASIO */ });
+    get().persistGlobals();
+  },
+  // Aplica el gain mestre desat al motor en arrencar.
+  initAsioMaster: () => {
+    invoke('asio_set_master_gain', { gain: get().asioMasterGain ?? 1 }).catch(() => { /* res */ });
   },
 
   // Stop Others global: en disparar qualsevol cue, atura la resta

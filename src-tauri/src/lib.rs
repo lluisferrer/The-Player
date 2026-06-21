@@ -1009,18 +1009,47 @@ fn asio_do_info(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result<As
     Ok(AsioInfo { outs, sample_rate })
 }
 
-// Escriu un buffer f32 mesclat [-1,1] al buffer d'un canal ASIO, limitant
-// (clip) i convertint al tipus de mostra natiu del driver. `mix` ha de tenir
-// exactament `n` mostres. Complementa `asio_write_sine` (mateixos tipus).
+// Gain mestre del bus ASIO (bits f32 dins un AtomicU32). El callback el llegeix
+// cada buffer; la UI el canvia amb `asio_set_master_gain`. Inicialitzat a 1.0.
+#[cfg(feature = "asio")]
+static ASIO_MASTER_GAIN: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x3f80_0000); // 1.0f32
+
+#[cfg(feature = "asio")]
+fn asio_master_gain() -> f32 {
+    f32::from_bits(ASIO_MASTER_GAIN.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+// Saturació SUAU: lineal (transparent) fins a ±0.7 i, per sobre, saturació amb
+// tanh cap a ±1. Evita la distorsió aspra del clip dur quan sumen moltes veus.
+// C1-continu al colze (mateix pendent), així no introdueix discontinuïtats.
+#[cfg(feature = "asio")]
+#[inline]
+fn asio_soft_clip(x: f32) -> f32 {
+    const T: f32 = 0.7;
+    let a = x.abs();
+    if a <= T {
+        x
+    } else {
+        let over = a - T;
+        let sat = T + (1.0 - T) * (over / (1.0 - T)).tanh();
+        sat.copysign(x)
+    }
+}
+
+// Escriu un buffer f32 mesclat al buffer d'un canal ASIO, aplicant el gain
+// mestre i la saturació suau, i convertint al tipus de mostra natiu del driver.
+// `mix` ha de tenir exactament `n` mostres. Complementa `asio_write_sine`.
 #[cfg(feature = "asio")]
 unsafe fn asio_write_mix(
     ptr: *mut std::ffi::c_void,
     mix: &[f32],
     dt: &asio_sys::AsioSampleType,
+    master: f32,
 ) {
     use asio_sys::AsioSampleType as T;
     let n = mix.len();
-    let cl = |x: f32| x.clamp(-1.0, 1.0);
+    let cl = |x: f32| asio_soft_clip(x * master);
     match dt {
         T::ASIOSTInt32LSB => {
             let s = std::slice::from_raw_parts_mut(ptr as *mut i32, n);
@@ -1096,6 +1125,9 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
     let cb_streams = streams.clone();
     let cb_voices = voices.clone();
     let cb_stream_voices = stream_voices.clone();
+    // Acumuladors pre-allocats (num × buffer_size): el callback RT els reutilitza
+    // zerant-los cada cop, sense assignar memòria al fil d'àudio.
+    let cb_acc: Arc<Mutex<Vec<Vec<f32>>>> = Arc::new(Mutex::new(vec![vec![0.0f32; buffer_size]; outs]));
     // `AsioSampleType` no és Copy/Clone: en demanem una còpia pròpia per al
     // callback (consulta barata) i deixem `data_type` per guardar a `AsioMix`.
     let cb_dt = driver.output_data_type().map_err(|e| format!("output_data_type(): {:?}", e))?;
@@ -1111,12 +1143,16 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
         let mut lock = match cb_streams.lock() { Ok(l) => l, Err(_) => return };
         let stream = match lock.output { Some(ref mut s) => s, None => return };
 
-        // Acumuladors per canal de sortida (planar).
-        let mut acc: Vec<Vec<f32>> = vec![vec![0.0f32; buffer_size]; num];
+        // Acumuladors pre-allocats: zera cada canal (sense reassignar memòria).
+        let mut acc_guard = match cb_acc.lock() { Ok(a) => a, Err(_) => return };
+        let acc = &mut *acc_guard;
+        for ch in acc.iter_mut() {
+            ch.fill(0.0);
+        }
 
         if let Ok(mut voices) = cb_voices.lock() {
             for voice in voices.iter_mut() {
-                asio_mix_voice(voice, &mut acc, buffer_size);
+                asio_mix_voice(voice, acc, buffer_size);
             }
             // Notifica el final natural de cada veu acabada (id real, no el to de
             // prova u64::MAX) abans d'eliminar-la, perquè la UI reseteji el tile.
@@ -1132,7 +1168,7 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
         // Veus en STREAMING (pistes llargues).
         if let Ok(mut svs) = cb_stream_voices.lock() {
             for sv in svs.iter_mut() {
-                asio_mix_stream_voice(sv, &mut acc, buffer_size);
+                asio_mix_stream_voice(sv, acc, buffer_size);
             }
             for sv in svs.iter() {
                 if sv.finished {
@@ -1142,11 +1178,12 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
             svs.retain(|sv| !sv.finished);
         }
 
-        // Bolca els acumuladors als buffers ASIO natius.
+        // Bolca els acumuladors als buffers ASIO natius (gain mestre + soft clip).
+        let master = asio_master_gain();
         unsafe {
             for ch in 0..num {
                 let ptr = stream.buffer_infos[ch].buffers[bi];
-                asio_write_mix(ptr, &acc[ch], &cb_dt);
+                asio_write_mix(ptr, &acc[ch], &cb_dt, master);
             }
         }
     });
@@ -1839,6 +1876,22 @@ fn asio_set_gain(voice_id: u64, gain: f32) -> Result<(), String> {
     }
 }
 
+// Estableix el gain mestre del bus ASIO (0..1+; aplicat abans del soft clip).
+// No passa pel fil del motor: només actualitza un àtom que el callback llegeix.
+#[tauri::command]
+fn asio_set_master_gain(gain: f32) -> Result<(), String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        let _ = gain;
+        Ok(())
+    }
+    #[cfg(feature = "asio")]
+    {
+        ASIO_MASTER_GAIN.store(gain.max(0.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 // Reposiciona el playhead d'una veu ASIO activa (segons dins el segment).
 #[tauri::command]
 fn asio_seek(voice_id: u64, position: f32) -> Result<(), String> {
@@ -1952,6 +2005,7 @@ pub fn run() {
             asio_preload,
             asio_stop_voice,
             asio_set_gain,
+            asio_set_master_gain,
             asio_seek,
             asio_set_paused,
             asio_load,
