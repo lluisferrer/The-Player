@@ -29,7 +29,13 @@ export function usePlaybackTime(slot) {
   useEffect(() => {
     if (!isAsio) return undefined;
     if (!isPlaying || !duration) {
-      setState({ elapsed: 0, duration, progress: 0 });
+      // En pausa, mostra la posició congelada; aturat, a zero
+      if (pausedAt != null && duration) {
+        const p = Math.min(pausedAt, duration);
+        setState({ elapsed: p, duration, progress: p / duration });
+      } else {
+        setState({ elapsed: 0, duration, progress: 0 });
+      }
       return undefined;
     }
     let raf;
@@ -41,7 +47,7 @@ export function usePlaybackTime(slot) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isAsio, isPlaying, duration, slotId]);
+  }, [isAsio, isPlaying, duration, slotId, pausedAt]);
 
   // Streaming: la posició ve de l'element <audio> (csPosition)
   useEffect(() => {

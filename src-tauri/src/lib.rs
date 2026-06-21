@@ -299,6 +299,9 @@ struct Voice {
     release_from: Option<usize>,
     release_len: usize,
     finished: bool,        // marcada per eliminar al final del callback
+    // Pausa: la veu es manté viva però el callback escriu silenci i NO avança
+    // `pos`, de manera que el resume continua exactament des d'on s'havia pausat.
+    paused: bool,
     // Pic d'amplitud (lineal, post gain/fade) de l'últim buffer mesclat. El
     // fil de telemetria el mostreja per alimentar el picòmetre de la UI.
     meter: f32,
@@ -476,6 +479,12 @@ enum AsioCmd {
     Seek {
         voice_id: u64,
         position: f32,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Pausa/reprèn una veu activa (congela la posició, sense aturar-la).
+    SetPaused {
+        voice_id: u64,
+        paused: bool,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     // Allibera completament el driver carregat (stop + dispose + destroy) i
@@ -880,6 +889,11 @@ fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
     if voice.finished {
         return;
     }
+    // Pausada: silenci i posició congelada (no avança `pos`).
+    if voice.paused {
+        voice.meter = 0.0;
+        return;
+    }
     let seg_len = voice.seg_len();
     if seg_len == 0 {
         voice.finished = true;
@@ -1022,6 +1036,7 @@ fn asio_play_voice_impl(
         release_from: None,
         release_len: 0,
         finished: false,
+        paused: false,
         meter: 0.0,
     };
 
@@ -1129,6 +1144,27 @@ fn asio_seek_impl(
     Ok(())
 }
 
+// Pausa o reprèn una veu activa. La veu es manté a la mescla; pausada, el
+// callback escriu silenci i no avança la posició.
+#[cfg(feature = "asio")]
+fn asio_set_paused_impl(
+    loaded: &mut Option<AsioLoaded>,
+    voice_id: u64,
+    paused: bool,
+) -> Result<(), String> {
+    let mix = match loaded.as_ref().and_then(|l| l.mix.as_ref()) {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+    let mut voices = mix.voices.lock().map_err(|_| "lock de veus enverinat")?;
+    for v in voices.iter_mut() {
+        if v.voice_id == voice_id {
+            v.paused = paused;
+        }
+    }
+    Ok(())
+}
+
 // To de prova com a VEU transitòria (sinus 440 Hz generat, auto-stop després de
 // `seconds`). NO bloqueja el fil: genera un PCM curt i el registra com a veu.
 #[cfg(feature = "asio")]
@@ -1166,6 +1202,7 @@ fn asio_do_tone(
         release_from: None,
         release_len: 0,
         finished: false,
+        paused: false,
         meter: 0.0,
     };
     let mix = loaded.as_ref().unwrap().mix.as_ref().unwrap();
@@ -1232,6 +1269,13 @@ fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
                     asio_seek_impl(&mut loaded, voice_id, position)
                 }))
                 .unwrap_or_else(|_| Err("Pànic fent seek ASIO.".into()));
+                let _ = reply.send(res);
+            }
+            AsioCmd::SetPaused { voice_id, paused, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    asio_set_paused_impl(&mut loaded, voice_id, paused)
+                }))
+                .unwrap_or_else(|_| Err("Pànic pausant la veu ASIO.".into()));
                 let _ = reply.send(res);
             }
             AsioCmd::Release { reply } => {
@@ -1418,6 +1462,27 @@ fn asio_seek(voice_id: u64, position: f32) -> Result<(), String> {
     }
 }
 
+// Pausa o reprèn una veu ASIO activa (congela la posició, sense aturar-la).
+#[tauri::command]
+fn asio_set_paused(voice_id: u64, paused: bool) -> Result<(), String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        let _ = (voice_id, paused);
+        Err("Aquesta build no inclou ASIO (cal compilar amb --features asio).".into())
+    }
+    #[cfg(feature = "asio")]
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        asio_sender()
+            .send(AsioCmd::SetPaused { voice_id, paused, reply: reply_tx })
+            .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
+        match reply_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(res) => res,
+            Err(_) => Err("Temps esgotat o error pausant la veu ASIO.".into()),
+        }
+    }
+}
+
 // Allibera el driver ASIO carregat (stop + dispose + destroy) i deixa el
 // dispositiu lliure perquè WASAPI hi pugui treure so. Cal cridar-la quan es
 // vol tornar a fer servir la interfície fora d'ASIO.
@@ -1490,6 +1555,7 @@ pub fn run() {
             asio_stop_voice,
             asio_set_gain,
             asio_seek,
+            asio_set_paused,
             asio_load,
             asio_release
         ])

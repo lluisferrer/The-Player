@@ -11,7 +11,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { hasClip, isVideo, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
 import { dispatchCue } from '../lib/cueDispatch';
 import { isAsioTarget, resolveCueTargetStr, parseTarget } from '../lib/outputTarget';
-import { clearAsioTelemetry } from '../lib/asioTelemetry';
+import { clearAsioTelemetry, asioPosition } from '../lib/asioTelemetry';
 import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek } from '../lib/videoOutput';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
@@ -842,6 +842,19 @@ export const useSoundStore = create((set, get) => ({
     if (isVideo(slot)) { get().stopSlot(slotId); return; }
     // En pausar deixa de sonar → deixa de duckejar (es reincrementa al resume)
     if (slot.duck) duckRemove(get, slotId);
+    // Cue ASIO: congela la veu nativa (no l'atura). La posició la guardem des de
+    // la telemetria per mostrar-la congelada; el motor manté la pos exacta.
+    if (slot.asioActive) {
+      const pos = asioPosition(slotId) ?? 0;
+      invoke('asio_set_paused', { voiceId: slotId, paused: true })
+        .catch((e) => console.warn('[asio] pause:', e));
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId ? { ...s, isPlaying: false, pausedAt: pos } : s
+        ),
+      }));
+      return;
+    }
     if (slot.isStreaming) { csPause(get, set, slotId); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
     if (!ctx) return;
@@ -871,6 +884,19 @@ export const useSoundStore = create((set, get) => ({
     if (isVideo(slot)) return; // els cues de vídeo no tenen estat de pausa (4a)
     // Torna a sonar → torna a duckejar (si és un cue de duck)
     if (slot.duck) duckAdd(get, slotId);
+    // Cue ASIO: reprèn la veu nativa des de la posició congelada (el motor l'ha
+    // mantingut). No cal seek: continua exactament des d'on s'havia pausat.
+    if (slot.asioActive) {
+      invoke('asio_set_paused', { voiceId: slotId, paused: false })
+        .catch((e) => console.warn('[asio] resume:', e));
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId ? { ...s, isPlaying: true, pausedAt: null } : s
+        ),
+        activeSlot: slotId,
+      }));
+      return;
+    }
     if (slot.isStreaming) { csResume(get, set, slotId); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : (get().audioContext || get().initAudioContext());
 
@@ -1181,6 +1207,12 @@ export const useSoundStore = create((set, get) => ({
     // Si era un cue de ducking actiu, deixa de comptar
     if (slot.duck) duckRemove(get, slotId);
 
+    // Atura la veu ASIO nativa (sonant o pausada) perquè no quedi penjada al motor
+    if (slot.asioActive) {
+      invoke('asio_stop_voice', { voiceId: slotId, fadeOut: 0 })
+        .catch((e) => console.warn('[asio] stop_voice (clear):', e));
+      clearAsioTelemetry(slotId);
+    }
     // Atura l'streaming (l'element <audio> no és un sourceNode)
     if (slot.isStreaming) csStop(get, set, slotId);
     if (slot.sourceNode) {
@@ -1262,6 +1294,9 @@ export const useSoundStore = create((set, get) => ({
       let fadeSec = 0;
       if (fade === true) fadeSec = Math.max(0, effFadeOut(slot, globalFadeOut));
       else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
+      // Si està PAUSAT, la veu no avança al motor: un release amb fade quedaria
+      // encallat. Atura-la de cop (fade 0).
+      if (slot.pausedAt != null) fadeSec = 0;
       invoke('asio_stop_voice', { voiceId: slot.id, fadeOut: fadeSec })
         .catch((e) => console.warn('[asio] stop_voice:', e));
       clearAsioTelemetry(slotId);
