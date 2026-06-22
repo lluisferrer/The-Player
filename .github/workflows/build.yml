@@ -15,11 +15,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # CI compila amb el motor cpal multiplataforma (`native`), NO amb `asio`:
+          # ASIO no existeix a Mac i requereix l'ASIO SDK + MSVC (no als runners).
           - platform: macos-latest
-            args: "--target universal-apple-darwin"
+            args: "--target universal-apple-darwin --no-default-features --features native"
             rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
           - platform: windows-latest
-            args: ""
+            args: "--no-default-features --features native"
             rust-targets: ""
 
     runs-on: ${{ matrix.platform }}
