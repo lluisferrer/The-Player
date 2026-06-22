@@ -71,7 +71,7 @@ export function Playlist() {
     try {
       const sel = await open({
         multiple: true,
-        filters: [{ name: 'Àudio', extensions: ['mp3', 'wav', 'ogg', 'flac'] }],
+        filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'flac'] }],
       });
       if (!sel) return;
       const paths = Array.isArray(sel) ? sel : [sel];
@@ -87,20 +87,20 @@ export function Playlist() {
   // Botó de repetició de tres estats: off → song → list
   const RepeatIcon = repeatMode === 'song' ? Repeat1 : Repeat;
   const repeatTitle =
-    repeatMode === 'song' ? 'Repeteix la pista'
-    : repeatMode === 'list' ? 'Repeteix la llista'
-    : 'Repetició desactivada';
+    repeatMode === 'song' ? 'Repeat track'
+    : repeatMode === 'list' ? 'Repeat list'
+    : 'Repeat off';
 
   return (
     <div className="playlist">
       <div className="pl-toolbar">
         <div className="pl-transport">
-          <button onClick={playlistPrev} title="Anterior"><SkipBack size={16} fill="currentColor" /></button>
-          <button className="pl-play" onClick={playlistPlayPause} title="Play / Pausa">
+          <button onClick={playlistPrev} title="Previous"><SkipBack size={16} fill="currentColor" /></button>
+          <button className="pl-play" onClick={playlistPlayPause} title="Play / Pause">
             {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
           </button>
           <button onClick={playlistStop} title="Stop"><Square size={16} fill="currentColor" /></button>
-          <button onClick={playlistNext} title="Següent"><SkipForward size={16} fill="currentColor" /></button>
+          <button onClick={playlistNext} title="Next"><SkipForward size={16} fill="currentColor" /></button>
           <button
             className={`pl-toggle ${repeatMode !== 'off' ? 'active' : ''}`}
             onClick={cyclePlaylistRepeat}
@@ -109,11 +109,11 @@ export function Playlist() {
           <button
             className={`pl-toggle ${shuffle ? 'active' : ''}`}
             onClick={togglePlaylistShuffle}
-            title="Aleatori (shuffle)"
+            title="Shuffle"
           ><Shuffle size={16} /></button>
         </div>
 
-        <label className="pl-vol" title="Volum de la playlist">
+        <label className="pl-vol" title="Playlist volume">
           Vol
           <input
             type="range" min="0" max="1" step="0.01"
@@ -123,8 +123,8 @@ export function Playlist() {
         </label>
 
         <span className="pl-spacer" />
-        <button className="pl-btn" onClick={handleAdd}>+ Afegeix pistes</button>
-        <button className="pl-btn" onClick={clearPlaylist} disabled={playlist.length === 0}>Buida</button>
+        <button className="pl-btn" onClick={handleAdd}>+ Add tracks</button>
+        <button className="pl-btn" onClick={clearPlaylist} disabled={playlist.length === 0}>Clear</button>
       </div>
 
       {/* Now playing */}
@@ -144,7 +144,7 @@ export function Playlist() {
       <div className="pl-list">
         {playlist.length === 0 ? (
           <div className="pl-empty">
-            Llista buida. Afegeix pistes amb «+ Afegeix pistes».
+            Empty list. Add tracks with “+ Add tracks”.
           </div>
         ) : (
           playlist.map((t, i) => (
@@ -157,10 +157,10 @@ export function Playlist() {
               <span className="pl-num">{i === playlistIndex && (playing || paused) ? '▶' : i + 1}</span>
               <span className="pl-name" title={t.filePath}>{t.label}</span>
               <div className="pl-item-actions">
-                <button onClick={() => movePlaylistTrack(i, i - 1)} disabled={i === 0} title="Amunt">↑</button>
-                <button onClick={() => movePlaylistTrack(i, i + 1)} disabled={i === playlist.length - 1} title="Avall">↓</button>
-                <button onClick={() => playlistPlayIndex(i)} title="Reprodueix">▶</button>
-                <button onClick={() => removePlaylistTrack(t.id)} title="Treu">✕</button>
+                <button onClick={() => movePlaylistTrack(i, i - 1)} disabled={i === 0} title="Move up">↑</button>
+                <button onClick={() => movePlaylistTrack(i, i + 1)} disabled={i === playlist.length - 1} title="Move down">↓</button>
+                <button onClick={() => playlistPlayIndex(i)} title="Play">▶</button>
+                <button onClick={() => removePlaylistTrack(t.id)} title="Remove">✕</button>
               </div>
             </div>
           ))

@@ -54,10 +54,53 @@ body {
   flex-shrink: 0;
 }
 
-.app-title {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.15em;
+/* ─── BRAND LOGO (ezyPlayer, adapted from ezyRider) ─── */
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-primary);
+  user-select: none;
+}
+
+.brand-mark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.brand-paren {
+  font-family: Arial, sans-serif;
+  font-weight: 400;
+  color: var(--text-primary);
+}
+
+.brand-e {
+  font-family: 'Segoe Script', 'Brush Script MT', cursive;
+  font-size: 24px;
+  margin: 0 1px;
+  color: var(--text-primary);
+}
+
+/* Superscript letter (P for Player), like the eR / eD monograms */
+.brand-sup {
+  font-family: Calibri, Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  align-self: flex-start;
+  margin-left: -2px;
+  margin-top: 1px;
+  color: var(--text-primary);
+}
+
+.brand-name {
+  font-family: Calibri, 'Segoe UI', Arial, sans-serif;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
   color: var(--text-primary);
 }
 
@@ -311,6 +354,13 @@ body {
 
 .cue-now-field.preview .cue-now-label { color: var(--vu-red); }
 .cue-now-field.next    .cue-now-label { color: var(--vu-green); }
+
+/* Camp Preview buit: el hint surt atenuat i en cursiva */
+.cue-now-field.hint .cue-now-name {
+  color: var(--text-secondary);
+  font-weight: 400;
+  font-style: italic;
+}
 
 .cue-now-name {
   font-size: 13px;
@@ -973,6 +1023,18 @@ body {
   background-size: cover;
   background-position: center;
   border-radius: 3px;
+}
+
+/* Preview in-tile del cue de vídeo: omple el cos sobre la miniatura */
+.slot-video-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 3px;
+  z-index: 1;   /* sobre la miniatura, sota els overlays (temps/badge/playhead) */
+  background: #000;
 }
 
 .slot-video-badge {

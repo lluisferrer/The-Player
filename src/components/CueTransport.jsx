@@ -2,6 +2,9 @@ import { SkipBack, SkipForward, Play, Square, MonitorOff } from 'lucide-react';
 import { useSoundStore } from '../store/useSoundStore';
 import { emitVideoBlack } from '../lib/videoOutput';
 
+// Hint que es mostra al camp Preview quan no hi ha res en preview
+const PREVIEW_HINT = 'Ctrl + Tile to preview';
+
 // Barra de transport per als cues (sobre la botonera)
 export function CueTransport() {
   const selectedSlot   = useSoundStore((s) => s.selectedSlot);
@@ -23,26 +26,26 @@ export function CueTransport() {
   return (
     <div className="cue-transport">
       <div className="cue-tp-buttons">
-        <button onClick={() => selectStep(-1)} title="Cue anterior"><SkipBack size={16} fill="currentColor" /></button>
-        <button onClick={() => selectStep(1)} title="Cue següent"><SkipForward size={16} fill="currentColor" /></button>
-        <button className="cue-go" onClick={() => go()} title="GO: dispara el cue seleccionat i avança">
+        <button onClick={() => selectStep(-1)} title="Previous cue"><SkipBack size={16} fill="currentColor" /></button>
+        <button onClick={() => selectStep(1)} title="Next cue"><SkipForward size={16} fill="currentColor" /></button>
+        <button className="cue-go" onClick={() => go()} title="GO: fire the selected cue and advance">
           <Play size={16} fill="currentColor" /> GO
         </button>
-        <button onClick={() => stopSlot(selectedSlot, true)} title="Stop del cue seleccionat"><Square size={16} fill="currentColor" /></button>
-        <button className="cue-stop-all" onClick={() => stopAll()} title="Stop ALL (pànic)">
+        <button onClick={() => stopSlot(selectedSlot, true)} title="Stop the selected cue"><Square size={16} fill="currentColor" /></button>
+        <button className="cue-stop-all" onClick={() => stopAll()} title="Stop all (panic)">
           <Square size={16} fill="currentColor" /> ALL
         </button>
-        <button className="cue-black" onClick={() => emitVideoBlack()} title="Negre: posa la sortida de vídeo en negre">
-          <MonitorOff size={16} /> NEGRE
+        <button className="cue-black" onClick={() => emitVideoBlack()} title="Black: cut the video output to black">
+          <MonitorOff size={16} /> BLACK
         </button>
       </div>
 
       {/* Tres camps fixos: Preview (vermell) · Next (verd) · Playing (gris).
           Mantenen la posició encara que no hi hagi cap nom populat. */}
       <div className="cue-now">
-        <div className="cue-now-field preview">
+        <div className={`cue-now-field preview ${previewName ? '' : 'hint'}`}>
           <span className="cue-now-label">PREVIEW</span>
-          <span className="cue-now-name">{previewName || '—'}</span>
+          <span className="cue-now-name">{previewName || PREVIEW_HINT}</span>
         </div>
         <div className="cue-now-field next">
           <span className="cue-now-label">NEXT</span>

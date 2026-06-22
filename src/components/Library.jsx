@@ -30,26 +30,26 @@ export function Library({ onClose }) {
     <div className="editor-overlay" onClick={onClose}>
       <div className="editor-panel library-panel" onClick={(e) => e.stopPropagation()}>
         <div className="editor-header">
-          <span className="editor-title">Sets de cues desats</span>
+          <span className="editor-title">Saved cue sets</span>
           <button className="editor-close" onClick={onClose}>✕</button>
         </div>
 
         <div className="library-save">
           <input
             type="text"
-            placeholder="Nom del set…"
+            placeholder="Set name…"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
           />
           <button className="editor-btn primary" onClick={handleSave} disabled={!name.trim()}>
-            Desa l'actual
+            Save current
           </button>
         </div>
 
         <div className="library-list">
           {names.length === 0 ? (
-            <div className="library-empty">Encara no hi ha cap set desat.</div>
+            <div className="library-empty">No saved sets yet.</div>
           ) : (
             names.map((n) => (
               <div className="library-item" key={n}>
@@ -59,8 +59,8 @@ export function Library({ onClose }) {
                     {sets[n].slots.length} slots · {fmtDate(sets[n].savedAt)}
                   </span>
                 </div>
-                <button className="editor-btn primary" onClick={() => handleLoad(n)}>Carrega</button>
-                <button className="editor-btn" onClick={() => deleteSet(n)}>Elimina</button>
+                <button className="editor-btn primary" onClick={() => handleLoad(n)}>Load</button>
+                <button className="editor-btn" onClick={() => deleteSet(n)}>Delete</button>
               </div>
             ))
           )}

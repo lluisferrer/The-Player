@@ -24,7 +24,7 @@ export function SoundBoard() {
             key={p}
             className={`page-dot ${p === currentPage ? 'active' : ''}`}
             onClick={() => setPage(p)}
-            title={`Pàgina ${p + 1}`}
+            title={`Page ${p + 1}`}
           />
         ))}
       </div>

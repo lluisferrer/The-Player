@@ -20,15 +20,11 @@
   background: #000;
 }
 
-/* Pantalla d'espera (sense vídeo): text tènue centrat sobre negre */
-.video-output-idle {
+/* Patró de blackout (barres de color / carta d'ajust): omple la finestra */
+.video-output-pattern {
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #3a3a3a;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 18px;
-  letter-spacing: 0.15em;
+  width: 100%;
+  height: 100%;
+  display: block;
 }

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { useSoundStore } from '../store/useSoundStore';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { keyForSlot } from '../lib/keyMap';
 import { hasClip, slotDuration } from '../lib/slotAudio';
+import { isAsioTarget } from '../lib/outputTarget';
 import { getVideoThumb } from '../lib/videoThumb';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
@@ -19,6 +21,8 @@ export function SoundButton({ slotId }) {
   const setEditingSlot = useSoundStore((s) => s.setEditingSlot);
   const setSelectedSlot = useSoundStore((s) => s.setSelectedSlot);
   const previewSlot    = useSoundStore((s) => s.previewSlot);
+  const stopPreview    = useSoundStore((s) => s.stopPreview);
+  const previewDeviceId = useSoundStore((s) => s.previewDeviceId);
   const isDragOver     = useSoundStore((s) => s.dragOverSlot === slotId);
   const isSelected     = useSoundStore((s) => s.selectedSlot === slotId);
   const previewArmed   = useSoundStore((s) => s.previewArmed);
@@ -32,6 +36,8 @@ export function SoundButton({ slotId }) {
   const [thumb, setThumb] = useState(null); // miniatura del cue de vídeo (dataURL)
   const [vidElapsed, setVidElapsed] = useState(0); // temps de reproducció estimat del vídeo (s)
   const [vidSeeking, setVidSeeking] = useState(false); // arrossegant el playhead del vídeo
+  const [previewVidPct, setPreviewVidPct] = useState(0); // playhead del preview de vídeo (0..100, dins el segment)
+  const previewVidRef = useRef(null);  // <video> del preview in-tile
   const vidBodyRef = useRef(null);
   const scrubRef = useRef(null);
   const suppressClickRef = useRef(false); // evita que el click post-drag faci play/stop
@@ -176,10 +182,49 @@ export function SoundButton({ slotId }) {
     };
   }, [vidSeeking, segDur, slotId]);
 
+  // ── Preview in-tile del cue de vídeo (PFL) ──
+  // En carregar metadades: enruta el so al dispositiu de preview (si és WASAPI;
+  // mut si és ASIO o no es pot), posa el volum del cue, salta al punt d'inici i
+  // arrenca. El <video> viu només es munta mentre isPreviewing (un alhora).
+  const handlePreviewLoaded = async () => {
+    const v = previewVidRef.current;
+    if (!v) return;
+    const dev = previewDeviceId;
+    if (typeof v.setSinkId === 'function' && dev && dev !== 'default' && !isAsioTarget(dev)) {
+      try { await v.setSinkId(dev); v.muted = false; } catch { v.muted = true; }
+    } else if (isAsioTarget(dev)) {
+      v.muted = true; // el WebView no pot enrutar vídeo a ASIO
+    }
+    try { v.volume = slot.volume ?? 0.8; } catch { /* res */ }
+    if (startSec > 0) { try { v.currentTime = startSec; } catch { /* res */ } }
+    v.play().catch(() => { /* l'autoplay pot fallar fins a interacció */ });
+  };
+
+  // Vigila el segment del preview: playhead + loop/stop al punt d'out
+  const handlePreviewTime = () => {
+    const v = previewVidRef.current;
+    if (!v) return;
+    if (segDur > 0) setPreviewVidPct(Math.min(100, Math.max(0, ((v.currentTime - startSec) / segDur) * 100)));
+    if (slot.stopPoint != null && v.currentTime >= stopSec) {
+      if (slot.loop) { try { v.currentTime = startSec; } catch { /* res */ } }
+      else stopPreview();
+    }
+  };
+
+  // Final natural del fitxer: rebobina si hi ha loop, si no atura el preview
+  const handlePreviewEnded = () => {
+    if (slot.loop) {
+      const v = previewVidRef.current;
+      if (v) { try { v.currentTime = startSec; v.play().catch(() => {}); } catch { /* res */ } }
+      return;
+    }
+    stopPreview();
+  };
+
   const handleClick = (e) => {
     // Ignora el click immediatament posterior a arrossegar el playhead
     if (suppressClickRef.current) return;
-    // Ctrl+clic → preview pel bus de preview
+    // Ctrl+clic → preview (in-tile per a vídeo; bus de preview per a àudio)
     if (e.ctrlKey && hasAudio) { previewSlot(slotId); return; }
     setSelectedSlot(slotId);
     if (hasAudio) playSlot(slotId);
@@ -191,7 +236,7 @@ export function SoundButton({ slotId }) {
     try {
       const path = await open({
         multiple: false,
-        filters: [{ name: 'Mèdia', extensions: ['mp3', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov'] }],
+        filters: [{ name: 'Media', extensions: ['mp3', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov'] }],
       });
       if (path) await loadFromPath(slotId, path);
     } catch (err) {
@@ -263,7 +308,7 @@ export function SoundButton({ slotId }) {
       onContextMenu={handleContextMenu}
       onMouseEnter={() => setShowHover(true)}
       onMouseLeave={() => setShowHover(false)}
-      title={hasAudio ? slot.label : 'Arrossega un fitxer d\'àudio o clic dret per obrir'}
+      title={hasAudio ? slot.label : 'Drag an audio file or right-click to open'}
     >
       {slot.color && <div className="slot-color-bar" style={{ background: slot.color }} />}
 
@@ -276,8 +321,8 @@ export function SoundButton({ slotId }) {
         <div className="slot-badges">
           {slot.stopOthers && <span className="slot-badge so" title="Stop others">SO</span>}
           {slot.continueMode === 'auto' && <span className="slot-badge ac" title="Auto-continue">AC</span>}
-          {slot.duck && <span className="slot-badge duck" title="Ducking de la playlist">D</span>}
-          {slot.stopPlaylist && <span className="slot-badge stop" title="Atura la playlist">S</span>}
+          {slot.duck && <span className="slot-badge duck" title="Duck playlist">D</span>}
+          {slot.stopPlaylist && <span className="slot-badge stop" title="Stop playlist">S</span>}
         </div>
       )}
 
@@ -292,7 +337,7 @@ export function SoundButton({ slotId }) {
           <button
             className={`slot-loop-btn ${slot.loop ? 'active' : ''}`}
             onClick={handleLoopToggle}
-            title="Loop (repeteix aquest slot)"
+            title="Loop (repeat this cue)"
           >
             ⟳
           </button>
@@ -301,12 +346,12 @@ export function SoundButton({ slotId }) {
           <button
             className={`slot-del-btn ${showHover ? 'visible' : ''}`}
             onClick={handleDelete}
-            title="Eliminar clip"
+            title="Remove clip"
           >
             ✕
           </button>
         )}
-        {keyLabel && <span className="slot-key" title={`Tecla: ${keyLabel}`}>{keyLabel}</span>}
+        {keyLabel && <span className="slot-key" title={`Key: ${keyLabel}`}>{keyLabel}</span>}
       </div>
 
       {hasAudio && isVideoCue ? (
@@ -317,22 +362,38 @@ export function SoundButton({ slotId }) {
             {thumb && (
               <div className="slot-video-thumb" style={{ backgroundImage: `url(${thumb})` }} />
             )}
+            {/* Preview in-tile (PFL): vídeo viu sobre la miniatura, un sol alhora */}
+            {isPreviewing && (
+              <video
+                ref={previewVidRef}
+                className="slot-video-preview"
+                src={convertFileSrc(slot.filePath)}
+                onLoadedMetadata={handlePreviewLoaded}
+                onTimeUpdate={handlePreviewTime}
+                onEnded={handlePreviewEnded}
+                autoPlay
+              />
+            )}
             <span className="slot-time">{vidTimeLabel}</span>
             {/* Badge de vídeo (mateix estil que STREAM dels àudios llargs) */}
-            <span className="slot-stream-badge">VÍDEO</span>
+            <span className="slot-stream-badge">{isPreviewing ? 'PREVIEW' : 'VIDEO'}</span>
+            {/* Playhead del preview (vermell) mentre es previsualitza al tile */}
+            {isPreviewing && (
+              <div className="slot-playhead preview" style={{ left: `${previewVidPct}%` }} />
+            )}
             {/* Playhead arrossegable mentre es reprodueix a la sortida */}
             {isPlaying && (
               <div
                 className="slot-playhead"
                 style={{ left: `${vidPlayheadPct}%` }}
                 onPointerDown={handleVideoPlayheadDown}
-                title="Arrossega per moure la posició"
+                title="Drag to move position"
               />
             )}
             <button
               className={`slot-edit-btn ${showHover ? 'visible' : ''}`}
               onClick={handleEdit}
-              title="Editar slot (inici/stop, fades)"
+              title="Edit cue (in/out, fades)"
             >
               ✎
             </button>
@@ -345,7 +406,7 @@ export function SoundButton({ slotId }) {
               onChange={handleVolumeChange}
               onMouseUp={handleVolumeRelease}
               onTouchEnd={handleVolumeRelease}
-              title={`Volum: ${Math.round(slot.volume * 100)}%`}
+              title={`Volume: ${Math.round(slot.volume * 100)}%`}
               style={{ background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)` }}
             />
             <span className={`volume-value ${showHover ? 'visible' : ''}`}>
@@ -378,7 +439,7 @@ export function SoundButton({ slotId }) {
                   className="slot-playhead"
                   style={{ left: `${playheadPct}%` }}
                   onPointerDown={handlePlayheadDown}
-                  title="Arrossega per moure la posició"
+                  title="Drag to move position"
                 />
               )}
               {/* Playhead vermell del preview */}
@@ -389,7 +450,7 @@ export function SoundButton({ slotId }) {
               <button
                 className={`slot-edit-btn ${showHover ? 'visible' : ''}`}
                 onClick={handleEdit}
-                title="Editar slot (inici/stop, fades)"
+                title="Edit cue (in/out, fades)"
               >
                 ✎
               </button>
@@ -410,7 +471,7 @@ export function SoundButton({ slotId }) {
               onChange={handleVolumeChange}
               onMouseUp={handleVolumeRelease}
               onTouchEnd={handleVolumeRelease}
-              title={`Volum: ${Math.round(slot.volume * 100)}%`}
+              title={`Volume: ${Math.round(slot.volume * 100)}%`}
               style={{
                 background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)`,
               }}
@@ -422,7 +483,7 @@ export function SoundButton({ slotId }) {
         </>
       ) : (
         <div className="slot-empty-hint">
-          {isDragOver ? 'Deixa aquí' : (slot.label ? 'reassignar' : '')}
+          {isDragOver ? 'Drop here' : (slot.label ? 'reassign' : '')}
         </div>
       )}
     </div>

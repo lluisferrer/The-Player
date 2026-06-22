@@ -280,9 +280,18 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="app-title">THE PLAYER</h1>
+        {/* Brand logo: (e^P) monogram + wordmark, adapted from ezyRider */}
+        <h1 className="app-brand">
+          <span className="brand-mark" aria-hidden="true">
+            <span className="brand-paren">(</span>
+            <span className="brand-e">e</span>
+            <span className="brand-sup">P</span>
+            <span className="brand-paren">)</span>
+          </span>
+          <span className="brand-name">ezyPlayer</span>
+        </h1>
 
-        {/* Commutador de vista centrat a la capçalera */}
+        {/* Centered view switcher */}
         <div className="mode-toggle">
           <button
             className={`mode-btn ${viewMode === 'grid' ? 'active' : ''}`}
@@ -302,9 +311,9 @@ export default function App() {
           <button
             className={`library-btn ${outputOpen ? 'active' : ''}`}
             onClick={handleToggleOutput}
-            title="Obre/tanca la finestra de sortida de vídeo"
+            title="Open/close the video output window"
           >
-            VÍDEO
+            VIDEO
           </button>
 
           <button className="library-btn" onClick={() => setShowSave(true)}>FILES</button>

@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
+import { ColorBars, TestCard } from './VideoTestPatterns';
 import './VideoOutput.css';
+
+// Llegeix el patró de blackout inicial del localStorage (compartit amb la
+// finestra principal, mateix origen). 'black' | 'bars' | 'testcard'.
+function readIdlePattern() {
+  try {
+    const g = JSON.parse(localStorage.getItem('the-player-globals')) || {};
+    return ['black', 'bars', 'testcard'].includes(g.videoIdlePattern) ? g.videoIdlePattern : 'black';
+  } catch { return 'black'; }
+}
 
 // Vista de la finestra de sortida (label "output"). Ocupa tota la finestra
 // amb fons negre i mostra un <video> a pantalla completa quan rep events de
@@ -27,13 +37,16 @@ export function VideoOutput() {
   });
   const rafRef = useRef(null);             // id del requestAnimationFrame del fade de volum
   const fadingOut = useRef(false);         // ja s'ha llançat el fade out d'aquest segment?
-  const [src, setSrc] = useState(null);    // URL convertida del fitxer (o null = negre)
+  const stopTimerRef = useRef(null);       // timer del negre diferit després d'un stop amb fade
+  const [src, setSrc] = useState(null);    // URL convertida del fitxer (o null = blackout)
   const [opacity, setOpacity] = useState(1); // opacitat del <video> (fades visuals cap a negre)
   const [fadeDur, setFadeDur] = useState(0); // durada (s) de la transició d'opacitat actual
+  const [idlePattern, setIdlePattern] = useState(readIdlePattern); // patró de blackout
 
-  // Cancel·la el rAF de fade de volum pendent (si n'hi ha)
+  // Cancel·la el rAF de fade de volum i el timer de negre diferit pendents
   const cancelFade = () => {
     if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    if (stopTimerRef.current != null) { clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
   };
 
   // Rampa lineal del volum del <video> de from→to en dur segons, via rAF.
@@ -69,6 +82,21 @@ export function VideoOutput() {
       setSrc(null);
     };
 
+    // Stop amb fade out: si hi ha vídeo i una durada, rampa volum→0 i opacitat→0
+    // i passa a negre en acabar. Sense vídeo o sense durada, negre immediat.
+    const fadeStop = (e) => {
+      const dur = (e && e.payload && e.payload.fadeOut) || 0;
+      const v = videoRef.current;
+      if (!v || !(dur > 0)) { black(); return; }
+      cancelFade();
+      fadingOut.current = true;
+      const from = (v.volume != null) ? v.volume : (playInfo.current.volume || 0.8);
+      rampVolume(from, 0, dur);
+      setFadeDur(dur);
+      setOpacity(0);
+      stopTimerRef.current = setTimeout(() => { stopTimerRef.current = null; black(); }, dur * 1000);
+    };
+
     (async () => {
       unlisteners.push(await listen('video-play', (e) => {
         const p = e.payload || {};
@@ -100,7 +128,7 @@ export function VideoOutput() {
         setOpacity(fadeIn > 0 ? 0 : 1);
         setSrc(convertFileSrc(p.filePath));
       }));
-      unlisteners.push(await listen('video-stop', black));
+      unlisteners.push(await listen('video-stop', fadeStop));
       unlisteners.push(await listen('video-black', black));
       // Canvi de volum en directe (slider del tile). Actualitza la base i, si no
       // s'està fent un fade ara mateix, aplica-ho immediatament.
@@ -118,6 +146,11 @@ export function VideoOutput() {
         const t = e.payload && e.payload.time;
         const v = videoRef.current;
         if (v && t != null) { try { v.currentTime = t; } catch { /* res */ } }
+      }));
+      // Canvi del patró de blackout en calent (des de Settings → Vídeo)
+      unlisteners.push(await listen('video-idle-pattern', (e) => {
+        const p = e.payload && e.payload.pattern;
+        if (['black', 'bars', 'testcard'].includes(p)) setIdlePattern(p);
       }));
     })();
 
@@ -222,7 +255,10 @@ export function VideoOutput() {
           autoPlay
         />
       ) : (
-        <div className="video-output-idle">SORTIDA DE VÍDEO — en espera</div>
+        // Blackout: negre total (sense text), barres de color o carta d'ajust
+        idlePattern === 'bars' ? <ColorBars />
+          : idlePattern === 'testcard' ? <TestCard />
+          : null
       )}
     </div>
   );

@@ -25,8 +25,8 @@ export function PlaylistActionToggle({ action, onChange }) {
           className={`pl-switch ${isStop ? 'on' : ''}`}
           disabled={!enabled}
           onClick={() => onChange(isStop ? 'duck' : 'stop')}
-          title="Commuta entre Ducking i Stop playing"
-          aria-label="Acció sobre la playlist"
+          title="Toggle between Ducking and Stop playing"
+          aria-label="Playlist action"
         >
           <span className="pl-switch-knob" />
         </button>

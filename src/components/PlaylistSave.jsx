@@ -24,37 +24,37 @@ export function PlaylistSave({ onClose }) {
     <div className="editor-overlay" onClick={onClose}>
       <div className="editor-panel library-panel" onClick={(e) => e.stopPropagation()}>
         <div className="editor-header">
-          <span className="editor-title">Playlists desades</span>
+          <span className="editor-title">Saved playlists</span>
           <button className="editor-close" onClick={onClose}>✕</button>
         </div>
 
         <div className="library-save">
           <input
             type="text"
-            placeholder="Nom de la playlist…"
+            placeholder="Playlist name…"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
           />
           <button className="editor-btn primary" onClick={handleSave} disabled={!name.trim()}>
-            Desa l'actual
+            Save current
           </button>
         </div>
 
         <div className="library-list">
           {names.length === 0 ? (
-            <div className="library-empty">Cap playlist desada.</div>
+            <div className="library-empty">No saved playlists.</div>
           ) : (
             names.map((n) => (
               <div className="library-item" key={n}>
                 <div className="library-item-info">
                   <span className="library-item-name">{n}</span>
                   <span className="library-item-meta">
-                    {lists[n].tracks.length} pistes · {fmtDate(lists[n].savedAt)}
+                    {lists[n].tracks.length} tracks · {fmtDate(lists[n].savedAt)}
                   </span>
                 </div>
-                <button className="editor-btn primary" onClick={() => { loadList(n); onClose(); }}>Carrega</button>
-                <button className="editor-btn" onClick={() => deleteList(n)}>Elimina</button>
+                <button className="editor-btn primary" onClick={() => { loadList(n); onClose(); }}>Load</button>
+                <button className="editor-btn" onClick={() => deleteList(n)}>Delete</button>
               </div>
             ))
           )}

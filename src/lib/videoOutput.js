@@ -136,9 +136,10 @@ export async function emitVideoPlay(filePath, startPoint = 0, stopPoint = null, 
   } catch (e) { console.warn('video-play:', e); }
 }
 
-// Atura el vídeo (manté la finestra negra)
-export async function emitVideoStop() {
-  try { await emit('video-stop'); }
+// Atura el vídeo (manté la finestra negra). Amb fadeOut>0, la sortida fa un
+// fade (volum + opacitat) abans de passar a negre; 0 = tall sec.
+export async function emitVideoStop(fadeOut = 0) {
+  try { await emit('video-stop', { fadeOut: fadeOut || 0 }); }
   catch (e) { console.warn('video-stop:', e); }
 }
 
@@ -158,4 +159,12 @@ export async function emitVideoVolume(volume) {
 export async function emitVideoSeek(time) {
   try { await emit('video-seek', { time }); }
   catch (e) { console.warn('video-seek:', e); }
+}
+
+// Canvia el patró de la pantalla de blackout a la sortida en calent
+// ('black' | 'bars' | 'testcard'). La finestra de sortida llegeix el valor
+// inicial del localStorage compartit; aquest event és per al canvi en viu.
+export async function emitVideoIdlePattern(pattern) {
+  try { await emit('video-idle-pattern', { pattern }); }
+  catch (e) { console.warn('video-idle-pattern:', e); }
 }
