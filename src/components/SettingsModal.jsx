@@ -485,7 +485,7 @@ export function SettingsModal({ onClose }) {
 
           {tab === 'cues' && (
             <>
-              <div className="settings-subtitle">Comportament per defecte</div>
+              <div className="settings-subtitle">Default behavior</div>
               <div className="editor-options">
                 <label className="editor-check">
                   <input
@@ -493,7 +493,7 @@ export function SettingsModal({ onClose }) {
                     checked={cuesStopOthers}
                     onChange={(e) => setCuesStopOthers(e.target.checked)}
                   />
-                  Stop Others per defecte (disparar un cue atura la resta)
+                  Stop others by default (firing a cue stops the rest)
                 </label>
                 {/* Acció per defecte sobre la playlist: Ducking o Stop playing */}
                 <PlaylistActionToggle
@@ -501,9 +501,9 @@ export function SettingsModal({ onClose }) {
                   onChange={setCuesPlaylistAction}
                 />
               </div>
-              <div className="settings-note">Els cues nous prenen aquest valor. Cada cue es pot canviar després des de l'editor (✎).</div>
+              <div className="settings-note">New cues inherit these defaults. Override per cue in its editor (✎).</div>
 
-              <div className="settings-subtitle">Fades globals dels cues</div>
+              <div className="settings-subtitle">Global cue fades</div>
               <label className="ps-row">
                 <span>Fade in</span>
                 <span className="ps-cf">
@@ -518,21 +518,21 @@ export function SettingsModal({ onClose }) {
                     onChange={(e) => setGlobalFades({ globalFadeOut: Math.max(0, parseFloat(e.target.value) || 0) })} /> s
                 </span>
               </label>
-              <div className="settings-note">Cada cue pot definir el seu fade des de l'editor (✎); si és 0, usa el global.</div>
+              <div className="settings-note">Each cue can set its own fade in the editor (✎); otherwise it uses these.</div>
             </>
           )}
 
           {tab === 'playlist' && (
             <>
               <label className="ps-row">
-                <span>Crossfade entre pistes</span>
+                <span>Crossfade between tracks</span>
                 <span className="ps-cf">
                   <input type="number" min="0" max="20" step="0.5" value={crossfade}
                     onChange={(e) => setCrossfade(parseFloat(e.target.value) || 0)} /> s
                 </span>
               </label>
 
-              <div className="settings-subtitle">Ducking (abaixar la playlist sota els cues)</div>
+              <div className="settings-subtitle">Ducking (lower the playlist under cues)</div>
               <div className="editor-options">
                 <label className="editor-check">
                   <input
@@ -540,11 +540,11 @@ export function SettingsModal({ onClose }) {
                     checked={duckEnabled}
                     onChange={(e) => setDuckSettings({ duckEnabled: e.target.checked })}
                   />
-                  Activa el ducking
+                  Enable ducking
                 </label>
               </div>
               <label className="ps-row">
-                <span>Volum sota duck</span>
+                <span>Ducked volume</span>
                 <span className="ps-cf">
                   {/* Es mostra en % però es desa com a factor lineal 0..1 */}
                   <input type="number" min="0" max="100" step="5"
@@ -556,27 +556,27 @@ export function SettingsModal({ onClose }) {
                 </span>
               </label>
               <label className="ps-row">
-                <span>Attack (baixada)</span>
+                <span>Attack</span>
                 <span className="ps-cf">
                   <input type="number" min="0" max="10" step="0.1" value={duckAttack}
                     onChange={(e) => setDuckSettings({ duckAttack: Math.max(0, parseFloat(e.target.value) || 0) })} /> s
                 </span>
               </label>
               <label className="ps-row">
-                <span>Release (recuperació)</span>
+                <span>Release</span>
                 <span className="ps-cf">
                   <input type="number" min="0" max="10" step="0.1" value={duckRelease}
                     onChange={(e) => setDuckSettings({ duckRelease: Math.max(0, parseFloat(e.target.value) || 0) })} /> s
                 </span>
               </label>
               <label className="ps-row">
-                <span>Hold (espera abans de recuperar)</span>
+                <span>Hold (wait before recovering)</span>
                 <span className="ps-cf">
                   <input type="number" min="0" max="10" step="0.1" value={duckHold}
                     onChange={(e) => setDuckSettings({ duckHold: Math.max(0, parseFloat(e.target.value) || 0) })} /> s
                 </span>
               </label>
-              <div className="settings-note">Cada cue activa el ducking des del seu editor (✎). La playlist baixa fins al volum indicat mentre soni algun cue de ducking i es recupera quan no en queda cap.</div>
+              <div className="settings-note">Enable ducking per cue in its editor (✎). The playlist drops to the set volume while any ducking cue plays and recovers once none remain.</div>
             </>
           )}
         </div>

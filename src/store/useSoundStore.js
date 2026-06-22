@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import {
   plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume, plSetDevice, plSeek,
-  plPosition, plStartAt,
+  plPosition, plStartAt, plDetach,
   duckAdd, duckRemove, duckReset, duckRefresh,
 } from '../lib/playlistEngine';
 import {
@@ -10,10 +10,10 @@ import {
 } from '../lib/cueStreamEngine';
 import {
   plaPlayPause, plaStop, plaNext, plaPrev, plaPlayIndex, plaSetVolume, plaSeek, plaSetDevice,
-  plaPosition, plaStartAt,
+  plaPosition, plaStartAt, plaDetach,
 } from '../lib/playlistAsio';
 import { invoke } from '@tauri-apps/api/core';
-import { hasClip, isVideo, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
+import { hasClip, isVideo, isImage, isVisual, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
 import { dispatchCue } from '../lib/cueDispatch';
 import { isAsioTarget, resolveCueTargetStr, parseTarget } from '../lib/outputTarget';
 import { clearAsioTelemetry, asioPosition } from '../lib/asioTelemetry';
@@ -187,6 +187,9 @@ export const useSoundStore = create((set, get) => ({
   // Patró de la pantalla de sortida quan no hi ha vídeo (blackout): 'black'
   // (negre total, sense text), 'bars' (barres de color) o 'testcard' (carta d'ajust).
   videoIdlePattern: savedGlobals.videoIdlePattern ?? 'black',
+  // Si la finestra de sortida de vídeo estava oberta en tancar l'app: es torna a
+  // obrir automàticament a la pròxima arrencada (persistència de sessió).
+  videoOutputOpen: savedGlobals.videoOutputOpen ?? false,
 
   // ── Playlist (VLC) ──
   playlist: Array.isArray(savedPlaylist.tracks) ? savedPlaylist.tracks : [],
@@ -212,14 +215,20 @@ export const useSoundStore = create((set, get) => ({
   persistGlobals: () => {
     const {
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
     }));
+  },
+
+  // Recorda si la sortida de vídeo està oberta (persistència de sessió).
+  setVideoOutputOpen: (open) => {
+    set({ videoOutputOpen: !!open });
+    get().persistGlobals();
   },
 
   // Monitor predeterminat de la finestra de sortida de vídeo (per nom; null = auto).
@@ -431,6 +440,8 @@ export const useSoundStore = create((set, get) => ({
 
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot)) return;
+    // Cues d'IMATGE: no tenen preview viu (ja es veuen com a miniatura al tile).
+    if (isImage(slot)) { get().stopPreview(); return; }
     // Cues de VÍDEO: preview VISUAL dins el propi tile (no pel motor d'àudio/ASIO,
     // que no en sap el còdec). El WebView descodifica el vídeo i el SoundButton el
     // reprodueix amb un <video>; el so va al dispositiu de preview si és WASAPI, o
@@ -578,6 +589,22 @@ export const useSoundStore = create((set, get) => ({
     get().persistPlaylist();
   },
 
+  // Carrega una playlist nova deixant la pista actual sonar fins al final (via
+  // morta): no atura res, però la llista entra NETA (índex reiniciat). La pista
+  // despenjada sona fins que acaba sola, o fins a un Stop / Play d'una altra
+  // pista de la nova llista. No interfereix amb l'índex de la llista nova.
+  loadPlaylistKeepPlaying: (tracks) => {
+    if (get().plIsAsio()) plaDetach(get, set); else plDetach(get, set);
+    set({
+      playlist: (tracks || []).map((t) => ({ id: plNextId++, filePath: t.filePath, label: t.label })),
+      playlistIndex: -1,
+      playlistSelected: 0,
+      playlistPlaying: false,
+      playlistPaused: false,
+    });
+    get().persistPlaylist();
+  },
+
   // Cert si la playlist routeja a un dispositiu ASIO (→ motor natiu de veus).
   plIsAsio: () => isAsioTarget(get().playlistDeviceId),
 
@@ -657,7 +684,7 @@ export const useSoundStore = create((set, get) => ({
               ...s,
               label: cfg.label != null ? cfg.label : s.label,
               filePath: cfg.filePath != null ? cfg.filePath : s.filePath,
-              mediaType: cfg.mediaType === 'video' ? 'video' : s.mediaType,
+              mediaType: (cfg.mediaType === 'video' || cfg.mediaType === 'image') ? cfg.mediaType : s.mediaType,
               volume: cfg.volume != null ? cfg.volume : s.volume,
               startPoint: cfg.startPoint || 0,
               stopPoint: cfg.stopPoint != null ? cfg.stopPoint : null,
@@ -696,9 +723,9 @@ export const useSoundStore = create((set, get) => ({
   preloadAsioSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !slot.filePath) return;
-    // Els cues de VÍDEO no van pel motor d'àudio ASIO (el seu so és a la finestra
-    // de sortida); no els pre-descodifiquis (symphonia no en sap el còdec).
-    if (isVideo(slot)) return;
+    // Els cues visuals (vídeo/imatge) no van pel motor d'àudio ASIO (el seu so,
+    // si en tenen, és a la finestra de sortida); no els pre-descodifiquis.
+    if (isVisual(slot)) return;
     const target = parseTarget(resolveCueTargetStr(get(), slot));
     if (target.kind !== 'asio') return;
     invoke('asio_preload', { driver: target.driver, filePath: slot.filePath })
@@ -751,7 +778,7 @@ export const useSoundStore = create((set, get) => ({
     // Els nodes (gain/fade/analyser) es construeixen al Play, al context del
     // dispositiu segons el color del cue (routing per grup).
     const streaming = !!opts.streaming;
-    const mediaType = opts.mediaType === 'video' ? 'video' : 'audio';
+    const mediaType = (opts.mediaType === 'video' || opts.mediaType === 'image') ? opts.mediaType : 'audio';
     // Allibera el blob URL anterior d'aquest slot (si n'hi havia)
     const prev = get().slots.find((s) => s.id === slotId);
     // Si el slot previ sonava (o estava pausat), atura'l abans de reescriure'l:
@@ -825,12 +852,13 @@ export const useSoundStore = create((set, get) => ({
       });
     }
 
-    // Cue de vídeo: es reprodueix a la finestra de sortida (no per Web Audio).
-    // Emet l'event video-play amb un payload ric (volum, fades efectius, routing
-    // per color i loop); la finestra de sortida aplica volum/fades/sortida/loop
-    // sobre l'element <video>. Si la finestra no està oberta, no passa res.
-    // Marquem isPlaying perquè el tile/transport ho reflecteixin.
-    if (isVideo(slot)) {
+    // Cue visual (vídeo o imatge): es reprodueix a la finestra de sortida (no
+    // per Web Audio). Emet l'event video-play amb un payload ric (volum, fades
+    // efectius, routing per color, loop i mediaType); la finestra de sortida
+    // aplica volum/fades/sortida sobre l'element <video> o <img>. Si la finestra
+    // no està oberta, no passa res. Marquem isPlaying perquè el tile/transport
+    // ho reflecteixin. Les imatges no tenen so ni timeline (es mantenen fins a stop).
+    if (isVisual(slot)) {
       // Routing per color (com el camí d'àudio); per defecte, bus de Cues.
       // Els cues de VÍDEO surten per la finestra de sortida amb <video>.setSinkId,
       // que només entén deviceIds WASAPI. Si el color apunta a un target ASIO,
@@ -846,6 +874,7 @@ export const useSoundStore = create((set, get) => ({
         fadeOut: effOut,
         deviceId: outDev,
         loop: !!slot.loop,
+        mediaType: slot.mediaType,
       });
       // Ducking: si aquest cue de vídeo abaixa la playlist, incrementa el comptador
       if (slot.duck) duckAdd(get, slotId);
@@ -1012,8 +1041,8 @@ export const useSoundStore = create((set, get) => ({
   pauseSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !slot.isPlaying) return;
-    // Els cues de vídeo no es pausen (4a): pausar equival a aturar
-    if (isVideo(slot)) { get().stopSlot(slotId); return; }
+    // Els cues visuals (vídeo/imatge) no es pausen: pausar equival a aturar
+    if (isVisual(slot)) { get().stopSlot(slotId); return; }
     // En pausar deixa de sonar → deixa de duckejar (es reincrementa al resume)
     if (slot.duck) duckRemove(get, slotId);
     // Cue ASIO: congela la veu nativa (no l'atura). La posició la guardem des de
@@ -1055,7 +1084,7 @@ export const useSoundStore = create((set, get) => ({
   resumeSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot) || slot.pausedAt == null) return;
-    if (isVideo(slot)) return; // els cues de vídeo no tenen estat de pausa (4a)
+    if (isVisual(slot)) return; // els cues visuals no tenen estat de pausa
     // Torna a sonar → torna a duckejar (si és un cue de duck)
     if (slot.duck) duckAdd(get, slotId);
     // Cue ASIO: reprèn la veu nativa des de la posició congelada (el motor l'ha
@@ -1443,17 +1472,22 @@ export const useSoundStore = create((set, get) => ({
     const slot = get().slots.find((s) => s.id === slotId);
     // Res a fer si ja està del tot aturat (sense source ni pausa)
     if (!slot || (!slot.sourceNode && slot.pausedAt == null && !slot.isPlaying)) return;
-    // Cue de vídeo: atura la sortida i marca'l aturat (sense Web Audio).
-    // Honora el fade out (com l'àudio): fade===true → fade efectiu del cue;
-    // número → aquests segons; false → tall sec. La finestra de sortida fa el
-    // fade visual i de volum abans de passar a negre.
-    if (isVideo(slot)) {
+    // Cue visual (vídeo o imatge): atura la sortida i marca'l aturat (sense Web
+    // Audio). Honora el fade out (com l'àudio): fade===true → fade efectiu del
+    // cue; número → aquests segons; false → tall sec. La finestra de sortida fa
+    // el fade visual (i de volum, si és vídeo) abans de passar a negre.
+    if (isVisual(slot)) {
       // Deixa de duckejar (idempotent: el Set evita doble compte si ja no hi era)
       if (slot.duck) duckRemove(get, slotId);
       let fadeSec = 0;
-      const segDur = Math.max(0.02, (slot.stopPoint ?? (slot.streamDuration || 0)) - Math.max(0, slot.startPoint || 0));
-      if (fade === true) fadeSec = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
-      else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
+      if (fade === true) {
+        // Les imatges no tenen durada: no es clampa el fade. El vídeo sí (al segment).
+        if (isImage(slot)) fadeSec = Math.max(0, effFadeOut(slot, globalFadeOut));
+        else {
+          const segDur = Math.max(0.02, (slot.stopPoint ?? (slot.streamDuration || 0)) - Math.max(0, slot.startPoint || 0));
+          fadeSec = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
+        }
+      } else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
       emitVideoStop(fadeSec);
       set((state) => ({
         slots: state.slots.map((s) =>

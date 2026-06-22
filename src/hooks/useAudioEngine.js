@@ -12,6 +12,10 @@ const STREAM_THRESHOLD = 60;
 // reprodueixen a la finestra de sortida (vegeu videoOutput.js i la Fase 4a).
 const VIDEO_EXT = /\.(mp4|webm|m4v|mov)$/i;
 
+// Extensions d'imatge fixa: cue visual que es projecta a la sortida i s'hi manté
+// fins que s'atura. Sense àudio ni timeline (durada 0).
+const IMAGE_EXT = /\.(jpg|jpeg|png|webp|gif|bmp)$/i;
+
 // Nom de fitxer a partir d'una ruta (Windows o Unix)
 function basename(path) {
   return path.split(/[\\/]/).pop() || path;
@@ -105,6 +109,12 @@ export function useAudioEngine() {
         });
         return;
       }
+      // Cue d'imatge fixa: ni àudio ni durada. Es projecta a la sortida.
+      if (IMAGE_EXT.test(file.name || '')) {
+        const url = URL.createObjectURL(file);
+        loadAudio(slotId, file, null, url, null, { mediaType: 'image', duration: 0 });
+        return;
+      }
       const url = URL.createObjectURL(file);
       const dur = await probeDuration(url);
       if (isFinite(dur) && dur > STREAM_THRESHOLD) {
@@ -138,6 +148,11 @@ export function useAudioEngine() {
           mediaType: 'video',
           duration: isFinite(vdur) ? vdur : 0,
         });
+        return;
+      }
+      // Cue d'imatge fixa: es desa la ruta, mediaType 'image', sense durada.
+      if (IMAGE_EXT.test(path)) {
+        loadAudio(slotId, { name: basename(path) }, null, null, path, { mediaType: 'image', duration: 0 });
         return;
       }
       const src = convertFileSrc(path);

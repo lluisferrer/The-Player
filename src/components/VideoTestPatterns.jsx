@@ -68,7 +68,7 @@ export function TestCard() {
         ))}
       </g>
       <text x={cx} y={cy - 220} fill="#fff" fontFamily="'JetBrains Mono', monospace"
-        fontSize="40" textAnchor="middle" letterSpacing="6">THE PLAYER</text>
+        fontSize="40" textAnchor="middle" letterSpacing="6">ezyPlayer</text>
     </svg>
   );
 }

@@ -3,7 +3,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { useSoundStore } from '../store/useSoundStore';
 import { drawWavePathRange } from '../lib/waveformDraw';
 import { CUE_COLORS } from '../lib/colors';
-import { hasClip, isVideo, slotDuration } from '../lib/slotAudio';
+import { hasClip, isVideo, isImage, slotDuration } from '../lib/slotAudio';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
 
@@ -53,6 +53,7 @@ export function SlotEditor() {
 
   const hasAudio = hasClip(slot);
   const isVid    = isVideo(slot);
+  const isImg    = isImage(slot);
   const total    = hasAudio ? slotDuration(slot) : 0;
   const start    = hasAudio ? Math.max(0, slot.startPoint || 0) : 0;
   const stop     = hasAudio ? (slot.stopPoint ?? total) : 0;
@@ -64,6 +65,9 @@ export function SlotEditor() {
   const fadeIn   = fadeInOv  != null ? fadeInOv  : globalFadeIn;
   const fadeOut  = fadeOutOv != null ? fadeOutOv : globalFadeOut;
   const segDur   = Math.max(0, stop - start);
+  // Límit dels fades: el segment per a àudio/vídeo; per a imatge (sense durada)
+  // no hi ha segment, així que es permet fins a FADE_MAX.
+  const fadeCap  = isImg ? FADE_MAX : segDur;
 
   // Finestra visible (en ratis del fitxer sencer)
   const span     = Math.min(1, 1 / zoom);
@@ -91,9 +95,9 @@ export function SlotEditor() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
-      if (isVid) {
-        // Cue de vídeo: el canvas és transparent (només marcadors/fades) i el
-        // <video> de previsualització es veu a sota; no es dibuixa forma d'ona.
+      if (isVid || isImg) {
+        // Cue visual: el canvas és transparent (només marcadors/fades). El vídeo
+        // mostra el <video> de previsualització a sota; la imatge no té timeline.
       } else {
         ctx.fillStyle = BG;
         ctx.fillRect(0, 0, w, h);
@@ -114,7 +118,7 @@ export function SlotEditor() {
           ctx.fillStyle = '#52525b';
           ctx.font = '11px "JetBrains Mono", monospace';
           ctx.textBaseline = 'middle';
-          ctx.fillText('STREAMING — generant forma d\'ona…', 10, h / 2 - 12);
+          ctx.fillText('STREAMING — generating waveform…', 10, h / 2 - 12);
         }
       }
 
@@ -408,21 +412,21 @@ export function SlotEditor() {
           <input
             className="editor-title-input"
             value={slot.label || ''}
-            placeholder={fileName || 'Nom del cue'}
+            placeholder={fileName || 'Cue name'}
             onChange={(e) => updateSlotEdit(editingSlot, { label: e.target.value })}
             onBlur={(e) => { if (!e.target.value.trim() && fileName) updateSlotEdit(editingSlot, { label: fileName }); }}
-            title="Nom del cue (buit = nom del fitxer)"
+            title="Cue name (empty = file name)"
           />
           <button className="editor-close" onClick={handleClose}>✕</button>
         </div>
 
         <div className="editor-wave-toolbar">
           <span className="editor-zoom-label">
-            Zoom {zoom < 10 ? zoom.toFixed(1) : Math.round(zoom)}× · finestra {fmtTime(span * total)}
+            Zoom {zoom < 10 ? zoom.toFixed(1) : Math.round(zoom)}× · window {fmtTime(span * total)}
           </span>
-          <button className="editor-zoom-btn" onClick={() => zoomAt(1 / 2, viewClamped + span / 2)} disabled={zoom <= 1} title="Allunya">−</button>
-          <button className="editor-zoom-btn" onClick={() => zoomAt(2, viewClamped + span / 2)} disabled={zoom >= MAX_ZOOM} title="Apropa">+</button>
-          <button className="editor-zoom-btn" onClick={fitZoom} disabled={zoom === 1} title="Ajusta a tot">Fit</button>
+          <button className="editor-zoom-btn" onClick={() => zoomAt(1 / 2, viewClamped + span / 2)} disabled={zoom <= 1} title="Zoom out">−</button>
+          <button className="editor-zoom-btn" onClick={() => zoomAt(2, viewClamped + span / 2)} disabled={zoom >= MAX_ZOOM} title="Zoom in">+</button>
+          <button className="editor-zoom-btn" onClick={fitZoom} disabled={zoom === 1} title="Fit all">Fit</button>
         </div>
 
         <div className="editor-ruler">
@@ -461,14 +465,14 @@ export function SlotEditor() {
             type="range" min="0" max="1" step="0.0005"
             value={scrollPos}
             onChange={(e) => setView(parseFloat(e.target.value) * viewMax)}
-            title="Desplaça la vista"
+            title="Pan the view"
           />
         )}
 
         <div className="editor-times">
-          <span>Inici: <b>{fmtTime(start)}</b></span>
-          <span>Stop: <b>{fmtTime(stop)}</b></span>
-          <span>Durada: <b>{fmtTime(segDur)}</b></span>
+          <span>In: <b>{fmtTime(start)}</b></span>
+          <span>Out: <b>{fmtTime(stop)}</b></span>
+          <span>Length: <b>{fmtTime(segDur)}</b></span>
         </div>
 
         <div className="editor-options">
@@ -478,7 +482,7 @@ export function SlotEditor() {
               checked={!!slot.stopOthers}
               onChange={(e) => updateSlotEdit(editingSlot, { stopOthers: e.target.checked })}
             />
-            Stop others (talla la resta de cues en disparar)
+            Stop others (cut the other cues when fired)
           </label>
 
           {/* Auto-continue + Pre-wait a la mateixa fila */}
@@ -489,7 +493,7 @@ export function SlotEditor() {
                 checked={slot.continueMode === 'auto'}
                 onChange={(e) => updateSlotEdit(editingSlot, { continueMode: e.target.checked ? 'auto' : 'none' })}
               />
-              Auto-continue (dispara el cue següent tot seguit)
+              Auto-continue (fire the next cue right after)
             </label>
             <label className="editor-prewait">
               <span>Pre-wait (s)</span>
@@ -511,7 +515,7 @@ export function SlotEditor() {
             onChange={(a) => setPlaylistAction(editingSlot, a)}
           />
           {slot.duck && !duckEnabled && (
-            <div className="settings-note">El ducking està desactivat globalment (Settings → Playlist).</div>
+            <div className="settings-note">Ducking is disabled globally (Settings → Playlist).</div>
           )}
         </div>
 
@@ -520,7 +524,7 @@ export function SlotEditor() {
           <button
             className={`color-swatch none ${!slot.color ? 'active' : ''}`}
             onClick={() => setColor(editingSlot, null)}
-            title="Sense color"
+            title="No color"
           >✕</button>
           {CUE_COLORS.map((c) => (
             <button
@@ -536,30 +540,30 @@ export function SlotEditor() {
         <div className="editor-fades">
           <label>
             <span className="editor-fade-label">
-              Fade in: {fadeInOv != null ? `${fadeInOv.toFixed(2)}s (propi)` : `${globalFadeIn.toFixed(2)}s (global)`}
+              Fade in: {fadeInOv != null ? `${fadeInOv.toFixed(2)}s (custom)` : `${globalFadeIn.toFixed(2)}s (global)`}
               {fadeInOv != null && (
                 <button
                   type="button"
                   className="editor-fade-clear"
                   onClick={(e) => { e.preventDefault(); updateSlotEdit(editingSlot, { fadeIn: null }); }}
-                  title="Torna al fade global"
+                  title="Back to global fade"
                 >↺ global</button>
               )}
             </span>
             <div className="editor-fade-row">
               <input
-                type="range" min="0" max={Math.min(FADE_MAX, segDur)} step="0.1"
-                value={Math.min(fadeIn, FADE_MAX, segDur)}
+                type="range" min="0" max={Math.min(FADE_MAX, fadeCap)} step="0.1"
+                value={Math.min(fadeIn, FADE_MAX, fadeCap)}
                 onChange={(e) => { const v = parseFloat(e.target.value); updateSlotEdit(editingSlot, { fadeIn: v }); seekEditorVideo(start + (v || 0)); }}
               />
               {/* Camp numèric per escriure valors exactes, independent de la durada de l'arxiu */}
               <input
                 className="editor-fade-num"
-                type="number" min="0" step="0.1" max={segDur}
-                value={Math.min(fadeIn, segDur)}
+                type="number" min="0" step="0.1" max={fadeCap}
+                value={Math.min(fadeIn, fadeCap)}
                 onChange={(e) => {
                   const v = parseFloat(e.target.value);
-                  const clamped = Math.min(Math.max(0, isNaN(v) ? 0 : v), segDur);
+                  const clamped = Math.min(Math.max(0, isNaN(v) ? 0 : v), fadeCap);
                   updateSlotEdit(editingSlot, { fadeIn: clamped });
                   seekEditorVideo(start + clamped);
                 }}
@@ -568,30 +572,30 @@ export function SlotEditor() {
           </label>
           <label>
             <span className="editor-fade-label">
-              Fade out: {fadeOutOv != null ? `${fadeOutOv.toFixed(2)}s (propi)` : `${globalFadeOut.toFixed(2)}s (global)`}
+              Fade out: {fadeOutOv != null ? `${fadeOutOv.toFixed(2)}s (custom)` : `${globalFadeOut.toFixed(2)}s (global)`}
               {fadeOutOv != null && (
                 <button
                   type="button"
                   className="editor-fade-clear"
                   onClick={(e) => { e.preventDefault(); updateSlotEdit(editingSlot, { fadeOut: null }); }}
-                  title="Torna al fade global"
+                  title="Back to global fade"
                 >↺ global</button>
               )}
             </span>
             <div className="editor-fade-row">
               <input
-                type="range" min="0" max={Math.min(FADE_MAX, segDur)} step="0.1"
-                value={Math.min(fadeOut, FADE_MAX, segDur)}
+                type="range" min="0" max={Math.min(FADE_MAX, fadeCap)} step="0.1"
+                value={Math.min(fadeOut, FADE_MAX, fadeCap)}
                 onChange={(e) => { const v = parseFloat(e.target.value); updateSlotEdit(editingSlot, { fadeOut: v }); seekEditorVideo(stop - (v || 0)); }}
               />
               {/* Camp numèric per escriure valors exactes, independent de la durada de l'arxiu */}
               <input
                 className="editor-fade-num"
-                type="number" min="0" step="0.1" max={segDur}
-                value={Math.min(fadeOut, segDur)}
+                type="number" min="0" step="0.1" max={fadeCap}
+                value={Math.min(fadeOut, fadeCap)}
                 onChange={(e) => {
                   const v = parseFloat(e.target.value);
-                  const clamped = Math.min(Math.max(0, isNaN(v) ? 0 : v), segDur);
+                  const clamped = Math.min(Math.max(0, isNaN(v) ? 0 : v), fadeCap);
                   updateSlotEdit(editingSlot, { fadeOut: clamped });
                   seekEditorVideo(stop - clamped);
                 }}
@@ -604,7 +608,7 @@ export function SlotEditor() {
           <button
             className={`editor-btn toggle ${slot.loop ? 'active' : ''}`}
             onClick={() => setLoop(editingSlot, !slot.loop)}
-            title="Repeteix aquest slot en bucle"
+            title="Loop this cue"
           >
             ⟳ Loop
           </button>
@@ -614,7 +618,7 @@ export function SlotEditor() {
                no a la sortida. Play/pausa i reinici al punt d'inici. */
             <>
               <button className="editor-btn primary" onClick={toggleVideoPreview}>
-                {vidPlaying ? '❚❚ Pausa' : '▶ Preview'}
+                {vidPlaying ? '❚❚ Pause' : '▶ Preview'}
               </button>
               <button
                 className="editor-btn"
@@ -635,7 +639,7 @@ export function SlotEditor() {
             </>
           )}
           <button className="editor-btn" onClick={handleReset}>Reset</button>
-          <button className="editor-btn" onClick={handleClose}>Tancar</button>
+          <button className="editor-btn" onClick={handleClose}>Close</button>
         </div>
       </div>
     </div>

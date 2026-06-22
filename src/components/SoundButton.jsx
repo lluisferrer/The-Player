@@ -45,6 +45,8 @@ export function SoundButton({ slotId }) {
 
   const hasAudio  = hasClip(slot);
   const isVideoCue = slot.mediaType === 'video';
+  const isImageCue = slot.mediaType === 'image';
+  const isVisualCue = isVideoCue || isImageCue;
   const isStreaming = slot.isStreaming;
   const isPlaying = slot.isPlaying;
 
@@ -127,14 +129,17 @@ export function SoundButton({ slotId }) {
   // Miniatura del cue de vídeo (async, en segon pla; de cau si ja existeix).
   // No bloqueja la UI ni peta si el fitxer no existeix (retorna null).
   useEffect(() => {
-    if (!isVideoCue || !slot.filePath) { setThumb(null); return; }
+    if (!slot.filePath) { setThumb(null); return; }
+    // Imatge fixa: la miniatura és la pròpia imatge (sense generar fotograma)
+    if (isImageCue) { setThumb(convertFileSrc(slot.filePath)); return; }
+    if (!isVideoCue) { setThumb(null); return; }
     let cancel = false;
     const seekAt = Math.max(0.1, slot.startPoint || 0);
     getVideoThumb(slot.filePath, seekAt).then((url) => {
       if (!cancel && url) setThumb(url);
     });
     return () => { cancel = true; };
-  }, [isVideoCue, slot.filePath, slot.startPoint]);
+  }, [isVideoCue, isImageCue, slot.filePath, slot.startPoint]);
 
   // Temps/playhead estimat del cue de vídeo (es reprodueix a la sortida, així que
   // l'estimem localment des de l'instant de dispar; el vídeo no es pausa).
@@ -236,7 +241,7 @@ export function SoundButton({ slotId }) {
     try {
       const path = await open({
         multiple: false,
-        filters: [{ name: 'Media', extensions: ['mp3', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov'] }],
+        filters: [{ name: 'Media', extensions: ['mp3', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }],
       });
       if (path) await loadFromPath(slotId, path);
     } catch (err) {
@@ -354,16 +359,17 @@ export function SoundButton({ slotId }) {
         {keyLabel && <span className="slot-key" title={`Key: ${keyLabel}`}>{keyLabel}</span>}
       </div>
 
-      {hasAudio && isVideoCue ? (
-        /* Cue de vídeo: miniatura de fons (si n'hi ha) + badge "VÍDEO".
-           Es reprodueix a la finestra de sortida, no per Web Audio. */
+      {hasAudio && isVisualCue ? (
+        /* Cue visual (vídeo o imatge): miniatura de fons + badge. Es reprodueix
+           a la finestra de sortida, no per Web Audio. Les imatges no tenen
+           timeline, playhead, preview viu ni so. */
         <>
           <div className={`slot-body slot-video ${thumb ? 'has-thumb' : ''}`} ref={vidBodyRef}>
             {thumb && (
               <div className="slot-video-thumb" style={{ backgroundImage: `url(${thumb})` }} />
             )}
             {/* Preview in-tile (PFL): vídeo viu sobre la miniatura, un sol alhora */}
-            {isPreviewing && (
+            {isVideoCue && isPreviewing && (
               <video
                 ref={previewVidRef}
                 className="slot-video-preview"
@@ -374,15 +380,16 @@ export function SoundButton({ slotId }) {
                 autoPlay
               />
             )}
-            <span className="slot-time">{vidTimeLabel}</span>
-            {/* Badge de vídeo (mateix estil que STREAM dels àudios llargs) */}
-            <span className="slot-stream-badge">{isPreviewing ? 'PREVIEW' : 'VIDEO'}</span>
-            {/* Playhead del preview (vermell) mentre es previsualitza al tile */}
-            {isPreviewing && (
+            {/* Temps (només vídeo; les imatges no tenen durada) */}
+            {!isImageCue && <span className="slot-time">{vidTimeLabel}</span>}
+            {/* Badge del cue visual (mateix estil que STREAM dels àudios llargs) */}
+            <span className="slot-stream-badge">{isImageCue ? 'IMATGE' : (isPreviewing ? 'PREVIEW' : 'VIDEO')}</span>
+            {/* Playhead del preview (vermell) mentre es previsualitza al tile (vídeo) */}
+            {isVideoCue && isPreviewing && (
               <div className="slot-playhead preview" style={{ left: `${previewVidPct}%` }} />
             )}
-            {/* Playhead arrossegable mentre es reprodueix a la sortida */}
-            {isPlaying && (
+            {/* Playhead arrossegable mentre es reprodueix a la sortida (vídeo) */}
+            {isVideoCue && isPlaying && (
               <div
                 className="slot-playhead"
                 style={{ left: `${vidPlayheadPct}%` }}
@@ -398,21 +405,23 @@ export function SoundButton({ slotId }) {
               ✎
             </button>
           </div>
-          {/* Slider de volum (igual que els cues d'àudio) */}
-          <div className="slot-volume" onClick={(e) => e.stopPropagation()}>
-            <input
-              type="range" min="0" max="1" step="0.01"
-              value={slot.volume}
-              onChange={handleVolumeChange}
-              onMouseUp={handleVolumeRelease}
-              onTouchEnd={handleVolumeRelease}
-              title={`Volume: ${Math.round(slot.volume * 100)}%`}
-              style={{ background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)` }}
-            />
-            <span className={`volume-value ${showHover ? 'visible' : ''}`}>
-              {Math.round(slot.volume * 100)}%
-            </span>
-          </div>
+          {/* Slider de volum: només vídeo (les imatges no tenen so) */}
+          {isVideoCue && (
+            <div className="slot-volume" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="range" min="0" max="1" step="0.01"
+                value={slot.volume}
+                onChange={handleVolumeChange}
+                onMouseUp={handleVolumeRelease}
+                onTouchEnd={handleVolumeRelease}
+                title={`Volume: ${Math.round(slot.volume * 100)}%`}
+                style={{ background: `linear-gradient(to right, var(--accent) ${slot.volume * 100}%, var(--border) ${slot.volume * 100}%)` }}
+              />
+              <span className={`volume-value ${showHover ? 'visible' : ''}`}>
+                {Math.round(slot.volume * 100)}%
+              </span>
+            </div>
+          )}
         </>
       ) : hasAudio ? (
         <>
@@ -428,9 +437,11 @@ export function SoundButton({ slotId }) {
               />
               {/* Visualitzador de temps (dalt-dreta) */}
               <span className="slot-time">{timeLabel}</span>
-              {/* Cue llarg en streaming: badge + indicador mentre es genera la forma d'ona */}
+              {/* Cue llarg en streaming: badge + indicador mentre es genera la forma d'ona.
+                  No es mostra si el tile encara té l'spinner de càrrega (slot.loading),
+                  per no duplicar la rodoneta: en deixem només una per tile. */}
               {isStreaming && <span className="slot-stream-badge">STREAM</span>}
-              {isStreaming && !slot.peaks && (
+              {isStreaming && !slot.peaks && !slot.loading && (
                 <span className="slot-wave-loading"><span className="slot-spinner small" /></span>
               )}
               {/* Playhead interactiu (mentre sona o en pausa) */}

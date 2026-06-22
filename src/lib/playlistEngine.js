@@ -13,8 +13,15 @@ let paused = null;     // { index, pos }
 let cfTimer = null;    // timeout que vigila el punt de crossfade
 let token = 0;         // invalida transicions obsoletes
 let fadeOutAudio = null; // pista que s'està esvaint en aturar la playlist
+let orphan = null;     // pista «via morta»: sona fins al final en carregar una nova playlist
 
 function clearCf() { if (cfTimer) { clearTimeout(cfTimer); cfTimer = null; } }
+
+// Talla la pista «via morta» (si n'hi ha). Es crida en aturar o en sonar-ne una
+// de nova: no pot quedar sonant alhora que una pista de la nova llista.
+function killOrphan() {
+  if (orphan) { destroy(orphan); orphan = null; }
+}
 
 // Talla immediatament una cua de fade-out pendent (p. ex. si es torna a sonar)
 function killFadeOut() {
@@ -146,6 +153,7 @@ function makeAudio(get, filePath) {
 
 function startTrack(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
   killFadeOut();   // si hi havia una cua esvaint-se d'un stop anterior, talla-la
+  killOrphan();    // sonar una pista nova talla la «via morta» d'una llista anterior
   const myToken = ++token;
   const st = get();
   const track = st.playlist[index];
@@ -211,7 +219,7 @@ function onEnded(get, set, myToken) {
 export function plPlayPause(get, set) {
   const st = get();
   if (st.playlistPlaying && cur) {
-    paused = { index: cur.index, pos: cur.audio.currentTime };
+    paused = { index: cur.index, pos: cur.audio.currentTime, duration: cur.audio.duration };
     token++; clearCf();
     try { cur.audio.pause(); } catch { /* res */ }
     destroy(cur.audio); cur = null;
@@ -226,9 +234,28 @@ export function plPlayPause(get, set) {
   }
 }
 
+// Despenja la pista actual perquè soni fins al final (via morta) sense encadenar
+// la playlist: la nova llista es carrega neta. Si està en pausa, no hi ha res
+// sonant: simplement es descarta. La crida el store en carregar una playlist nova.
+export function plDetach(get, set) {
+  clearCf(); killFadeOut(); killOrphan();
+  token++;            // invalida onEnded/transicions de la pista actual
+  if (cur) {
+    const a = cur.audio;
+    cur = null;
+    a.loop = false;
+    // En acabar de forma natural, neteja la via morta (l'onEnded original ja no
+    // avança perquè el token ha canviat).
+    a.addEventListener('ended', () => { if (orphan === a) killOrphan(); }, { once: true });
+    orphan = a;
+  }
+  paused = null;
+  set({ playlistPlaying: false, playlistPaused: false });
+}
+
 export function plStop(get, set) {
   token++; clearCf();
-  killFadeOut();
+  killFadeOut(); killOrphan();
   if (cur) {
     const cf = Math.max(0, get().crossfade || 0);
     const old = cur.audio;
@@ -301,7 +328,7 @@ export function plPosition() {
   if (cur && isFinite(cur.audio.duration)) {
     return { elapsed: cur.audio.currentTime, duration: cur.audio.duration, index: cur.index };
   }
-  if (paused) return { elapsed: paused.pos, duration: 0, index: paused.index };
+  if (paused) return { elapsed: paused.pos, duration: isFinite(paused.duration) ? paused.duration : 0, index: paused.index };
   return { elapsed: 0, duration: 0, index: -1 };
 }
 

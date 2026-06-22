@@ -61,7 +61,7 @@ export async function openOutputWindow(monitorName = null) {
 
   const opts = {
     url: 'index.html',
-    title: 'The Player — Sortida',
+    title: 'ezyPlayer — Output',
     decorations: false,
     backgroundColor: '#000000',
     focus: true,
@@ -132,6 +132,7 @@ export async function emitVideoPlay(filePath, startPoint = 0, stopPoint = null, 
       fadeOut: opts.fadeOut || 0,
       deviceId: opts.deviceId || 'default',
       loop: !!opts.loop,
+      mediaType: opts.mediaType || 'video',
     });
   } catch (e) { console.warn('video-play:', e); }
 }

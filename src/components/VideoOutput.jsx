@@ -38,8 +38,10 @@ export function VideoOutput() {
   const rafRef = useRef(null);             // id del requestAnimationFrame del fade de volum
   const fadingOut = useRef(false);         // ja s'ha llançat el fade out d'aquest segment?
   const stopTimerRef = useRef(null);       // timer del negre diferit després d'un stop amb fade
+  const kindRef = useRef(null);            // tipus de mèdia mostrat ara: 'video' | 'image' | null (negre)
   const [src, setSrc] = useState(null);    // URL convertida del fitxer (o null = blackout)
-  const [opacity, setOpacity] = useState(1); // opacitat del <video> (fades visuals cap a negre)
+  const [mediaKind, setMediaKind] = useState('video'); // 'video' | 'image' (què renderitzem)
+  const [opacity, setOpacity] = useState(1); // opacitat del mèdia (fades visuals cap a negre)
   const [fadeDur, setFadeDur] = useState(0); // durada (s) de la transició d'opacitat actual
   const [idlePattern, setIdlePattern] = useState(readIdlePattern); // patró de blackout
 
@@ -77,21 +79,25 @@ export function VideoOutput() {
       const v = videoRef.current;
       if (v) { try { v.pause(); } catch { /* res */ } }
       currentSlot.current = null;
+      kindRef.current = null;
       setFadeDur(0);   // restauració instantània (sense transició)
       setOpacity(1);   // restaura per al pròxim cue
       setSrc(null);
     };
 
-    // Stop amb fade out: si hi ha vídeo i una durada, rampa volum→0 i opacitat→0
-    // i passa a negre en acabar. Sense vídeo o sense durada, negre immediat.
+    // Stop amb fade out: si hi ha mèdia i una durada, fa fade (volum si és vídeo,
+    // i opacitat sempre) i passa a negre en acabar. Sense mèdia o sense durada,
+    // negre immediat.
     const fadeStop = (e) => {
       const dur = (e && e.payload && e.payload.fadeOut) || 0;
-      const v = videoRef.current;
-      if (!v || !(dur > 0)) { black(); return; }
+      if (!kindRef.current || !(dur > 0)) { black(); return; }
       cancelFade();
       fadingOut.current = true;
-      const from = (v.volume != null) ? v.volume : (playInfo.current.volume || 0.8);
-      rampVolume(from, 0, dur);
+      const v = videoRef.current;   // null si és imatge → només fade d'opacitat
+      if (v) {
+        const from = (v.volume != null) ? v.volume : (playInfo.current.volume || 0.8);
+        rampVolume(from, 0, dur);
+      }
       setFadeDur(dur);
       setOpacity(0);
       stopTimerRef.current = setTimeout(() => { stopTimerRef.current = null; black(); }, dur * 1000);
@@ -123,6 +129,9 @@ export function VideoOutput() {
           deviceId: p.deviceId || 'default',
           loop: !!p.loop,
         };
+        const kind = p.mediaType === 'image' ? 'image' : 'video';
+        kindRef.current = kind;
+        setMediaKind(kind);
         // Opacitat inicial (instantània): si hi ha fade in, comença negre; si no, visible
         setFadeDur(0);
         setOpacity(fadeIn > 0 ? 0 : 1);
@@ -190,6 +199,14 @@ export function VideoOutput() {
     v.play().catch(() => { /* l'autoplay pot fallar fins a la interacció */ });
   };
 
+  // Imatge fixa carregada: només fade in d'opacitat (sense àudio ni timeline).
+  // Es manté en pantalla fins que arribi un stop/black.
+  const handleImgLoaded = () => {
+    const { fadeIn } = playInfo.current;
+    setFadeDur(fadeIn > 0 ? fadeIn : 0);
+    setOpacity(1); // dispara la transició CSS d'opacitat (durada = fadeIn, o instantani)
+  };
+
   // Vigila el segment: gestiona loop i fade out abans del punt de stop
   const handleTimeUpdate = () => {
     const v = videoRef.current;
@@ -243,17 +260,28 @@ export function VideoOutput() {
   return (
     <div className="video-output">
       {src ? (
-        <video
-          ref={videoRef}
-          className="video-output-el"
-          src={src}
-          style={{ opacity, transition: `opacity ${fadeDur > 0 ? fadeDur : 0}s linear` }}
-          onLoadedMetadata={handleLoaded}
-          onTimeUpdate={handleTimeUpdate}
-          onEnded={handleEnded}
-          onError={(e) => console.warn('[output] error de vídeo', e?.currentTarget?.error)}
-          autoPlay
-        />
+        mediaKind === 'image' ? (
+          <img
+            className="video-output-el"
+            src={src}
+            alt=""
+            style={{ opacity, transition: `opacity ${fadeDur > 0 ? fadeDur : 0}s linear` }}
+            onLoad={handleImgLoaded}
+            onError={(e) => console.warn('[output] error d\'imatge', e?.currentTarget?.src)}
+          />
+        ) : (
+          <video
+            ref={videoRef}
+            className="video-output-el"
+            src={src}
+            style={{ opacity, transition: `opacity ${fadeDur > 0 ? fadeDur : 0}s linear` }}
+            onLoadedMetadata={handleLoaded}
+            onTimeUpdate={handleTimeUpdate}
+            onEnded={handleEnded}
+            onError={(e) => console.warn('[output] error de vídeo', e?.currentTarget?.error)}
+            autoPlay
+          />
+        )
       ) : (
         // Blackout: negre total (sense text), barres de color o carta d'ajust
         idlePattern === 'bars' ? <ColorBars />

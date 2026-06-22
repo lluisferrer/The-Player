@@ -34,11 +34,21 @@ let curA = null;     // { voiceId, index, startedAt, duration }
 let pausedA = null;  // { index, pos }
 let cfTimerA = null; // temporitzador que vigila el punt de crossfade
 let tokenA = 0;      // invalida transicions obsoletes
+let orphanA = null;  // voiceId d'una pista «via morta»: sona fins al final
 let gRef = null;     // referències a get()/set() del store (per a l'event de fi)
 let sRef = null;
 
 function stash(get, set) { gRef = get; if (set) sRef = set; }
 function clearCfA() { if (cfTimerA) { clearTimeout(cfTimerA); cfTimerA = null; } }
+
+// Atura la veu «via morta» (si n'hi ha). Es crida en aturar o en sonar-ne una de
+// nova: no pot quedar sonant alhora que una pista de la nova llista.
+function killOrphanA() {
+  if (orphanA != null) {
+    invoke('asio_stop_voice', { voiceId: orphanA, fadeOut: 0 }).catch(() => {});
+    orphanA = null;
+  }
+}
 
 // Target ASIO efectiu de la playlist (driver + canals), o null si no és ASIO.
 function target(get) {
@@ -75,6 +85,7 @@ function resolveDuration(filePath) {
 
 function startTrackA(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
   stash(get, set);
+  killOrphanA();   // sonar una pista nova talla la «via morta» d'una llista anterior
   const myToken = ++tokenA;
   const st = get();
   const track = st.playlist[index];
@@ -151,6 +162,7 @@ function doTransitionA() {
 // Només actuem si és la pista ACTUAL (no una que s'esvaeix per crossfade, que ja
 // no és curA). Fa de xarxa de seguretat si la planificació no ha encadenat.
 export function plaOnVoiceEnded(voiceId) {
+  if (voiceId === orphanA) { orphanA = null; return; } // la «via morta» ha acabat sola
   if (!curA || curA.voiceId !== voiceId || !gRef || !sRef) return;
   const get = gRef, set = sRef;
   const ni = nextIndex(get, curA.index, true);
@@ -167,7 +179,7 @@ export function plaPlayPause(get, set) {
   const st = get();
   if (st.playlistPlaying && curA) {
     // Pausa: recorda índex+posició i atura la veu (el resume la recrea amb offset)
-    pausedA = { index: curA.index, pos: schedElapsed() };
+    pausedA = { index: curA.index, pos: schedElapsed(), duration: curA.duration || 0 };
     tokenA++; clearCfA();
     invoke('asio_stop_voice', { voiceId: curA.voiceId, fadeOut: 0 }).catch(() => {});
     curA = null;
@@ -182,9 +194,20 @@ export function plaPlayPause(get, set) {
   }
 }
 
+// Despenja la pista actual (via morta): la veu nativa segueix sonant fins al
+// final; la nova llista es carrega neta. La crida el store en carregar-ne una nova.
+export function plaDetach(get, set) {
+  stash(get, set);
+  clearCfA(); killOrphanA();
+  tokenA++;
+  if (curA) { orphanA = curA.voiceId; curA = null; } // no l'aturem: que acabi sola
+  pausedA = null;
+  set({ playlistPlaying: false, playlistPaused: false });
+}
+
 export function plaStop(get, set) {
   stash(get, set);
-  tokenA++; clearCfA();
+  tokenA++; clearCfA(); killOrphanA();
   if (curA) {
     const cf = Math.max(0, get().crossfade || 0);
     invoke('asio_stop_voice', { voiceId: curA.voiceId, fadeOut: cf }).catch(() => {});
@@ -276,7 +299,7 @@ export function plaPosition() {
     const elapsed = pos != null ? pos : schedElapsed();
     return { elapsed, duration: curA.duration || 0, index: curA.index };
   }
-  if (pausedA) return { elapsed: pausedA.pos, duration: 0, index: pausedA.index };
+  if (pausedA) return { elapsed: pausedA.pos, duration: pausedA.duration || 0, index: pausedA.index };
   return { elapsed: 0, duration: 0, index: -1 };
 }
 

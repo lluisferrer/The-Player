@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSoundStore } from './store/useSoundStore';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { SoundBoard } from './components/SoundBoard';
@@ -11,15 +12,15 @@ import { PlaylistSave } from './components/PlaylistSave';
 import { SettingsModal } from './components/SettingsModal';
 import { slotForKey } from './lib/keyMap';
 import { hasClip } from './lib/slotAudio';
-import { toggleOutputWindow, isOutputOpen, getOutputWindow } from './lib/videoOutput';
+import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow } from './lib/videoOutput';
 import { listen } from '@tauri-apps/api/event';
 import { applyAsioTelemetry } from './lib/asioTelemetry';
 import { plaOnVoiceEnded } from './lib/playlistAsio';
 import './App.css';
 
-// Extensions acceptades pels cues: àudio i vídeo (els de vídeo van a la
-// finestra de sortida; vegeu useAudioEngine + videoOutput.js)
-const MEDIA_EXT = /\.(mp3|wav|ogg|flac|mp4|webm|m4v|mov)$/i;
+// Extensions acceptades pels cues: àudio, vídeo i imatge (vídeo i imatge van a
+// la finestra de sortida; vegeu useAudioEngine + videoOutput.js)
+const MEDIA_EXT = /\.(mp3|wav|ogg|flac|mp4|webm|m4v|mov|jpg|jpeg|png|webp|gif|bmp)$/i;
 
 // Slot (data-slot-id) sota una posició física del drag&drop natiu
 function slotAtPosition(position) {
@@ -39,6 +40,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showSave, setShowSave] = useState(false);
   const [outputOpen, setOutputOpen] = useState(false); // estat de la finestra de sortida
+  // Flag: l'app s'està tancant. Mentre val true, no persistim videoOutputOpen=false
+  // en destruir-se la sortida (volem que es recordi oberta per la pròxima arrencada).
+  const appClosingRef = useRef(false);
 
   useEffect(() => {
     const loadDevices = async () => {
@@ -60,11 +64,45 @@ export default function App() {
   // Aplica el gain mestre ASIO desat al motor natiu en arrencar.
   useEffect(() => { useSoundStore.getState().initAsioMaster(); }, []);
 
-  // Estat inicial de la finestra output (per si ja estigués oberta).
+  // Persistència de sessió: si la sortida de vídeo estava oberta en tancar l'app,
+  // es torna a obrir en arrencar. També en sincronitzem l'estat inicial del botó.
   useEffect(() => {
     (async () => {
-      try { setOutputOpen(await isOutputOpen()); } catch { /* res */ }
+      try {
+        if (await isOutputOpen()) { setOutputOpen(true); return; }
+        if (useSoundStore.getState().videoOutputOpen) {
+          await openOutputWindow(useSoundStore.getState().videoMonitorName);
+          setOutputOpen(true);
+          const w = await getOutputWindow();
+          if (w) w.once('tauri://destroyed', () => {
+            setOutputOpen(false);
+            if (!appClosingRef.current) useSoundStore.getState().setVideoOutputOpen(false);
+            useSoundStore.getState().clearVideoCues();
+          });
+        }
+      } catch { /* res */ }
     })();
+  }, []);
+
+  // En tancar la finestra principal, tanca també la de sortida de vídeo (si no,
+  // quedaria orfe i l'app no acabaria de tancar-se).
+  useEffect(() => {
+    let unlisten;
+    (async () => {
+      try {
+        unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+          if (appClosingRef.current) return; // ja estem tancant
+          appClosingRef.current = true;      // no esborris la preferència en sortir
+          // Tanca primer la sortida de vídeo (si no, quedaria orfe i el procés no
+          // acabaria). Aturem el tancament per fer-ho de forma determinista i
+          // després destruïm la finestra principal.
+          event.preventDefault();
+          try { await closeOutputWindow(); } catch { /* res */ }
+          try { await getCurrentWindow().destroy(); } catch { /* res */ }
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (unlisten) unlisten(); };
   }, []);
 
   // Obre/tanca la finestra de sortida de vídeo i en sincronitza l'estat del botó.
@@ -73,15 +111,18 @@ export default function App() {
     try {
       const open = await toggleOutputWindow(useSoundStore.getState().videoMonitorName);
       setOutputOpen(open);
+      useSoundStore.getState().setVideoOutputOpen(open); // recorda l'estat per la pròxima arrencada
       // Si s'ha tancat (o l'usuari la tanca des de la pròpia finestra),
       // reflecteix-ho i reseteja els cues de vídeo que quedessin marcats
       const w = await getOutputWindow();
       if (w) {
         w.once('tauri://destroyed', () => {
           setOutputOpen(false);
+          if (!appClosingRef.current) useSoundStore.getState().setVideoOutputOpen(false);
           useSoundStore.getState().clearVideoCues();
         });
       }
+
     } catch (e) {
       console.warn('No s\'ha pogut commutar la finestra de sortida:', e);
     }

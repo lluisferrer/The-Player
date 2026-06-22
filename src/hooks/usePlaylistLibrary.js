@@ -31,13 +31,15 @@ export function usePlaylistLibrary() {
     setLists({ ...all });
   }, []);
 
+  // Carrega la llista deixant la pista actual sonar fins al final (via morta):
+  // la nova llista entra neta, sense aturar el que ja sonava.
   const loadList = useCallback((name) => {
     const all = read();
     const l = all[name];
     if (!l) return;
-    const st = useSoundStore.getState();
-    st.clearPlaylist();
-    st.addPlaylistTracks(l.tracks.map((t) => ({ filePath: t.filePath, label: t.label })));
+    useSoundStore.getState().loadPlaylistKeepPlaying(
+      l.tracks.map((t) => ({ filePath: t.filePath, label: t.label }))
+    );
   }, []);
 
   return { lists, saveList, deleteList, loadList };
