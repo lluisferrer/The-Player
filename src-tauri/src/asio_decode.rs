@@ -1,5 +1,6 @@
 // Descodificació d'àudio a Rust (symphonia) + resampling lineal, per al render
-// natiu de cues pel motor ASIO. Només es compila amb la feature `asio`.
+// natiu de cues. Part del NUCLI reutilitzable: es compila amb la feature `native`
+// (i, per tant, també amb `asio`, que la implica). No depèn d'ASIO.
 //
 // Estratègia (primer pas): descodifiquem el fitxer SENCER a memòria (PCM f32
 // planar, un Vec per canal) i el resamplegem de la freqüència del fitxer a la
@@ -11,7 +12,7 @@
 // És suficientment bo per a cues i garanteix un build sense sorpreses d'API.
 // Millora futura: `rubato` (sinc d'alta qualitat) si es detecten artefactes.
 
-#![cfg(feature = "asio")]
+#![cfg(feature = "native")]
 
 use std::fs::File;
 use std::path::Path;

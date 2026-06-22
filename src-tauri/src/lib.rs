@@ -1,13 +1,21 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 
-// Descodificació d'àudio a Rust per al render natiu de cues (només amb `asio`).
-#[cfg(feature = "asio")]
+// Descodificació d'àudio a Rust per al render natiu de cues. Part del nucli
+// reutilitzable: disponible amb `native` (i, per implicació, amb `asio`).
+#[cfg(feature = "native")]
 mod asio_decode;
 
-// Descodificació en STREAMING (decode-ahead) per a pistes llargues a ASIO.
+// Descodificació en STREAMING (decode-ahead) per a pistes llargues. De moment
+// només la consumeix el motor ASIO (les veus en streaming són ASIO-específiques);
+// el backend cpal de l'increment 1 encara no fa streaming.
 #[cfg(feature = "asio")]
 mod asio_stream;
+
+// Backend de sortida natiu basat en cpal (host per defecte: WASAPI a Windows,
+// CoreAudio a Mac). Reutilitza el nucli de veus (`Voice` + `asio_mix_voice`).
+#[cfg(feature = "native")]
+mod native_output;
 
 // Llegeix els bytes d'un fitxer pel seu camí absolut (per carregar àudio
 // des de rutes guardades a la Library). Retorna els bytes en brut.
@@ -294,8 +302,16 @@ fn play_test_tone(
 
 // Punts d'inici/stop i fades es porten en MOSTRES (frames) a la freqüència del
 // driver, perquè el callback no hagi de fer cap conversió de temps.
-#[cfg(feature = "asio")]
+//
+// NUCLI reutilitzable (feature `native`): tant el callback ASIO com el backend
+// cpal mesclen aquestes veus amb `asio_mix_voice`. Els camps i la semàntica són
+// independents del backend de sortida (els "out_channels" són índexs de canal de
+// sortida, els interpreti qui els interpreti).
+#[cfg(feature = "native")]
 struct Voice {
+    // `allow(dead_code)`: el camí ASIO l'usa per identificar/aturar veus; el
+    // backend cpal de l'increment 1 (model d'una sola veu) encara no el llegeix.
+    #[allow(dead_code)]
     voice_id: u64,
     // PCM planar per canal de FONT (data[ch][frame]), a la freqüència del driver.
     data: std::sync::Arc<Vec<Vec<f32>>>,
@@ -328,7 +344,7 @@ struct Voice {
     meter: f32,
 }
 
-#[cfg(feature = "asio")]
+#[cfg(feature = "native")]
 impl Voice {
     // Frame actual dins el segment (0 = start_frame).
     fn seg_pos(&self) -> usize {
@@ -511,15 +527,22 @@ fn asio_mix_stream_voice(v: &mut StreamVoice, acc: &mut [Vec<f32>], buffer_size:
 // cau per BYTES amb desallotjament LRU (el menys usat recentment surt primer).
 // Desallotjar de la cau és SEMPRE segur encara que la veu soni: les veus actives
 // tenen el seu propi clone de l'`Arc` i continuen reproduint-se.
-#[cfg(feature = "asio")]
+//
+// NUCLI reutilitzable (feature `native`): la fa servir el motor ASIO; el backend
+// cpal encara descodifica directe (la cau de pre-decode hi arriba en l'increment 2).
+#[cfg(feature = "native")]
 type PcmKey = (String, u32);
 
 // Pressupost de memòria de la cau (~1,5 GB de PCM f32). En una màquina d'àudio
 // pro és assumible; acota cues molt llargs i evita créixer sense límit.
-#[cfg(feature = "asio")]
+#[cfg(feature = "native")]
 const PCM_CACHE_BUDGET_BYTES: usize = 1_500_000_000;
 
-#[cfg(feature = "asio")]
+// `allow(dead_code)`: amb la feature `native` sola (sense ASIO) la cau encara no
+// es construeix (el backend cpal de l'increment 1 descodifica directe). El camí
+// ASIO sí que la usa. Es manté al nucli per a l'increment 2 (pre-decode a cpal).
+#[cfg(feature = "native")]
+#[allow(dead_code)]
 struct PcmCache {
     map: std::collections::HashMap<PcmKey, std::sync::Arc<Vec<Vec<f32>>>>,
     // Ordre d'ús (front = menys usat recentment, back = més recent).
@@ -528,12 +551,14 @@ struct PcmCache {
 }
 
 // Bytes aproximats que ocupa un PCM planar f32.
-#[cfg(feature = "asio")]
+#[cfg(feature = "native")]
+#[allow(dead_code)]
 fn pcm_bytes(data: &[Vec<f32>]) -> usize {
     data.iter().map(|c| c.len() * 4).sum()
 }
 
-#[cfg(feature = "asio")]
+#[cfg(feature = "native")]
+#[allow(dead_code)]
 impl PcmCache {
     fn new() -> Self {
         PcmCache {
@@ -592,7 +617,11 @@ impl PcmCache {
 // Paràmetres d'una veu a registrar (tot menys el PCM): es porten des de la
 // comanda fins al moment de construir la `Voice` (potser després d'un decode
 // en un fil a part). Send perquè pugui viatjar a un fil de treball.
-#[cfg(feature = "asio")]
+// NUCLI reutilitzable (feature `native`). `allow(dead_code)`: el backend cpal de
+// l'increment 1 construeix la `Voice` directament; `VoiceSpec` (decode diferit en
+// un fil) el consumeix el camí ASIO i hi arribarà al backend cpal a l'increment 2.
+#[cfg(feature = "native")]
+#[allow(dead_code)]
 struct VoiceSpec {
     voice_id: u64,
     out_channels: Vec<usize>,
@@ -1065,7 +1094,9 @@ fn asio_master_gain() -> f32 {
 // Saturació SUAU: lineal (transparent) fins a ±0.7 i, per sobre, saturació amb
 // tanh cap a ±1. Evita la distorsió aspra del clip dur quan sumen moltes veus.
 // C1-continu al colze (mateix pendent), així no introdueix discontinuïtats.
-#[cfg(feature = "asio")]
+// NUCLI reutilitzable (feature `native`): tant `asio_write_mix` com el backend
+// cpal hi passen les mostres abans d'escriure-les al buffer de sortida.
+#[cfg(feature = "native")]
 #[inline]
 fn asio_soft_clip(x: f32) -> f32 {
     const T: f32 = 0.7;
@@ -1262,7 +1293,9 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
 // Avança una veu `buffer_size` frames i la mescla als acumuladors de sortida.
 // Aplica gain, fade in/out i, si s'està alliberant (release), la rampa de stop.
 // Marca `finished` si la veu arriba al final (i no fa loop) o acaba el release.
-#[cfg(feature = "asio")]
+// NUCLI reutilitzable (feature `native`): la criden tant el callback ASIO com el
+// backend cpal. No fa cap `alloc` ni IO: apte per al fil RT d'àudio.
+#[cfg(feature = "native")]
 fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
     if voice.finished {
         return;
@@ -2052,6 +2085,46 @@ fn asio_release() -> Result<(), String> {
     }
 }
 
+// ── Comandes del motor NATIU (cpal) ──────────────────────────────────────────
+//
+// Increment 1 del motor unificat: disparar UNA veu pel dispositiu de sortida per
+// defecte (WASAPI/CoreAudio) amb gain i fades. Disponible amb la feature `native`
+// (i, per tant, també amb `asio`). Sense `native` retornen un error explicatiu.
+
+// Reprodueix un cue (fitxer en memòria) pel dispositiu de sortida per defecte via
+// cpal, amb gain i fades. La veu s'acaba sola.
+#[tauri::command]
+fn native_play_cue(
+    file_path: String,
+    gain: f32,
+    fade_in: f32,
+    fade_out: f32,
+    channels: Vec<u16>,
+) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = (file_path, gain, fade_in, fade_out, channels);
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::play_cue(file_path, gain, fade_in, fade_out, channels)
+    }
+}
+
+// Atura la reproducció del motor natiu (totes les veus actives, de moment).
+#[tauri::command]
+fn native_stop() -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::stop()
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2084,7 +2157,9 @@ pub fn run() {
             asio_seek,
             asio_set_paused,
             asio_load,
-            asio_release
+            asio_release,
+            native_play_cue,
+            native_stop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
