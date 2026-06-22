@@ -95,17 +95,19 @@ pub struct StreamHandle {
     pub ctrl: Arc<StreamCtrl>,
 }
 
-// Arrenca un fil descodificador per a `file_path`, opcionalment començant a
-// `start_secs`. Retorna el mànec immediatament (la descodificació passa al fil;
-// el callback veu silenci fins al primer paquet).
-pub fn spawn_stream(file_path: String, start_secs: f64) -> StreamHandle {
+// Arrenca un fil descodificador per a `file_path`, començant a `start_secs`. Si
+// `loop_on`, el fil fa el LOOP del tram [start_secs, stop_secs] (o de tot el
+// fitxer si stop_secs<=0) empenyent un FLUX CONTINU al ring: en arribar al final
+// torna a l'inici sense buidar res → loop sense tall (gapless) al callback.
+// Retorna el mànec immediatament (el callback veu silenci fins al primer paquet).
+pub fn spawn_stream(file_path: String, start_secs: f64, stop_secs: f64, loop_on: bool) -> StreamHandle {
     let ring = Arc::new(Mutex::new(StreamRing::new()));
     let ctrl = Arc::new(StreamCtrl::new());
     let ring_t = ring.clone();
     let ctrl_t = ctrl.clone();
     std::thread::Builder::new()
         .name("asio-stream".into())
-        .spawn(move || decoder_main(file_path, ring_t, ctrl_t, start_secs))
+        .spawn(move || decoder_main(file_path, ring_t, ctrl_t, start_secs, stop_secs, loop_on))
         .ok();
     StreamHandle { ring, ctrl }
 }
@@ -149,7 +151,14 @@ fn interleave_into(decoded: &AudioBufferRef, out: &mut Vec<f32>, channels: usize
 }
 
 // Bucle del fil descodificador.
-fn decoder_main(path: String, ring: Arc<Mutex<StreamRing>>, ctrl: Arc<StreamCtrl>, start_secs: f64) {
+fn decoder_main(
+    path: String,
+    ring: Arc<Mutex<StreamRing>>,
+    ctrl: Arc<StreamCtrl>,
+    start_secs: f64,
+    stop_secs: f64,
+    loop_on: bool,
+) {
     let file = match std::fs::File::open(&path) {
         Ok(f) => f,
         Err(e) => {
@@ -197,6 +206,8 @@ fn decoder_main(path: String, ring: Arc<Mutex<StreamRing>>, ctrl: Arc<StreamCtrl
     }
 
     let mut scratch: Vec<f32> = Vec::new();
+    // Posició (frames de FONT) dins el tram de loop des del darrer inici.
+    let mut seg_pos: usize = 0;
 
     loop {
         if ctrl.stop.load(Ordering::Relaxed) {
@@ -215,6 +226,12 @@ fn decoder_main(path: String, ring: Arc<Mutex<StreamRing>>, ctrl: Arc<StreamCtrl
                 r.eof = false;
             }
             decoder.reset();
+            // Reposiciona el comptador del tram a la nova posició.
+            seg_pos = if file_rate > 0 {
+                (((secs - start_secs).max(0.0)) * file_rate as f64) as usize
+            } else {
+                0
+            };
         }
 
         // Backpressure: si el buffer ja té prou, dorm una mica.
@@ -232,7 +249,18 @@ fn decoder_main(path: String, ring: Arc<Mutex<StreamRing>>, ctrl: Arc<StreamCtrl
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
-                // Final del fitxer: marca eof i espera stop o seek.
+                // Final del fitxer. Si fem LOOP (de tot el fitxer), torna a l'inici
+                // sense buidar el ring → flux continu, sense tall.
+                if loop_on {
+                    let _ = format.seek(
+                        SeekMode::Coarse,
+                        SeekTo::Time { time: Time::from(start_secs), track_id: Some(track_id) },
+                    );
+                    decoder.reset();
+                    seg_pos = 0;
+                    continue;
+                }
+                // Sense loop: marca eof i espera stop o seek.
                 if let Ok(mut r) = ring.lock() { r.eof = true; }
                 loop {
                     if ctrl.stop.load(Ordering::Relaxed) { return; }
@@ -255,6 +283,25 @@ fn decoder_main(path: String, ring: Arc<Mutex<StreamRing>>, ctrl: Arc<StreamCtrl
                 if channels == 0 { continue; }
                 scratch.clear();
                 interleave_into(&decoded, &mut scratch, channels);
+                let mut frames = scratch.len() / channels;
+
+                // Loop amb out-point (stop_secs>0): no superis el tram. En arribar-hi,
+                // retalla i fes seek a l'inici sense buidar el ring (flux continu).
+                let seg_frames = if loop_on && stop_secs > 0.0 && file_rate > 0 {
+                    (((stop_secs - start_secs).max(0.0)) * file_rate as f64) as usize
+                } else {
+                    0
+                };
+                let mut wrap = false;
+                if seg_frames > 0 {
+                    let remaining = seg_frames.saturating_sub(seg_pos);
+                    if frames >= remaining {
+                        frames = remaining;
+                        scratch.truncate(frames * channels);
+                        wrap = true;
+                    }
+                }
+
                 if let Ok(mut r) = ring.lock() {
                     if r.channels == 0 {
                         r.channels = channels;
@@ -262,6 +309,16 @@ fn decoder_main(path: String, ring: Arc<Mutex<StreamRing>>, ctrl: Arc<StreamCtrl
                         r.cap_samples = (file_rate as usize * channels * 4).max(1 << 15); // ~4 s
                     }
                     r.samples.extend(scratch.iter().copied());
+                }
+                seg_pos += frames;
+
+                if wrap {
+                    let _ = format.seek(
+                        SeekMode::Coarse,
+                        SeekTo::Time { time: Time::from(start_secs), track_id: Some(track_id) },
+                    );
+                    decoder.reset();
+                    seg_pos = 0;
                 }
             }
             Err(symphonia::core::errors::Error::DecodeError(_)) => continue,

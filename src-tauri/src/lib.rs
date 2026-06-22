@@ -403,24 +403,24 @@ fn asio_mix_stream_voice(v: &mut StreamVoice, acc: &mut [Vec<f32>], buffer_size:
 
     for i in 0..buffer_size {
         let avail = ring.avail_frames();
-        let at_outpoint = seg_frames > 0 && v.src_consumed >= seg_frames;
         let at_eof = ring.eof && avail == 0;
 
-        // Final del tram (out-point) o del fitxer: fa loop o acaba.
-        if at_outpoint || at_eof {
-            if v.loop_on && v.release_from.is_none() {
-                // Torna a l'inici del tram: demana el seek al fil i buida el ring.
-                let ms = (v.start_secs * 1000.0) as i64;
-                v.ctrl.seek_ms.store(ms, Ordering::Relaxed);
-                ring.samples.clear();
-                ring.eof = false;
-                v.src_consumed = 0;
-                v.frac = 0.0;
-                break; // la resta del buffer queda en silenci fins que el ring s'ompli
+        // Loop: el fil descodificador empeny un flux continu (gapless), així que el
+        // callback NO gestiona l'out-point; només acaba per release o, com a
+        // defensa, si arribés un eof real. Sense loop: acaba a l'out-point o eof.
+        if v.loop_on {
+            if at_eof {
+                v.finished = true;
+                v.ctrl.stop.store(true, Ordering::Relaxed);
+                break;
             }
-            v.finished = true;
-            v.ctrl.stop.store(true, Ordering::Relaxed);
-            break;
+        } else {
+            let at_outpoint = seg_frames > 0 && v.src_consumed >= seg_frames;
+            if at_outpoint || at_eof {
+                v.finished = true;
+                v.ctrl.stop.store(true, Ordering::Relaxed);
+                break;
+            }
         }
 
         if avail < 2 && !ring.eof {
@@ -877,11 +877,20 @@ fn asio_start_notifier(app: tauri::AppHandle) {
                             Err(_) => continue,
                         };
                         if let Ok(svs) = sh.stream_voices.lock() {
-                            v.extend(svs.iter().filter(|s| !s.finished).map(|s| TelemetryItem {
-                                id: s.voice_id,
-                                // src_consumed/file_rate = posició dins el tram; plega en loop.
-                                pos: if s.file_rate > 0 { s.src_consumed as f32 / s.file_rate as f32 } else { 0.0 },
-                                level: s.meter,
+                            v.extend(svs.iter().filter(|s| !s.finished).map(|s| {
+                                // En loop amb out-point, el descodificador fa un flux
+                                // continu i src_consumed creix sense parar: plega'l al
+                                // tram perquè el playhead torni a l'inici visualment.
+                                let mut consumed = s.src_consumed;
+                                if s.loop_on && s.stop_secs > 0.0 && s.file_rate > 0 {
+                                    let seg = (((s.stop_secs - s.start_secs).max(0.0)) * s.file_rate as f64) as usize;
+                                    if seg > 0 { consumed %= seg; }
+                                }
+                                TelemetryItem {
+                                    id: s.voice_id,
+                                    pos: if s.file_rate > 0 { consumed as f32 / s.file_rate as f32 } else { 0.0 },
+                                    level: s.meter,
+                                }
                             }));
                         }
                         v
@@ -1366,7 +1375,10 @@ fn asio_play_voice_impl(
     // ── Camí STREAMING (pistes llargues): decode-ahead, sense carregar tot a RAM.
     if streaming {
         let start_secs = start_point.max(0.0) as f64;
-        let handle = asio_stream::spawn_stream(file_path.to_string(), start_secs);
+        let stop_secs = if stop_point > 0.0 { stop_point as f64 } else { 0.0 };
+        // Si fa loop, el fil descodificador fa el loop del tram (flux continu,
+        // gapless); el callback no l'ha de gestionar.
+        let handle = asio_stream::spawn_stream(file_path.to_string(), start_secs, stop_secs, loop_on);
         let fade_in_len = (fade_in.max(0.0) * sample_rate as f32) as usize;
         let sv = StreamVoice {
             voice_id,
