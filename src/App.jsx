@@ -189,6 +189,10 @@ export default function App() {
 
       if (e.altKey || e.metaKey || typing) return;
 
+      // Canvi de vista global: 9 = CUES (grid) · 0 = Playlist (list).
+      if (e.key === '9') { e.preventDefault(); store.setViewMode('grid'); return; }
+      if (e.key === '0') { e.preventDefault(); store.setViewMode('list'); return; }
+
       // Mode llista (Playlist): fletxes mouen la selecció, Enter reprodueix,
       // espai play/pausa. No s'apliquen les tecles de cues.
       if (store.viewMode === 'list') {
@@ -214,6 +218,17 @@ export default function App() {
       if (e.key === ' ')      { e.preventDefault(); store.go(); return; }
       if (e.key === 'Enter')  { e.preventDefault(); store.stopSlot(store.selectedSlot, true); return; }
       if (e.key === 'Escape') { e.preventDefault(); store.stopAll(); return; }
+
+      // P = pausa/reprèn el cue seleccionat (només si sona o està en pausa; no
+      // engega un cue aturat, que és feina del GO / la seva tecla).
+      if (e.key === 'p' || e.key === 'P') {
+        const sel = store.slots.find((s) => s.id === store.selectedSlot);
+        if (sel && (sel.isPlaying || sel.pausedAt != null)) {
+          e.preventDefault();
+          store.togglePlayPause(store.selectedSlot);
+        }
+        return;
+      }
 
       // Tecla de slot → play (re-dispara des de l'inici), a la pàgina activa
       const local = slotForKey(e.key);
