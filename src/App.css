@@ -44,6 +44,7 @@ body {
 /* ─── HEADER ─── */
 
 .app-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -69,6 +70,10 @@ body {
 /* ─── MODE TOGGLE ─── */
 
 .mode-toggle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   gap: 2px;
   background: var(--bg-button);
@@ -271,25 +276,41 @@ body {
 }
 
 .cue-now {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
+  flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
 }
+
+/* Cada camp (Preview/Next/Playing): es reparteixen l'espai a parts iguals
+   i no es mouen encara que no hi hagi cap nom populat. */
+.cue-now-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  background: var(--bg-primary);
+}
+
+.cue-now-field.preview { border-left-color: var(--vu-red); }
+.cue-now-field.next    { border-left-color: var(--vu-green); }
+.cue-now-field.playing { border-left-color: var(--text-secondary); }
 
 .cue-now-label {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   color: var(--text-secondary);
-  flex-shrink: 0;
 }
 
-/* Etiqueta del cue en espera (standby): verd, coherent amb el badge NEXT */
-.cue-now-label.standby {
-  color: var(--vu-green);
-}
+.cue-now-field.preview .cue-now-label { color: var(--vu-red); }
+.cue-now-field.next    .cue-now-label { color: var(--vu-green); }
 
 .cue-now-name {
   font-size: 13px;
@@ -305,12 +326,16 @@ body {
 .playlist {
   width: 100%;
   max-width: 900px;
+  align-self: stretch;        /* ocupa tota l'alçada del main */
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
 .pl-toolbar {
+  flex-shrink: 0;             /* transport fix: no s'encongeix ni fa scroll */
   display: flex;
   align-items: center;
   gap: 10px;
@@ -402,6 +427,7 @@ body {
 
 /* Now playing */
 .pl-now {
+  flex-shrink: 0;            /* també fix: només la llista fa scroll */
   background: var(--bg-button);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -445,8 +471,10 @@ body {
   background: var(--accent);
 }
 
-/* Llista de pistes */
+/* Llista de pistes (únic element amb scroll) */
 .pl-list {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1002,6 +1030,38 @@ body {
 
 .slot-playing .slot-time {
   color: var(--accent);
+}
+
+/* Badges d'opcions a la cantonada inferior esquerra del tile */
+.slot-badges {
+  position: absolute;
+  left: 5px;
+  bottom: 22px;            /* just per sobre del slider de volum */
+  z-index: 2;
+  display: flex;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.slot-badge {
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  color: #fff;
+  background: rgba(113, 113, 122, 0.85);
+  border-radius: 2px;
+  padding: 0 3px;
+}
+
+.slot-badge.so   { background: var(--vu-yellow); color: var(--bg-primary); }
+.slot-badge.ac   { background: var(--accent); }
+.slot-badge.duck { background: #a855f7; }
+.slot-badge.stop { background: var(--vu-red); }
+
+/* A la vista de llista el volum és a la dreta: ancora els badges a baix-esquerra */
+.list .slot-badges {
+  bottom: 5px;
 }
 
 /* Etiqueta dels cues llargs reproduïts en streaming */
@@ -1616,14 +1676,8 @@ body {
 
 .editor-fades {
   display: flex;
-  gap: 24px;
-  min-height: 38px;
-}
-
-.editor-fades-note {
-  font-size: 12px;
-  color: var(--text-secondary);
-  align-self: center;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .editor-fades label {
@@ -1908,19 +1962,6 @@ body {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-}
-
-/* Selector de monitor de sortida (capçalera) */
-.monitor-select {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-button);
-  color: var(--text-primary);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
 }
 
 .library-panel {

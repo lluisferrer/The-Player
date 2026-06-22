@@ -181,6 +181,9 @@ export const useSoundStore = create((set, get) => ({
   previewVoiceId: PREVIEW_VOICE_ID, // id de la veu ASIO del preview actual (rotatiu)
   previewStartedAt: 0,     // instant (previewCtx) en què va començar el preview
   colorOutputs: savedGlobals.colorOutputs || {}, // { color: deviceId } routing per grup
+  // Monitor predeterminat de la finestra de sortida de vídeo, identificat per NOM
+  // (m.name d'availableMonitors). null = auto (primer monitor no principal).
+  videoMonitorName: savedGlobals.videoMonitorName ?? null,
 
   // ── Playlist (VLC) ──
   playlist: Array.isArray(savedPlaylist.tracks) ? savedPlaylist.tracks : [],
@@ -206,14 +209,21 @@ export const useSoundStore = create((set, get) => ({
   persistGlobals: () => {
     const {
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName,
     }));
+  },
+
+  // Monitor predeterminat de la finestra de sortida de vídeo (per nom; null = auto).
+  // Es desa als globals i s'aplica la pròxima vegada que s'obri la finestra.
+  setVideoMonitorName: (name) => {
+    set({ videoMonitorName: name || null });
+    get().persistGlobals();
   },
 
   // Marca/desmarca un dispositiu WASAPI com a "Usar" (curació del pool de Routing).

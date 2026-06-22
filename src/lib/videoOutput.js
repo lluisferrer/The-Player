@@ -25,17 +25,21 @@ export async function isOutputOpen() {
 }
 
 // Obre la finestra de sortida. Si hi ha un 2n monitor (o se n'indica un per
-// índex), la posiciona allà a pantalla completa; si no, l'obre com a finestra
+// nom), la posiciona allà a pantalla completa; si no, l'obre com a finestra
 // normal (útil en dev amb un sol monitor). No duplica: si ja existeix, la
 // mostra i l'enfoca.
-export async function openOutputWindow(monitorIndex = null) {
+//
+// monitorName: nom del monitor de destí (m.name d'availableMonitors). Si és
+// null o no es troba (p. ex. pantalla desconnectada), cau al mode auto: el
+// primer monitor que no sigui el principal.
+export async function openOutputWindow(monitorName = null) {
   const existing = await getOutputWindow();
   if (existing) {
     try { await existing.show(); await existing.setFocus(); } catch { /* res */ }
     return existing;
   }
 
-  // Tria el monitor de destí: l'indicat, si no el primer que no sigui el principal
+  // Tria el monitor de destí: el de nom indicat, si no el primer que no sigui el principal
   let monitors = [];
   let primary = null;
   try {
@@ -44,12 +48,15 @@ export async function openOutputWindow(monitorIndex = null) {
   } catch { /* sense API de monitors: obrirà finestra normal */ }
 
   let target = null;
-  if (monitorIndex != null && monitors[monitorIndex]) {
-    target = monitors[monitorIndex];
-  } else if (primary) {
-    target = monitors.find((m) => m.name !== primary.name) || null;
-  } else if (monitors.length > 1) {
-    target = monitors[1];
+  if (monitorName) {
+    target = monitors.find((m) => m.name === monitorName) || null;
+  }
+  if (!target) {
+    if (primary) {
+      target = monitors.find((m) => m.name !== primary.name) || null;
+    } else if (monitors.length > 1) {
+      target = monitors[1];
+    }
   }
 
   const opts = {
@@ -99,9 +106,9 @@ export async function closeOutputWindow() {
 }
 
 // Obre/tanca segons l'estat actual
-export async function toggleOutputWindow(monitorIndex = null) {
+export async function toggleOutputWindow(monitorName = null) {
   if (await isOutputOpen()) { await closeOutputWindow(); return false; }
-  await openOutputWindow(monitorIndex);
+  await openOutputWindow(monitorName);
   return true;
 }
 

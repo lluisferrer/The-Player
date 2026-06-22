@@ -12,7 +12,6 @@ import { SettingsModal } from './components/SettingsModal';
 import { slotForKey } from './lib/keyMap';
 import { hasClip } from './lib/slotAudio';
 import { toggleOutputWindow, isOutputOpen, getOutputWindow } from './lib/videoOutput';
-import { availableMonitors } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { applyAsioTelemetry } from './lib/asioTelemetry';
 import { plaOnVoiceEnded } from './lib/playlistAsio';
@@ -40,8 +39,6 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showSave, setShowSave] = useState(false);
   const [outputOpen, setOutputOpen] = useState(false); // estat de la finestra de sortida
-  const [monitors, setMonitors] = useState([]);        // monitors disponibles (per al selector)
-  const [monitorIdx, setMonitorIdx] = useState(null);  // monitor de destí escollit (null = auto)
 
   useEffect(() => {
     const loadDevices = async () => {
@@ -63,19 +60,18 @@ export default function App() {
   // Aplica el gain mestre ASIO desat al motor natiu en arrencar.
   useEffect(() => { useSoundStore.getState().initAsioMaster(); }, []);
 
-  // Monitors disponibles (per al selector de la finestra de sortida) i estat
-  // inicial de la finestra output (per si ja estigués oberta).
+  // Estat inicial de la finestra output (per si ja estigués oberta).
   useEffect(() => {
     (async () => {
-      try { setMonitors(await availableMonitors()); } catch { /* sense API de monitors */ }
       try { setOutputOpen(await isOutputOpen()); } catch { /* res */ }
     })();
   }, []);
 
-  // Obre/tanca la finestra de sortida de vídeo i en sincronitza l'estat del botó
+  // Obre/tanca la finestra de sortida de vídeo i en sincronitza l'estat del botó.
+  // El monitor de destí és la preferència desada a Settings (per nom; null = auto).
   const handleToggleOutput = async () => {
     try {
-      const open = await toggleOutputWindow(monitorIdx);
+      const open = await toggleOutputWindow(useSoundStore.getState().videoMonitorName);
       setOutputOpen(open);
       // Si s'ha tancat (o l'usuari la tanca des de la pròpia finestra),
       // reflecteix-ho i reseteja els cues de vídeo que quedessin marcats
@@ -286,36 +282,23 @@ export default function App() {
       <header className="app-header">
         <h1 className="app-title">THE PLAYER</h1>
 
-        <div className="header-controls">
-          <div className="mode-toggle">
-            <button
-              className={`mode-btn ${viewMode === 'grid' ? 'active' : ''}`}
-              onClick={() => setViewMode('grid')}
-            >
-              CUES
-            </button>
-            <button
-              className={`mode-btn ${viewMode === 'list' ? 'active' : ''}`}
-              onClick={() => setViewMode('list')}
-            >
-              PLAYLIST
-            </button>
-          </div>
+        {/* Commutador de vista centrat a la capçalera */}
+        <div className="mode-toggle">
+          <button
+            className={`mode-btn ${viewMode === 'grid' ? 'active' : ''}`}
+            onClick={() => setViewMode('grid')}
+          >
+            CUES
+          </button>
+          <button
+            className={`mode-btn ${viewMode === 'list' ? 'active' : ''}`}
+            onClick={() => setViewMode('list')}
+          >
+            PLAYLIST
+          </button>
+        </div>
 
-          {/* Selector de monitor de destí (només si n'hi ha més d'un) */}
-          {monitors.length > 1 && (
-            <select
-              className="monitor-select"
-              value={monitorIdx == null ? 'auto' : String(monitorIdx)}
-              onChange={(e) => setMonitorIdx(e.target.value === 'auto' ? null : Number(e.target.value))}
-              title="Monitor de sortida de vídeo"
-            >
-              <option value="auto">Monitor auto</option>
-              {monitors.map((m, i) => (
-                <option key={i} value={i}>{m.name || `Monitor ${i + 1}`}</option>
-              ))}
-            </select>
-          )}
+        <div className="header-controls">
           <button
             className={`library-btn ${outputOpen ? 'active' : ''}`}
             onClick={handleToggleOutput}

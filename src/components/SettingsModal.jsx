@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { availableMonitors } from '@tauri-apps/api/window';
 import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
@@ -160,6 +161,9 @@ export function SettingsModal({ onClose }) {
   const crossfade = useSoundStore((s) => s.crossfade);
   const setCrossfade = useSoundStore((s) => s.setCrossfade);
 
+  const videoMonitorName = useSoundStore((s) => s.videoMonitorName);
+  const setVideoMonitorName = useSoundStore((s) => s.setVideoMonitorName);
+
   const duckEnabled = useSoundStore((s) => s.duckEnabled);
   const duckAmount  = useSoundStore((s) => s.duckAmount);
   const duckAttack  = useSoundStore((s) => s.duckAttack);
@@ -168,6 +172,7 @@ export function SettingsModal({ onClose }) {
   const setDuckSettings = useSoundStore((s) => s.setDuckSettings);
 
   const [outputs, setOutputs] = useState(null);
+  const [monitors, setMonitors] = useState([]);  // monitors del sistema (sortida de vídeo)
   const [diagError, setDiagError] = useState(null);
   const [asioOut, setAsioOut] = useState(null);   // dispositius ASIO detectats
   const [asioMsg, setAsioMsg] = useState(null);   // estat/error de la detecció ASIO
@@ -182,6 +187,15 @@ export function SettingsModal({ onClose }) {
 
   // En obrir el modal, refresca quin driver ASIO hi ha carregat ara.
   useEffect(() => { refreshAsioLoaded(); }, [refreshAsioLoaded]);
+
+  // En obrir la pestanya General, llegeix els monitors disponibles (per al
+  // selector de la sortida de vídeo).
+  useEffect(() => {
+    if (tab !== 'general') return;
+    (async () => {
+      try { setMonitors(await availableMonitors()); } catch { /* sense API de monitors */ }
+    })();
+  }, [tab]);
 
   useEffect(() => {
     if (tab !== 'dispositius' || outputs) return;
@@ -438,6 +452,33 @@ export function SettingsModal({ onClose }) {
                 </span>
               </label>
               <div className="settings-note">Cada cue pot definir el seu fade des de l'editor (✎); si és 0, usa el global.</div>
+
+              <div className="settings-subtitle">Sortida de vídeo</div>
+              <div className="settings-row">
+                <label htmlFor="video-monitor">Monitor</label>
+                <select
+                  id="video-monitor"
+                  value={videoMonitorName == null ? 'auto' : videoMonitorName}
+                  onChange={(e) => setVideoMonitorName(e.target.value === 'auto' ? null : e.target.value)}
+                >
+                  <option value="auto">Auto (2n monitor)</option>
+                  {monitors.map((m, i) => (
+                    <option key={m.name || i} value={m.name || ''}>
+                      {m.name || `Monitor ${i + 1}`}
+                      {m.size ? ` · ${Math.round(m.size.width / m.scaleFactor)}×${Math.round(m.size.height / m.scaleFactor)}` : ''}
+                    </option>
+                  ))}
+                  {/* Opció fantasma: el monitor desat no està connectat ara */}
+                  {videoMonitorName && !monitors.some((m) => m.name === videoMonitorName) && (
+                    <option value={videoMonitorName}>{videoMonitorName} (no connectat)</option>
+                  )}
+                </select>
+              </div>
+              <div className="settings-note">
+                Pantalla on s'obre la finestra de sortida de vídeo (botó VÍDEO), a pantalla
+                completa. <b>Auto</b> tria el primer monitor que no sigui el principal. El canvi
+                s'aplica la pròxima vegada que obris la sortida.
+              </div>
             </>
           )}
 

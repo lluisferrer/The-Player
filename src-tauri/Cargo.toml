@@ -20,12 +20,12 @@ crate-type = ["rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-# ASIO està DESACTIVAT per defecte: requereix l'ASIO SDK de Steinberg + LLVM/clang
-# i el toolchain MSVC (no funciona amb GNU/MinGW). El build normal segueix igual.
-# Quan l'entorn de la Fase 0 estigui a punt, compila amb:
-#   npm run tauri dev -- --features asio
-# (o `cargo build --features asio` dins de src-tauri).
+# ASIO és la feature PER DEFECTE: el motor natiu ASIO ja és funcional i forma part
+# del producte. Requereix l'ASIO SDK de Steinberg + LLVM/clang i el toolchain MSVC
+# (no funciona amb GNU/MinGW). `npm run tauri dev` i `cargo build` ja la inclouen.
+# Per a un build sense ASIO (p. ex. depurar sense l'SDK), passa --no-default-features.
 [features]
+default = ["asio"]
 asio = ["cpal/asio", "dep:asio-sys", "dep:symphonia"]
 
 # Optimitza les DEPENDÈNCIES també en build de debug (el nostre codi segueix sense

@@ -598,7 +598,6 @@ export function SlotEditor() {
               />
             </div>
           </label>
-          <div className="editor-fades-note">Per defecte segueix el fade global (Settings → Cues); mou el slider per fixar-ne un de propi (fins i tot <b>0</b> s).</div>
         </div>
 
         <div className="editor-actions">

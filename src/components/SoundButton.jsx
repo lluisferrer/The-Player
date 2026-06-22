@@ -270,6 +270,17 @@ export function SoundButton({ slotId }) {
       {/* Indicador de standby: cue que es dispararà amb el proper GO */}
       {isSelected && hasAudio && <span className="slot-standby-badge">NEXT</span>}
 
+      {/* Badges d'opcions (cantonada inferior esquerra):
+          SO = stop others · AC = auto-continue · D = ducking · S = stop playlist */}
+      {hasAudio && (slot.stopOthers || slot.continueMode === 'auto' || slot.duck || slot.stopPlaylist) && (
+        <div className="slot-badges">
+          {slot.stopOthers && <span className="slot-badge so" title="Stop others">SO</span>}
+          {slot.continueMode === 'auto' && <span className="slot-badge ac" title="Auto-continue">AC</span>}
+          {slot.duck && <span className="slot-badge duck" title="Ducking de la playlist">D</span>}
+          {slot.stopPlaylist && <span className="slot-badge stop" title="Atura la playlist">S</span>}
+        </div>
+      )}
+
       {slot.loading && (
         <div className="slot-loading"><span className="slot-spinner" /></div>
       )}

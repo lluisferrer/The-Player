@@ -74,8 +74,11 @@ ASIO via `cpal` a Windows **no funciona amb el toolchain GNU/MinGW** actual. Cal
 
 ### Verificació de la Fase 0
 ```powershell
-npm run tauri dev -- --features asio
+npm run tauri dev
 ```
+> ASIO ja és la feature **per defecte** (`default = ["asio"]` a `Cargo.toml`), així
+> que `tauri dev` / `cargo build` la inclouen sense passar res. Per a un build sense
+> ASIO (depurar sense l'SDK), usa `--no-default-features`.
 - Ha d'arrencar sense errors de build.
 - `list_audio_outputs` ha de veure els dispositius ASIO (vegeu Fase A: marcar el backend).
 - `play_test_tone` ha de sonar pel canal indicat d'una interfície ASIO.
@@ -120,5 +123,6 @@ El diagnòstic existent (`list_audio_outputs`, `play_test_tone` a `src-tauri/src
 - [ ] Fase C — pont de control + telemetria
 - [ ] Fase D — paritat i retirada de Web Audio
 
-> `Cargo.toml` ja té la feature opt-in `asio = ["cpal/asio"]`. El build per defecte
-> (GNU o MSVC sense la feature) no es veu afectat fins que s'activi `--features asio`.
+> `Cargo.toml` té `default = ["asio"]`: el motor ASIO és part del producte i tots els
+> builds normals (MSVC) l'inclouen. Per a un build sense ASIO cal `--no-default-features`
+> (i el toolchain ha de ser MSVC; GNU/MinGW no compila amb ASIO).

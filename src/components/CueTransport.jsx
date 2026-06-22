@@ -4,22 +4,21 @@ import { emitVideoBlack } from '../lib/videoOutput';
 
 // Barra de transport per als cues (sobre la botonera)
 export function CueTransport() {
-  const selectedSlot = useSoundStore((s) => s.selectedSlot);
-  const activeSlot   = useSoundStore((s) => s.activeSlot);
-  const slots        = useSoundStore((s) => s.slots);
+  const selectedSlot   = useSoundStore((s) => s.selectedSlot);
+  const activeSlot     = useSoundStore((s) => s.activeSlot);
+  const previewingSlot = useSoundStore((s) => s.previewingSlot);
+  const slots          = useSoundStore((s) => s.slots);
 
   const { selectStep, go, stopSlot, stopAll } = useSoundStore.getState();
 
-  const active = slots.find((s) => s.id === activeSlot);
-  const playingName = active && active.label
-    ? active.label.replace(/\.[^/.]+$/, '')
-    : '—';
+  const nameOf = (id) => {
+    const s = slots.find((x) => x.id === id);
+    return s && s.label ? s.label.replace(/\.[^/.]+$/, '') : '';
+  };
 
-  // Cue en espera (standby): el que es dispararà amb el proper GO
-  const standby = slots.find((s) => s.id === selectedSlot);
-  const standbyName = standby && standby.label
-    ? standby.label.replace(/\.[^/.]+$/, '')
-    : '—';
+  const previewName = nameOf(previewingSlot); // cue al bus de preview
+  const standbyName = nameOf(selectedSlot);   // cue que dispararà el proper GO
+  const playingName = nameOf(activeSlot);      // cue que sona ara
 
   return (
     <div className="cue-transport">
@@ -38,11 +37,21 @@ export function CueTransport() {
         </button>
       </div>
 
+      {/* Tres camps fixos: Preview (vermell) · Next (verd) · Playing (gris).
+          Mantenen la posició encara que no hi hagi cap nom populat. */}
       <div className="cue-now">
-        <span className="cue-now-label standby">EN ESPERA</span>
-        <span className="cue-now-name">{standbyName}</span>
-        <span className="cue-now-label">SONANT</span>
-        <span className="cue-now-name">{playingName}</span>
+        <div className="cue-now-field preview">
+          <span className="cue-now-label">PREVIEW</span>
+          <span className="cue-now-name">{previewName || '—'}</span>
+        </div>
+        <div className="cue-now-field next">
+          <span className="cue-now-label">NEXT</span>
+          <span className="cue-now-name">{standbyName || '—'}</span>
+        </div>
+        <div className="cue-now-field playing">
+          <span className="cue-now-label">PLAYING</span>
+          <span className="cue-now-name">{playingName || '—'}</span>
+        </div>
       </div>
     </div>
   );

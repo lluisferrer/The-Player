@@ -44,6 +44,14 @@ struct AsioLoadedInfo {
     sample_rate: u32,
 }
 
+// Stub sense la feature `asio`: la firma d'asio_loaded_info referencia aquest
+// tipus sempre (els tipus de retorn es compilen independentment del cfg del cos),
+// així que en builds --no-default-features ha d'existir igualment. Mai s'instancia
+// (la branca not(asio) retorna Ok(None)).
+#[cfg(not(feature = "asio"))]
+#[derive(Serialize, Clone)]
+struct AsioLoadedInfo;
+
 // Recull els dispositius de sortida d'un host concret i els afegeix a `out`,
 // etiquetats amb el nom del backend (host_label). No falla si el host no en té.
 fn collect_outputs(host: &cpal::Host, host_label: &str, out: &mut Vec<AudioOutput>) {
