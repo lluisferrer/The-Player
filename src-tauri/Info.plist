@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Justificació del prompt de micròfon: cal per enumerar dispositius d'àudio
+       amb etiquetes (navigator.mediaDevices.getUserMedia a App.jsx). -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>ezyPlayer necessita accés als dispositius d'àudio per llistar les sortides de so disponibles.</string>
+</dict>
+</plist>

@@ -11,6 +11,12 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // Compila amb sintaxi compatible amb WebKit antic (macOS Mojave / Safari 13).
+  // No afecta WebView2 a Windows (és un superconjunt). Només transforma sintaxi,
+  // no afegeix polyfills d'APIs runtime.
+  build: {
+    target: ["safari13", "chrome105"],
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

@@ -1,0 +1,65 @@
+name: Build
+
+# Compila ezyPlayer per a Windows i macOS i puja els instal·ladors com a
+# artefactes. Sense signatura (per a testeig): a macOS cal obrir l'app amb
+# botó dret -> Obrir la primera vegada (Gatekeeper).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+          - platform: windows-latest
+            args: ""
+            rust-targets: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configura Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Configura Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Cache de Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Instal·la dependències del frontend
+        run: npm ci
+
+      - name: Build amb Tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Perquè el binari arrenqui en macOS Mojave (10.14) i posteriors.
+          MACOSX_DEPLOYMENT_TARGET: "10.14"
+        with:
+          args: ${{ matrix.args }}
+
+      - name: Puja els instal·ladors
+        uses: actions/upload-artifact@v4
+        with:
+          name: ezyplayer-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
