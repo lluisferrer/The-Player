@@ -2087,14 +2087,19 @@ fn asio_release() -> Result<(), String> {
 
 // ── Comandes del motor NATIU (cpal) ──────────────────────────────────────────
 //
-// Increment 1 del motor unificat: disparar UNA veu pel dispositiu de sortida per
-// defecte (WASAPI/CoreAudio) amb gain i fades. Disponible amb la feature `native`
-// (i, per tant, també amb `asio`). Sense `native` retornen un error explicatiu.
+// Increment 2 del motor unificat: MULTI-VEU pel dispositiu de sortida per defecte
+// (WASAPI/CoreAudio). Diverses veus alhora (cada una amb el seu `voice_id`), amb
+// control per veu (stop amb fade, gain, seek, pausa) i telemetria + notificació de
+// final cap a la UI (events `native-telemetry` i `native-voice-ended`). Disponible
+// amb la feature `native` (i, per tant, també amb `asio`). Sense `native` retornen
+// un error explicatiu.
 
 // Reprodueix un cue (fitxer en memòria) pel dispositiu de sortida per defecte via
-// cpal, amb gain i fades. La veu s'acaba sola.
+// cpal, amb gain i fades. La veu (identificada per `voice_id`) sona junt amb les
+// altres i s'acaba sola; substitueix una veu del mateix id si ja existia.
 #[tauri::command]
 fn native_play_cue(
+    voice_id: u64,
     file_path: String,
     gain: f32,
     fade_in: f32,
@@ -2103,16 +2108,72 @@ fn native_play_cue(
 ) -> Result<(), String> {
     #[cfg(not(feature = "native"))]
     {
-        let _ = (file_path, gain, fade_in, fade_out, channels);
+        let _ = (voice_id, file_path, gain, fade_in, fade_out, channels);
         Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
     }
     #[cfg(feature = "native")]
     {
-        native_output::play_cue(file_path, gain, fade_in, fade_out, channels)
+        native_output::play_cue(voice_id, file_path, gain, fade_in, fade_out, channels)
     }
 }
 
-// Atura la reproducció del motor natiu (totes les veus actives, de moment).
+// Atura una veu nativa pel seu id, amb fade-out opcional (segons).
+#[tauri::command]
+fn native_stop_voice(voice_id: u64, fade_out: f32) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = (voice_id, fade_out);
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::stop_voice(voice_id, fade_out)
+    }
+}
+
+// Canvia el volum (gain lineal) d'una veu nativa activa en calent.
+#[tauri::command]
+fn native_set_gain(voice_id: u64, gain: f32) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = (voice_id, gain);
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::set_gain(voice_id, gain)
+    }
+}
+
+// Reposiciona el playhead d'una veu nativa activa (segons dins el segment).
+#[tauri::command]
+fn native_seek(voice_id: u64, position: f32) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = (voice_id, position);
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::seek(voice_id, position)
+    }
+}
+
+// Pausa o reprèn una veu nativa activa (congela la posició, sense aturar-la).
+#[tauri::command]
+fn native_set_paused(voice_id: u64, paused: bool) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = (voice_id, paused);
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::set_paused(voice_id, paused)
+    }
+}
+
+// Atura la reproducció del motor natiu (totes les veus actives). Parada global.
 #[tauri::command]
 fn native_stop() -> Result<(), String> {
     #[cfg(not(feature = "native"))]
@@ -2140,6 +2201,10 @@ pub fn run() {
             // Fil notificador de finals de veu ASIO → events Tauri cap a la UI.
             #[cfg(feature = "asio")]
             asio_start_notifier(app.handle().clone());
+            // Fils notificador + telemetria del motor natiu cpal → events Tauri
+            // (`native-voice-ended` i `native-telemetry`) cap a la UI.
+            #[cfg(feature = "native")]
+            native_output::start_notifier(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2159,6 +2224,10 @@ pub fn run() {
             asio_load,
             asio_release,
             native_play_cue,
+            native_stop_voice,
+            native_set_gain,
+            native_seek,
+            native_set_paused,
             native_stop
         ])
         .run(tauri::generate_context!())

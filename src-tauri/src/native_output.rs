@@ -1,22 +1,30 @@
 // Backend de sortida d'àudio NATIU MULTIPLATAFORMA basat en cpal (host per
-// defecte: WASAPI a Windows, CoreAudio a Mac). És el primer increment del motor
-// natiu unificat: dispara UNA veu (cue en memòria) pel dispositiu de sortida per
-// defecte, amb gain i fades, i la veu s'acaba sola.
+// defecte: WASAPI a Windows, CoreAudio a Mac). És el motor natiu unificat que ha
+// de portar la paritat PC/Mac sense dependre d'ASIO.
+//
+// INCREMENT 2: multi-veu amb control per veu i telemetria. Diverses veus poden
+// sonar alhora (cada una amb el seu `voice_id`); es poden aturar amb fade,
+// canviar el gain, fer seek i pausar individualment; i el motor emet events a la
+// UI (final natural d'una veu i telemetria de playhead + nivell).
 //
 // Reutilitza EL MATEIX nucli de veus que el motor ASIO:
 //   · `Voice`           — estat d'una reproducció (PCM + paràmetres).
 //   · `asio_mix_voice`  — avança i mescla la veu als acumuladors de sortida.
 //   · `asio_soft_clip`  — saturació suau abans d'escriure al buffer.
 //   · `asio_decode`     — descodificació + resampling a la freqüència del device.
+// La mescla, els fades, el release, la pausa i el meter ja són al nucli: aquí NO
+// es reimplementa res d'això; només es construeixen i es controlen les `Voice`.
 //
-// Disciplina de temps real al callback: cap `alloc`, cap IO, cap descodificació.
-// Només locks CURTS (la llista de veus), com fa el callback ASIO. La descodificació
-// es fa FORA del callback (al fil de la comanda) i el PCM ja arriba resamplejat.
+// Disciplina de temps real al callback: cap `alloc`, cap IO, cap descodificació,
+// cap emissió d'events. Només locks CURTS (la llista de veus i els acumuladors) i,
+// quan una veu acaba sola, un `send` barat per un canal mpsc cap a un fil
+// notificador (NO cada bloc). La descodificació es fa FORA del callback (al fil de
+// la comanda) i el PCM ja arriba resamplejat.
 //
 // Limitacions conscients d'aquest increment (queden per a increments POSTERIORS):
-//   · Una sola veu activa (no hi ha id ni cua de veus encara — `native_stop` les
-//     buida totes). Multicanal real, routing per canal, streaming, telemetria i
-//     la integració amb la UI vénen després.
+//   · No hi ha streaming (decode-ahead) per a pistes llargues: tot el PCM es
+//     carrega a memòria. El routing multicanal real per canal + la selecció de
+//     dispositiu i la integració amb la UI React vénen després.
 //   · El WebView només dóna estèreo; aquest motor natiu és la via cap a multicanal
 //     de debò, però aquí encara fem servir el dispositiu de sortida per defecte tal
 //     com cpal el reporta (sovint 2 canals).
@@ -56,8 +64,11 @@ struct NativeBackend {
 
 // Ordres que el fil natiu sap atendre.
 enum NativeCmd {
-    // Descodifica `file_path` i registra una veu que el callback reprodueix.
+    // Descodifica `file_path` i registra una veu amb id `voice_id` que el callback
+    // reprodueix. NO buida les altres veus (poden sonar-ne diverses alhora);
+    // substitueix una veu del mateix id si ja existeix.
     PlayCue {
+        voice_id: u64,
         file_path: String,
         gain: f32,
         fade_in: f32,
@@ -65,7 +76,32 @@ enum NativeCmd {
         channels: Vec<u16>,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
-    // Atura TOTES les veus actives (aquest increment encara no porta ids).
+    // Atura una veu pel seu id, amb fade-out opcional (segons). Amb fade 0
+    // l'elimina a l'instant; amb fade > 0 n'inicia la rampa de release.
+    StopVoice {
+        voice_id: u64,
+        fade_out: f32,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Canvia el gain (volum lineal) d'una veu activa en calent.
+    SetGain {
+        voice_id: u64,
+        gain: f32,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Reposiciona el playhead d'una veu activa (segons dins el segment).
+    Seek {
+        voice_id: u64,
+        position: f32,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Pausa o reprèn una veu activa (congela la posició, sense aturar-la).
+    SetPaused {
+        voice_id: u64,
+        paused: bool,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Atura TOTES les veus actives (parada global d'emergència).
     Stop {
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
@@ -86,6 +122,112 @@ fn native_sender() -> &'static std::sync::mpsc::Sender<NativeCmd> {
     })
 }
 
+// ── Notificació de final de veu (callback RT → fil notificador → event Tauri) ──
+//
+// Canal pel qual el callback RT avisa (sense bloquejar) que una veu ha acabat de
+// forma natural (final del segment o release acabat). Un fil notificador amb
+// l'`AppHandle` rep l'id i emet l'event `native-voice-ended` a la UI. El callback
+// NO pot emetre events ni bloquejar; només fa un `send` barat (només en acabar una
+// veu, no cada bloc). El fil notificador s'arrenca a `run()` via
+// `native_start_notifier`.
+static NATIVE_ENDED_TX: OnceLock<std::sync::mpsc::Sender<u64>> = OnceLock::new();
+
+// Notifica (sense bloquejar) que una veu ha acabat de forma natural. Si encara no
+// hi ha fil notificador, l'avís simplement es descarta (no és crític).
+fn native_notify_ended(voice_id: u64) {
+    if let Some(tx) = NATIVE_ENDED_TX.get() {
+        let _ = tx.send(voice_id);
+    }
+}
+
+// ── Estat compartit per al fil de telemetria ─────────────────────────────────
+//
+// El fil de telemetria mostreja la llista de veus activa (la mateixa que el
+// callback) i la freqüència del device per convertir frames a segons. S'estableix
+// quan s'obre el backend. Anàleg a `AsioMeterShared`/`ASIO_METER` del motor ASIO.
+struct NativeMeterShared {
+    voices: Arc<Mutex<Vec<Voice>>>,
+    sample_rate: u32,
+}
+
+static NATIVE_METER: OnceLock<Mutex<Option<NativeMeterShared>>> = OnceLock::new();
+
+// Accés mandrós a l'slot compartit de telemetria.
+fn native_meter_slot() -> &'static Mutex<Option<NativeMeterShared>> {
+    NATIVE_METER.get_or_init(|| Mutex::new(None))
+}
+
+// Un ítem de telemetria per veu activa: id de la veu, posició dins el segment
+// (segons) i nivell (pic d'amplitud lineal 0..1). S'emet en bloc cada ~33 ms.
+#[derive(serde::Serialize)]
+struct NativeTelemetryItem {
+    id: u64,
+    pos: f32,
+    level: f32,
+}
+
+// Arrenca els fils auxiliars que reenvien estat del motor natiu a la UI:
+//   · `native-notifier`  → final natural de veu (event `native-voice-ended`).
+//   · `native-telemetry` → playhead + nivell de cada veu (event `native-telemetry`),
+//     mostrejat a ~30 Hz (NO des del callback RT: aquest només deixa el pic a
+//     `voice.meter` i la posició a `voice.pos`).
+// Es crida un sol cop a `run()` amb l'AppHandle. Idempotent (via NATIVE_ENDED_TX).
+pub fn start_notifier(app: tauri::AppHandle) {
+    use tauri::Emitter;
+    let (tx, rx) = std::sync::mpsc::channel::<u64>();
+    if NATIVE_ENDED_TX.set(tx).is_err() {
+        return; // ja arrencat
+    }
+
+    // Fil notificador de finals de veu.
+    let app_ended = app.clone();
+    std::thread::Builder::new()
+        .name("native-notifier".into())
+        .spawn(move || {
+            while let Ok(voice_id) = rx.recv() {
+                let _ = app_ended.emit("native-voice-ended", voice_id);
+            }
+        })
+        .ok();
+
+    // Fil de telemetria (playhead + VU) a ~30 Hz.
+    std::thread::Builder::new()
+        .name("native-telemetry".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(33));
+            // Snapshot curt sota lock: id, posició (s) i nivell de cada veu activa.
+            let items: Vec<NativeTelemetryItem> = {
+                let guard = match native_meter_slot().lock() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                match guard.as_ref() {
+                    Some(sh) => {
+                        let rate = sh.sample_rate.max(1) as f32;
+                        match sh.voices.lock() {
+                            Ok(vs) => vs
+                                .iter()
+                                .filter(|v| !v.finished)
+                                .map(|v| NativeTelemetryItem {
+                                    id: v.voice_id,
+                                    pos: v.seg_pos() as f32 / rate,
+                                    level: v.meter,
+                                })
+                                .collect(),
+                            Err(_) => continue,
+                        }
+                    }
+                    None => Vec::new(),
+                }
+            };
+            // Només emetem si hi ha veus (la UI esborra per caducitat si calla).
+            if !items.is_empty() {
+                let _ = app.emit("native-telemetry", &items);
+            }
+        })
+        .ok();
+}
+
 // Bucle del fil natiu: rep ordres i les atén una a una, mantenint el backend
 // (stream + veus) viu entre cues. Aïllem cada ordre amb `catch_unwind` perquè un
 // error d'un device dolent no mati el fil ni deixi el dispositiu en mal estat.
@@ -94,11 +236,39 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
     let mut backend: Option<NativeBackend> = None;
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            NativeCmd::PlayCue { file_path, gain, fade_in, fade_out, channels, reply } => {
+            NativeCmd::PlayCue { voice_id, file_path, gain, fade_in, fade_out, channels, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    native_play_cue_impl(&mut backend, &file_path, gain, fade_in, fade_out, &channels)
+                    native_play_cue_impl(&mut backend, voice_id, &file_path, gain, fade_in, fade_out, &channels)
                 }))
                 .unwrap_or_else(|_| Err("Pànic reproduint el cue natiu.".into()));
+                let _ = reply.send(res);
+            }
+            NativeCmd::StopVoice { voice_id, fade_out, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    native_stop_voice_impl(&backend, voice_id, fade_out)
+                }))
+                .unwrap_or_else(|_| Err("Pànic aturant la veu nativa.".into()));
+                let _ = reply.send(res);
+            }
+            NativeCmd::SetGain { voice_id, gain, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    native_set_gain_impl(&backend, voice_id, gain)
+                }))
+                .unwrap_or_else(|_| Err("Pànic canviant el gain natiu.".into()));
+                let _ = reply.send(res);
+            }
+            NativeCmd::Seek { voice_id, position, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    native_seek_impl(&backend, voice_id, position)
+                }))
+                .unwrap_or_else(|_| Err("Pànic fent seek natiu.".into()));
+                let _ = reply.send(res);
+            }
+            NativeCmd::SetPaused { voice_id, paused, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    native_set_paused_impl(&backend, voice_id, paused)
+                }))
+                .unwrap_or_else(|_| Err("Pànic pausant la veu nativa.".into()));
                 let _ = reply.send(res);
             }
             NativeCmd::Stop { reply } => {
@@ -172,6 +342,12 @@ fn native_ensure_backend(backend: &mut Option<NativeBackend>) -> Result<(u32, us
 
     stream.play().map_err(|e| format!("play(): {}", e))?;
 
+    // Publica la llista de veus i la freqüència perquè el fil de telemetria les
+    // mostregi (playhead + VU) sense tocar el callback RT.
+    if let Ok(mut g) = native_meter_slot().lock() {
+        *g = Some(NativeMeterShared { voices: voices.clone(), sample_rate });
+    }
+
     *backend = Some(NativeBackend { voices, sample_rate, channels, stream });
     Ok((sample_rate, channels))
 }
@@ -179,12 +355,13 @@ fn native_ensure_backend(backend: &mut Option<NativeBackend>) -> Result<(u32, us
 // Callback de mescla (fil RT de cpal). Per cada bloc de `data` (interleaved):
 //   1. assegura/zera els acumuladors per canal (mida = frames del bloc).
 //   2. avança i mescla cada veu activa amb el nucli `asio_mix_voice`.
-//   3. elimina les veus acabades (final natural o release).
+//   3. notifica el final natural de cada veu acabada i les elimina.
 //   4. entrellaça els acumuladors a `data`, amb soft-clip i conversió de format.
 //
 // `to_native` converteix una mostra f32 (post clip) al tipus de mostra del device.
 // Disciplina RT: cap alloc en estat estacionari (els acumuladors només creixen el
-// primer bloc o si la mida puja), cap IO, locks curts.
+// primer bloc o si la mida puja), cap IO, cap emissió d'events (només un `send`
+// barat al canal de notificació quan una veu acaba), locks curts.
 fn native_mix_callback<S>(
     data: &mut [S],
     channels: usize,
@@ -211,10 +388,16 @@ fn native_mix_callback<S>(
         ch.fill(0.0);
     }
 
-    // Mescla totes les veus actives als acumuladors i treu les acabades.
+    // Mescla totes les veus actives als acumuladors, notifica les acabades i
+    // treu-les. La notificació és un `send` barat (només en acabar, no cada bloc).
     if let Ok(mut vs) = voices.lock() {
         for v in vs.iter_mut() {
             asio_mix_voice(v, &mut acc_guard, frames);
+        }
+        for v in vs.iter() {
+            if v.finished {
+                native_notify_ended(v.voice_id);
+            }
         }
         vs.retain(|v| !v.finished);
     }
@@ -229,11 +412,12 @@ fn native_mix_callback<S>(
 }
 
 // Descodifica el cue i registra una veu al backend. La descodificació (symphonia
-// + resampling) es fa AQUÍ, al fil natiu, MAI dins el callback RT. Aquest
-// increment substitueix qualsevol veu prèvia (model d'una sola veu): buida la
-// llista abans d'afegir la nova.
+// + resampling) es fa AQUÍ, al fil natiu, MAI dins el callback RT. NO buida les
+// altres veus: poden sonar-ne diverses alhora. Si ja existeix una veu amb el
+// mateix `voice_id`, la substitueix (re-disparo del mateix slot).
 fn native_play_cue_impl(
     backend: &mut Option<NativeBackend>,
+    voice_id: u64,
     file_path: &str,
     gain: f32,
     fade_in: f32,
@@ -270,7 +454,7 @@ fn native_play_cue_impl(
     let fade_out_len = ((fade_out.max(0.0) * sr) as usize).min(total);
 
     let voice = Voice {
-        voice_id: 1, // un sol cue actiu en aquest increment
+        voice_id,
         data,
         src_channels,
         out_channels,
@@ -290,44 +474,189 @@ fn native_play_cue_impl(
 
     let b = backend.as_ref().ok_or("Backend natiu no disponible.")?;
     if let Ok(mut vs) = b.voices.lock() {
-        vs.clear(); // model d'una sola veu en aquest increment
+        // Multi-veu: substitueix només la veu del mateix id (re-disparo) i conserva
+        // la resta, perquè en puguin sonar diverses alhora.
+        vs.retain(|v| v.voice_id != voice_id);
         vs.push(voice);
     }
     Ok(())
 }
 
+// Atura una veu pel seu id. Amb fade_out > 0, n'inicia la rampa de release des de
+// la posició actual (el callback hi aplica el fade i l'elimina en arribar a 0);
+// amb 0, l'elimina immediatament. Reutilitza `release_from`/`release_len` del nucli.
+fn native_stop_voice_impl(
+    backend: &Option<NativeBackend>,
+    voice_id: u64,
+    fade_out: f32,
+) -> Result<(), String> {
+    let b = match backend.as_ref() {
+        Some(b) => b,
+        None => return Ok(()), // res obert: res a aturar
+    };
+    let sr = b.sample_rate as f32;
+    let rel = (fade_out.max(0.0) * sr) as usize;
+    if let Ok(mut vs) = b.voices.lock() {
+        if fade_out > 0.0 {
+            for v in vs.iter_mut() {
+                if v.voice_id == voice_id && v.release_from.is_none() {
+                    v.release_from = Some(v.seg_pos());
+                    v.release_len = rel.max(1);
+                    v.loop_on = false; // un release acaba la veu encara que fes loop
+                }
+            }
+        } else {
+            vs.retain(|v| v.voice_id != voice_id);
+        }
+    }
+    Ok(())
+}
+
+// Canvia el gain (volum lineal) d'una veu activa en calent. El callback ja
+// multiplica per `voice.gain` a cada frame, així que el canvi és immediat.
+fn native_set_gain_impl(
+    backend: &Option<NativeBackend>,
+    voice_id: u64,
+    gain: f32,
+) -> Result<(), String> {
+    let b = match backend.as_ref() {
+        Some(b) => b,
+        None => return Ok(()),
+    };
+    if let Ok(mut vs) = b.voices.lock() {
+        for v in vs.iter_mut() {
+            if v.voice_id == voice_id {
+                v.gain = gain.max(0.0);
+            }
+        }
+    }
+    Ok(())
+}
+
+// Reposiciona el playhead d'una veu activa: `position` són segons dins el segment
+// (0 = inici del tram). Es limita a [start_frame, stop_frame).
+fn native_seek_impl(
+    backend: &Option<NativeBackend>,
+    voice_id: u64,
+    position: f32,
+) -> Result<(), String> {
+    let b = match backend.as_ref() {
+        Some(b) => b,
+        None => return Ok(()),
+    };
+    let rate = b.sample_rate as f32;
+    if let Ok(mut vs) = b.voices.lock() {
+        for v in vs.iter_mut() {
+            if v.voice_id == voice_id {
+                let target = v.start_frame + (position.max(0.0) * rate) as usize;
+                let max = v.stop_frame.saturating_sub(1).max(v.start_frame);
+                v.pos = target.clamp(v.start_frame, max);
+            }
+        }
+    }
+    Ok(())
+}
+
+// Pausa o reprèn una veu activa. La veu es manté a la mescla; pausada, el callback
+// escriu silenci i no avança la posició (el resume continua des d'on era).
+fn native_set_paused_impl(
+    backend: &Option<NativeBackend>,
+    voice_id: u64,
+    paused: bool,
+) -> Result<(), String> {
+    let b = match backend.as_ref() {
+        Some(b) => b,
+        None => return Ok(()),
+    };
+    if let Ok(mut vs) = b.voices.lock() {
+        for v in vs.iter_mut() {
+            if v.voice_id == voice_id {
+                v.paused = paused;
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── API pública del mòdul (la criden els wrappers `#[tauri::command]` de lib.rs) ─
+//
+// Patró comú: cada funció empaqueta una `NativeCmd`, l'envia al fil natiu i espera
+// la resposta amb un timeout adient. Petit ajudant per no repetir-ho.
+fn send_and_wait(
+    make: impl FnOnce(std::sync::mpsc::Sender<Result<(), String>>) -> NativeCmd,
+    timeout: std::time::Duration,
+    timeout_msg: &str,
+) -> Result<(), String> {
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    native_sender()
+        .send(make(reply_tx))
+        .map_err(|_| "El fil natiu no està disponible.".to_string())?;
+    match reply_rx.recv_timeout(timeout) {
+        Ok(res) => res,
+        Err(_) => Err(timeout_msg.into()),
+    }
+}
 
 // Reprodueix un cue (fitxer descodificat a memòria) pel dispositiu de sortida per
-// defecte via cpal, amb gain i fades. La veu s'acaba sola. La descodificació passa
-// al fil natiu; aquí s'hi espera resposta amb timeout ampli.
+// defecte via cpal, amb gain i fades. La veu (identificada per `voice_id`) sona
+// junt amb les altres i s'acaba sola. La descodificació passa al fil natiu; aquí
+// s'hi espera resposta amb timeout ampli (inclou descodificar + resamplejar).
 pub fn play_cue(
+    voice_id: u64,
     file_path: String,
     gain: f32,
     fade_in: f32,
     fade_out: f32,
     channels: Vec<u16>,
 ) -> Result<(), String> {
-    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-    native_sender()
-        .send(NativeCmd::PlayCue { file_path, gain, fade_in, fade_out, channels, reply: reply_tx })
-        .map_err(|_| "El fil natiu no està disponible.".to_string())?;
-    // Marge ampli: inclou descodificar + resamplejar el fitxer.
-    match reply_rx.recv_timeout(std::time::Duration::from_secs(30)) {
-        Ok(res) => res,
-        Err(_) => Err("Temps esgotat o error reproduint el cue natiu.".into()),
-    }
+    send_and_wait(
+        |reply| NativeCmd::PlayCue { voice_id, file_path, gain, fade_in, fade_out, channels, reply },
+        std::time::Duration::from_secs(30),
+        "Temps esgotat o error reproduint el cue natiu.",
+    )
 }
 
-// Atura la reproducció natiu (buida totes les veus actives). En increments
-// posteriors aturarà una veu concreta pel seu id.
+// Atura una veu nativa pel seu id, amb fade-out opcional (segons).
+pub fn stop_voice(voice_id: u64, fade_out: f32) -> Result<(), String> {
+    send_and_wait(
+        |reply| NativeCmd::StopVoice { voice_id, fade_out, reply },
+        std::time::Duration::from_secs(5),
+        "Temps esgotat o error aturant la veu nativa.",
+    )
+}
+
+// Canvia el volum (gain lineal) d'una veu nativa activa en calent.
+pub fn set_gain(voice_id: u64, gain: f32) -> Result<(), String> {
+    send_and_wait(
+        |reply| NativeCmd::SetGain { voice_id, gain, reply },
+        std::time::Duration::from_secs(5),
+        "Temps esgotat o error canviant el volum natiu.",
+    )
+}
+
+// Reposiciona el playhead d'una veu nativa activa (segons dins el segment).
+pub fn seek(voice_id: u64, position: f32) -> Result<(), String> {
+    send_and_wait(
+        |reply| NativeCmd::Seek { voice_id, position, reply },
+        std::time::Duration::from_secs(5),
+        "Temps esgotat o error fent seek natiu.",
+    )
+}
+
+// Pausa o reprèn una veu nativa activa (congela la posició, sense aturar-la).
+pub fn set_paused(voice_id: u64, paused: bool) -> Result<(), String> {
+    send_and_wait(
+        |reply| NativeCmd::SetPaused { voice_id, paused, reply },
+        std::time::Duration::from_secs(5),
+        "Temps esgotat o error pausant la veu nativa.",
+    )
+}
+
+// Atura la reproducció natiu (buida totes les veus actives). Parada global.
 pub fn stop() -> Result<(), String> {
-    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-    native_sender()
-        .send(NativeCmd::Stop { reply: reply_tx })
-        .map_err(|_| "El fil natiu no està disponible.".to_string())?;
-    match reply_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(res) => res,
-        Err(_) => Err("Temps esgotat o error aturant el motor natiu.".into()),
-    }
+    send_and_wait(
+        |reply| NativeCmd::Stop { reply },
+        std::time::Duration::from_secs(5),
+        "Temps esgotat o error aturant el motor natiu.",
+    )
 }
