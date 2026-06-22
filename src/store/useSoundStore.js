@@ -97,6 +97,7 @@ const loadPlaylist = () => {
 const savedPlaylist = loadPlaylist();
 let plNextId = 1;
 let previewSource = null; // font activa del bus de preview (a nivell de mòdul)
+let previewSeq = 0;       // comptador per a un voice id ASIO nou a cada preview
 // Timers pendents de la seqüència GO (pre-wait i encadenament auto-continue).
 // A nivell de mòdul perquè els puguem cancel·lar des de stopAll o d'un GO nou.
 const goTimers = new Set();
@@ -167,12 +168,17 @@ export const useSoundStore = create((set, get) => ({
   playlistDeviceId: savedGlobals.playlistDeviceId ?? 'default',
   previewDeviceId: savedGlobals.previewDeviceId ?? 'default',
   asioMasterGain: savedGlobals.asioMasterGain ?? 1,  // gain mestre del bus ASIO (0..1)
+  // Dispositius WASAPI marcats com a "Usar" (curats a Dispositius). El Routing
+  // només n'ofereix aquests; llista BUIDA = mostra'ls tots (compatibilitat).
+  enabledOutputs: Array.isArray(savedGlobals.enabledOutputs) ? savedGlobals.enabledOutputs : [],
+  asioInfo: {},            // driver ASIO carregat ara: { [name]: {outs, sample_rate} } (sessió)
   audioContext: null,      // context dels cues
   playlistCtx: null,       // context de la playlist
   previewCtx: null,        // context del preview
   outputChannels: 2,       // canals màxims de sortida del dispositiu de cues
   previewArmed: false,     // Ctrl premut: mode preview
   previewingSlot: null,    // slot que sona ara pel bus de preview
+  previewVoiceId: PREVIEW_VOICE_ID, // id de la veu ASIO del preview actual (rotatiu)
   previewStartedAt: 0,     // instant (previewCtx) en què va començar el preview
   colorOutputs: savedGlobals.colorOutputs || {}, // { color: deviceId } routing per grup
 
@@ -200,14 +206,29 @@ export const useSoundStore = create((set, get) => ({
   persistGlobals: () => {
     const {
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain,
+      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs,
     }));
+  },
+
+  // Marca/desmarca un dispositiu WASAPI com a "Usar" (curació del pool de Routing).
+  // Llista buida = tots actius; en desmarcar el primer, materialitza la llista
+  // completa menys aquell (així el comportament per defecte no canvia).
+  toggleEnabledOutput: (deviceId) => {
+    set((s) => {
+      let cur = s.enabledOutputs || [];
+      if (cur.length === 0) cur = (s.audioDevices || []).map((d) => d.deviceId);
+      const enabledOutputs = cur.includes(deviceId)
+        ? cur.filter((d) => d !== deviceId)
+        : [...cur, deviceId];
+      return { enabledOutputs };
+    });
+    get().persistGlobals();
   },
 
   // Gain mestre del bus ASIO (0..1). S'aplica al motor natiu (abans del soft clip)
@@ -221,6 +242,19 @@ export const useSoundStore = create((set, get) => ({
   // Aplica el gain mestre desat al motor en arrencar.
   initAsioMaster: () => {
     invoke('asio_set_master_gain', { gain: get().asioMasterGain ?? 1 }).catch(() => { /* res */ });
+  },
+
+  // Info dels drivers ASIO carregats ara (per a les opcions de routing). Es manté
+  // a la sessió perquè no es perdi en reobrir Settings.
+  setAsioInfo: (info) => set({ asioInfo: info || {} }),
+  // Pregunta al motor quin driver hi ha carregat ara (pel botó «Carregar» o per la
+  // reproducció) i actualitza asioInfo. Cobreix el cas de reobrir el modal.
+  refreshAsioLoaded: async () => {
+    try {
+      const li = await invoke('asio_loaded_info');
+      if (li && li.name) set({ asioInfo: { [li.name]: { outs: li.outs, sample_rate: li.sample_rate } } });
+      else set({ asioInfo: {} });
+    } catch { /* sense ASIO */ }
   },
 
   // Stop Others global: en disparar qualsevol cue, atura la resta
@@ -375,17 +409,23 @@ export const useSoundStore = create((set, get) => ({
 
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !hasClip(slot)) return;
+    // Els cues de VÍDEO no es poden previsualitzar pel bus d'àudio (tenen el seu
+    // so a la finestra de sortida; el motor ASIO no en sap descodificar el còdec).
+    if (isVideo(slot)) { get().stopPreview(); return; }
 
     // Preview per ASIO: toca el cue pel motor natiu cap als canals del bus de
     // preview (un sol preview alhora, voice id reservat). Cobreix curt i streaming.
     if (isAsioTarget(get().previewDeviceId)) {
       get().stopPreview();
+      // Un voice id NOU a cada preview: la telemetria residual de la veu anterior
+      // (que pot arribar entre l'stop i el play) va a l'id vell, que ja no es llegeix.
+      const voiceId = PREVIEW_VOICE_ID + (previewSeq = (previewSeq + 1) % 100000);
       const tgt = parseTarget(get().previewDeviceId);
       const total = slotDuration(slot);
       const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || 0));
       const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
       invoke('asio_play_voice', {
-        voiceId: PREVIEW_VOICE_ID,
+        voiceId,
         driver: tgt.driver,
         filePath: slot.filePath,
         channels: tgt.channels,
@@ -397,7 +437,9 @@ export const useSoundStore = create((set, get) => ({
         stopPoint,
         streaming: !!slot.isStreaming,
       }).catch((e) => console.warn('[asio] preview:', e));
-      set({ previewingSlot: slotId, previewStartedAt: 0 });
+      // Playhead del preview ASIO per rellotge JS (no per telemetria): garanteix
+      // que comença a 0 a cada cue, sense valors residuals d'un id compartit.
+      set({ previewingSlot: slotId, previewStartedAt: performance.now() / 1000, previewVoiceId: voiceId });
       return;
     }
 
@@ -405,7 +447,7 @@ export const useSoundStore = create((set, get) => ({
     if (slot.isStreaming) {
       get().stopPreview();
       if (csPreviewStart(get, set, slotId)) {
-        set({ previewingSlot: slotId, previewStartedAt: 0 });
+        set({ previewingSlot: slotId, previewStartedAt: performance.now() / 1000 });
       }
       return;
     }
@@ -431,21 +473,25 @@ export const useSoundStore = create((set, get) => ({
     source.start(0, startPoint, slot.loop ? undefined : segDur);
     if (slot.loop) { source.loop = true; source.loopStart = startPoint; source.loopEnd = stopPoint; }
     previewSource = source;
-    set({ previewingSlot: slotId, previewStartedAt: ctx.currentTime });
+    set({ previewingSlot: slotId, previewStartedAt: performance.now() / 1000 });
   },
 
   stopPreview: () => {
     if (previewSource) { try { previewSource.onended = null; previewSource.stop(); } catch { /* res */ } previewSource = null; }
     csPreviewStop();
-    // Atura també un possible preview pel motor ASIO (no-op si no n'hi ha).
+    // Atura també un possible preview pel motor ASIO (no-op si no n'hi ha) i neteja
+    // la seva telemetria perquè el playhead vermell no arrossegui la posició vella.
+    const pvid = get().previewVoiceId;
     if (isAsioTarget(get().previewDeviceId)) {
-      invoke('asio_stop_voice', { voiceId: PREVIEW_VOICE_ID, fadeOut: 0 }).catch(() => {});
+      invoke('asio_stop_voice', { voiceId: pvid, fadeOut: 0 }).catch(() => {});
     }
+    clearAsioTelemetry(pvid);
     set({ previewingSlot: null });
   },
 
-  // El motor ASIO informa que el preview ha acabat sol → neteja l'estat.
-  previewEnded: () => set({ previewingSlot: null }),
+  // El motor ASIO informa que el preview ha acabat sol → neteja l'estat i la
+  // telemetria (perquè el playhead no es quedi clavat al final).
+  previewEnded: () => { clearAsioTelemetry(get().previewVoiceId); set({ previewingSlot: null }); },
 
   setViewMode: (viewMode) => set({ viewMode }),
 
@@ -622,6 +668,9 @@ export const useSoundStore = create((set, get) => ({
   preloadAsioSlot: (slotId) => {
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !slot.filePath) return;
+    // Els cues de VÍDEO no van pel motor d'àudio ASIO (el seu so és a la finestra
+    // de sortida); no els pre-descodifiquis (symphonia no en sap el còdec).
+    if (isVideo(slot)) return;
     const target = parseTarget(resolveCueTargetStr(get(), slot));
     if (target.kind !== 'asio') return;
     invoke('asio_preload', { driver: target.driver, filePath: slot.filePath })

@@ -68,8 +68,9 @@ function OutputSelect({ id, value, onChange, audioDevices, asioOptions, defaultV
 const DIAG_LIST_STYLE = { display: 'flex', flexDirection: 'column', gap: 6 };
 
 // Una fila del diagnòstic d'àudio (un dispositiu WASAPI o un driver ASIO).
-// Per ASIO, `info` (si està carregat) porta {outs, sample_rate}; `onLoad` el carrega.
-function DiagRow({ o, onTone, info, onLoad }) {
+// Per ASIO, `info` (si està carregat = ACTIU) porta {outs, sample_rate}; `onLoad`
+// el carrega ("Usar") i `onRelease` l'allibera ("Deixar d'usar").
+function DiagRow({ o, onTone, info, onLoad, onRelease }) {
   const isAsio = o.host === 'ASIO';
   return (
     <div style={{
@@ -100,17 +101,20 @@ function DiagRow({ o, onTone, info, onLoad }) {
       {isAsio ? (
         info ? (
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5 }}>
-            <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginRight: 4 }}>
-              To de prova · {info.outs} canals · {info.sample_rate} Hz:
+            <span style={{ fontSize: 10, color: 'var(--vu-green)', fontWeight: 600, marginRight: 4 }}>
+              ✓ EN ÚS · {info.outs} canals · {info.sample_rate} Hz · to:
             </span>
             {Array.from({ length: info.outs }, (_, c) => (
               <button key={c} className="diag-tone-btn" onClick={() => onTone(o.host, o.name, c)}>{c + 1}</button>
             ))}
+            {onRelease && (
+              <button className="diag-detect-btn" style={{ margin: '0 0 0 6px' }} onClick={onRelease}>Deixar d'usar</button>
+            )}
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-            <button className="diag-detect-btn" style={{ margin: 0 }} onClick={() => onLoad(o.name)}>Carregar</button>
-            <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>per veure els canals (agafa el dispositiu en exclusiva)</span>
+            <button className="diag-detect-btn" style={{ margin: 0 }} onClick={() => onLoad(o.name)}>Usar</button>
+            <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>carrega el driver (exclusiu: només un ASIO alhora)</span>
           </div>
         )
       ) : o.max_channels > 0 ? (
@@ -127,7 +131,7 @@ function DiagRow({ o, onTone, info, onLoad }) {
 
 // Modal global de configuració amb tres pestanyes: Audio, Cues, Playlist
 export function SettingsModal({ onClose }) {
-  const [tab, setTab] = useState('audio');
+  const [tab, setTab] = useState('dispositius');
 
   const audioDevices     = useSoundStore((s) => s.audioDevices);
   const cuesDeviceId     = useSoundStore((s) => s.selectedDeviceId);
@@ -141,6 +145,8 @@ export function SettingsModal({ onClose }) {
   const outputChannels   = useSoundStore((s) => s.outputChannels);
   const asioMasterGain   = useSoundStore((s) => s.asioMasterGain);
   const setAsioMasterGain = useSoundStore((s) => s.setAsioMasterGain);
+  const enabledOutputs   = useSoundStore((s) => s.enabledOutputs);
+  const toggleEnabledOutput = useSoundStore((s) => s.toggleEnabledOutput);
 
   const globalFadeIn  = useSoundStore((s) => s.globalFadeIn);
   const globalFadeOut = useSoundStore((s) => s.globalFadeOut);
@@ -165,14 +171,20 @@ export function SettingsModal({ onClose }) {
   const [diagError, setDiagError] = useState(null);
   const [asioOut, setAsioOut] = useState(null);   // dispositius ASIO detectats
   const [asioMsg, setAsioMsg] = useState(null);   // estat/error de la detecció ASIO
-  const [asioInfo, setAsioInfo] = useState({});   // info per driver carregat: { [name]: {outs, sample_rate} }
+  // info per driver carregat: { [name]: {outs, sample_rate} } — al STORE perquè no
+  // es perdi en reobrir el modal (el driver pot estar carregat per la reproducció).
+  const asioInfo = useSoundStore((s) => s.asioInfo);
+  const setAsioInfo = useSoundStore((s) => s.setAsioInfo);
+  const refreshAsioLoaded = useSoundStore((s) => s.refreshAsioLoaded);
 
   // Opcions de routing ASIO (parells de canals) dels drivers ASIO carregats.
-  // Per oferir-ne, l'usuari ha de carregar el driver a la secció "Dispositius ASIO".
   const asioOptions = asioStereoOptions(asioInfo);
 
+  // En obrir el modal, refresca quin driver ASIO hi ha carregat ara.
+  useEffect(() => { refreshAsioLoaded(); }, [refreshAsioLoaded]);
+
   useEffect(() => {
-    if (tab !== 'audio' || outputs) return;
+    if (tab !== 'dispositius' || outputs) return;
     (async () => {
       try { setOutputs(await invoke('list_audio_outputs')); }
       catch (e) { setDiagError(String(e)); }
@@ -230,6 +242,27 @@ export function SettingsModal({ onClose }) {
     }
   };
 
+  // En obrir la pestanya Dispositius, detecta els ASIO automàticament (llegeix els
+  // noms del registre, sense carregar cap driver: ràpid i segur).
+  useEffect(() => {
+    if (tab === 'dispositius' && asioOut === null) detectAsio();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // Pool de dispositius WASAPI per al Routing: els marcats "Usar" (llista buida =
+  // tots). `devicesFor` hi afegeix el valor actual encara que no estigui marcat,
+  // perquè una assignació existent no es perdi del desplegable.
+  const enabledDevices = (!enabledOutputs || enabledOutputs.length === 0)
+    ? audioDevices
+    : audioDevices.filter((d) => enabledOutputs.includes(d.deviceId));
+  const devicesFor = (value) => {
+    if (!value || isAsioTarget(value) || value === 'default' || value === 'cues') return enabledDevices;
+    if (enabledDevices.some((d) => d.deviceId === value)) return enabledDevices;
+    const dev = audioDevices.find((d) => d.deviceId === value);
+    return dev ? [...enabledDevices, dev] : enabledDevices;
+  };
+  const isOutputEnabled = (id) => !enabledOutputs || enabledOutputs.length === 0 || enabledOutputs.includes(id);
+
   return (
     <div className="editor-overlay" onClick={onClose}>
       <div className="editor-panel settings-panel" onClick={(e) => e.stopPropagation()}>
@@ -239,15 +272,72 @@ export function SettingsModal({ onClose }) {
         </div>
 
         <div className="settings-tabs">
-          <button className={`settings-tab ${tab === 'audio' ? 'active' : ''}`} onClick={() => setTab('audio')}>Audio</button>
+          <button className={`settings-tab ${tab === 'dispositius' ? 'active' : ''}`} onClick={() => setTab('dispositius')}>Dispositius</button>
+          <button className={`settings-tab ${tab === 'routing' ? 'active' : ''}`} onClick={() => setTab('routing')}>Routing</button>
+          <button className={`settings-tab ${tab === 'general' ? 'active' : ''}`} onClick={() => setTab('general')}>General</button>
           <button className={`settings-tab ${tab === 'cues' ? 'active' : ''}`} onClick={() => setTab('cues')}>Cues</button>
           <button className={`settings-tab ${tab === 'playlist' ? 'active' : ''}`} onClick={() => setTab('playlist')}>Playlist</button>
         </div>
 
         <div className="settings-content">
-          {tab === 'audio' && (
+          {tab === 'dispositius' && (
             <>
-              <div className="settings-subtitle">Sortides (un dispositiu estèreo per bus)</div>
+              <div className="settings-note">
+                Tria aquí el maquinari que faràs servir. Al <b>Routing</b> només sortiran els
+                dispositius marcats. WASAPI són sempre disponibles; un driver <b>ASIO</b> dona
+                latència baixa i canals reals, però només en pots tenir <b>un</b> actiu alhora
+                (agafa el dispositiu en exclusiva).
+              </div>
+
+              <div className="settings-subtitle">Sortides WASAPI</div>
+              <div style={DIAG_LIST_STYLE}>
+                {audioDevices.map((d) => (
+                  <label key={d.deviceId} className="editor-check" style={{
+                    padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6,
+                    background: 'var(--bg-button)', margin: 0,
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={isOutputEnabled(d.deviceId)}
+                      onChange={() => toggleEnabledOutput(d.deviceId)}
+                    />
+                    {d.label || `Dispositiu ${d.deviceId.slice(0, 8)}`}
+                  </label>
+                ))}
+                {audioDevices.length === 0 && <div className="library-empty">Cap dispositiu WASAPI.</div>}
+              </div>
+
+              <div className="settings-subtitle">Drivers ASIO (latència baixa)</div>
+              {asioMsg && <div className="diag-error">⚠ {asioMsg}</div>}
+              {asioOut === null && <div className="library-empty">Detectant dispositius ASIO…</div>}
+              <div style={DIAG_LIST_STYLE}>
+                {asioOut && asioOut.map((o, i) => (
+                  <DiagRow key={`asio-${i}`} o={o} onTone={tone} info={asioInfo[o.name]} onLoad={loadAsio} onRelease={releaseAsio} />
+                ))}
+                {asioOut && asioOut.length === 0 && <div className="library-empty">Cap driver ASIO.</div>}
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                <button className="diag-detect-btn" onClick={detectAsio}>Tornar a detectar</button>
+              </div>
+
+              <div className="settings-subtitle">Diagnòstic natiu (test tone per canal)</div>
+              <div className="settings-note">Verifica quina sortida física és cada canal enviant-hi un to.</div>
+              {diagError && <div className="diag-error">⚠ {diagError}</div>}
+              {!outputs && !diagError && <div className="library-empty">Carregant dispositius…</div>}
+              <div style={DIAG_LIST_STYLE}>
+                {outputs && outputs.map((o, i) => (
+                  <DiagRow key={i} o={o} onTone={tone} />
+                ))}
+              </div>
+            </>
+          )}
+
+          {tab === 'routing' && (
+            <>
+              <div className="settings-subtitle">Sortides per bus</div>
+              <div className="settings-note">
+                Només es mostren els dispositius marcats a <b>Dispositius</b> i el driver ASIO actiu.
+              </div>
 
               <div className="settings-row">
                 <label htmlFor="dev-cues">Cues</label>
@@ -255,7 +345,7 @@ export function SettingsModal({ onClose }) {
                   id="dev-cues"
                   value={cuesDeviceId}
                   onChange={setSelectedDevice}
-                  audioDevices={audioDevices}
+                  audioDevices={devicesFor(cuesDeviceId)}
                   asioOptions={asioOptions}
                   defaultValue="default"
                   defaultLabel="Per defecte"
@@ -268,7 +358,7 @@ export function SettingsModal({ onClose }) {
                   id="dev-playlist"
                   value={playlistDeviceId}
                   onChange={setPlaylistDevice}
-                  audioDevices={audioDevices}
+                  audioDevices={devicesFor(playlistDeviceId)}
                   asioOptions={asioOptions}
                   defaultValue="default"
                   defaultLabel="Per defecte"
@@ -281,15 +371,41 @@ export function SettingsModal({ onClose }) {
                   id="dev-preview"
                   value={previewDeviceId}
                   onChange={setPreviewDevice}
-                  audioDevices={audioDevices}
+                  audioDevices={devicesFor(previewDeviceId)}
                   asioOptions={asioOptions}
                   defaultValue="default"
                   defaultLabel="Per defecte"
                 />
               </div>
 
+              <div className="settings-subtitle">Routing per color (cues)</div>
+              <div className="settings-note">
+                Els cues sense color, o amb un color sense assignar, sonen pel bus Cues.
+                Cues i Playlist a ASIO han de compartir el mateix driver (només un ASIO actiu).
+              </div>
+              {CUE_COLORS.map((c) => (
+                <div className="settings-row" key={c.value}>
+                  <span className="color-dot" style={{ background: c.value }} />
+                  <label htmlFor={`dev-color-${c.value}`}>{c.name}</label>
+                  <OutputSelect
+                    id={`dev-color-${c.value}`}
+                    value={colorOutputs[c.value] || 'cues'}
+                    onChange={(v) => setColorOutput(c.value, v)}
+                    audioDevices={devicesFor(colorOutputs[c.value])}
+                    asioOptions={asioOptions}
+                    defaultValue="cues"
+                    defaultLabel="Bus Cues (per defecte)"
+                  />
+                </div>
+              ))}
+            </>
+          )}
+
+          {tab === 'general' && (
+            <>
+              <div className="settings-subtitle">Volum mestre ASIO</div>
               <div className="settings-row">
-                <label htmlFor="asio-master">Volum mestre ASIO</label>
+                <label htmlFor="asio-master">Nivell</label>
                 <input
                   id="asio-master"
                   type="range" min="0" max="1.5" step="0.01"
@@ -306,71 +422,6 @@ export function SettingsModal({ onClose }) {
                 en sumar moltes veus; per sobre del 100% és pre-amplificació.
               </div>
 
-              <div className="settings-subtitle">Routing per color (cues)</div>
-              <div className="settings-note">
-                Els cues sense color, o amb un color sense assignar, sonen pel bus Cues.
-                Per assignar una sortida ASIO cal carregar abans el seu driver a «Dispositius ASIO».
-                Els cues i la Playlist routejats a ASIO sonen pel motor natiu (canals reals del
-                driver). Nota: només es pot tenir UN driver ASIO carregat alhora, així que cues i
-                Playlist a ASIO han de compartir el mateix driver.
-              </div>
-              {CUE_COLORS.map((c) => (
-                <div className="settings-row" key={c.value}>
-                  <span className="color-dot" style={{ background: c.value }} />
-                  <label htmlFor={`dev-color-${c.value}`}>{c.name}</label>
-                  <OutputSelect
-                    id={`dev-color-${c.value}`}
-                    value={colorOutputs[c.value] || 'cues'}
-                    onChange={(v) => setColorOutput(c.value, v)}
-                    audioDevices={audioDevices}
-                    asioOptions={asioOptions}
-                    defaultValue="cues"
-                    defaultLabel="Bus Cues (per defecte)"
-                  />
-                </div>
-              ))}
-
-              <div className="settings-subtitle">Diagnòstic natiu (cpal · WASAPI + ASIO)</div>
-              {diagError && <div className="diag-error">⚠ {diagError}</div>}
-              {!outputs && !diagError && <div className="library-empty">Carregant dispositius…</div>}
-              <div style={DIAG_LIST_STYLE}>
-                {outputs && outputs.map((o, i) => (
-                  <DiagRow key={i} o={o} onTone={tone} />
-                ))}
-              </div>
-
-              <div className="settings-subtitle">Dispositius ASIO (latència baixa)</div>
-              <div className="settings-note">
-                Carregar els drivers ASIO és lent i es fa sota demanda. Si uses ASIO4ALL,
-                deixa la interfície com a dispositiu de Windows per defecte perquè hi enviï el so.
-                El driver es manté carregat entre tons (i agafa el dispositiu en exclusiva);
-                prem «Alliberar ASIO» per tornar-lo a deixar disponible per a Windows/WASAPI.
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="diag-detect-btn" onClick={detectAsio}>Detectar ASIO</button>
-                {/* Estils inline: les classes del modal no es pinten aquí (patró DiagRow). */}
-                <button
-                  onClick={releaseAsio}
-                  style={{
-                    fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 6,
-                    cursor: 'pointer', color: 'var(--text-primary)',
-                    background: 'var(--bg-button)', border: '1px solid var(--border)',
-                  }}
-                >
-                  Alliberar ASIO
-                </button>
-              </div>
-              {asioMsg && <div className="diag-error">⚠ {asioMsg}</div>}
-              <div style={DIAG_LIST_STYLE}>
-                {asioOut && asioOut.map((o, i) => (
-                  <DiagRow key={`asio-${i}`} o={o} onTone={tone} info={asioInfo[o.name]} onLoad={loadAsio} />
-                ))}
-              </div>
-            </>
-          )}
-
-          {tab === 'cues' && (
-            <>
               <div className="settings-subtitle">Fades globals dels cues</div>
               <label className="ps-row">
                 <span>Fade in</span>
@@ -387,7 +438,11 @@ export function SettingsModal({ onClose }) {
                 </span>
               </label>
               <div className="settings-note">Cada cue pot definir el seu fade des de l'editor (✎); si és 0, usa el global.</div>
+            </>
+          )}
 
+          {tab === 'cues' && (
+            <>
               <div className="settings-subtitle">Comportament per defecte</div>
               <div className="editor-options">
                 <label className="editor-check">

@@ -35,6 +35,15 @@ struct AsioInfo {
     sample_rate: u32,
 }
 
+// Driver ASIO carregat ARA (nom + info), per refrescar la UI en reobrir Settings.
+#[cfg(feature = "asio")]
+#[derive(Serialize, Clone)]
+struct AsioLoadedInfo {
+    name: String,
+    outs: u16,
+    sample_rate: u32,
+}
+
 // Recull els dispositius de sortida d'un host concret i els afegeix a `out`,
 // etiquetats amb el nom del backend (host_label). No falla si el host no en té.
 fn collect_outputs(host: &cpal::Host, host_label: &str, out: &mut Vec<AudioOutput>) {
@@ -758,6 +767,10 @@ enum AsioCmd {
         driver_name: String,
         reply: std::sync::mpsc::Sender<Result<AsioInfo, String>>,
     },
+    // Quin driver hi ha carregat ARA (nom + info), o None. Per refrescar la UI.
+    LoadedInfo {
+        reply: std::sync::mpsc::Sender<Result<Option<AsioLoadedInfo>, String>>,
+    },
 }
 
 // Sender únic cap al fil ASIO dedicat. S'inicialitza mandrós el primer cop
@@ -1007,6 +1020,18 @@ fn asio_do_info(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result<As
     let outs = driver.channels().map_err(|e| format!("channels(): {:?}", e))?.outs as u16;
     let sample_rate = driver.sample_rate().map_err(|e| format!("sample_rate(): {:?}", e))? as u32;
     Ok(AsioInfo { outs, sample_rate })
+}
+
+// Info del driver carregat ARA (sense carregar-ne cap), o None si no n'hi ha.
+#[cfg(feature = "asio")]
+fn asio_do_loaded_info(loaded: &Option<AsioLoaded>) -> Result<Option<AsioLoadedInfo>, String> {
+    let l = match loaded.as_ref() {
+        Some(l) => l,
+        None => return Ok(None),
+    };
+    let outs = l.driver.channels().map_err(|e| format!("channels(): {:?}", e))?.outs as u16;
+    let sample_rate = l.driver.sample_rate().map_err(|e| format!("sample_rate(): {:?}", e))? as u32;
+    Ok(Some(AsioLoadedInfo { name: l.name.clone(), outs, sample_rate }))
 }
 
 // Gain mestre del bus ASIO (bits f32 dins un AtomicU32). El callback el llegeix
@@ -1719,6 +1744,13 @@ fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
                 .unwrap_or_else(|_| Err("Pànic alliberant el driver ASIO.".into()));
                 let _ = reply.send(res);
             }
+            AsioCmd::LoadedInfo { reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    asio_do_loaded_info(&loaded)
+                }))
+                .unwrap_or_else(|_| Err("Pànic consultant el driver carregat.".into()));
+                let _ = reply.send(res);
+            }
             AsioCmd::Info { driver_name, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     asio_do_info(&mut loaded, &driver_name)
@@ -1959,6 +1991,28 @@ fn asio_load(driver_name: String) -> Result<AsioInfo, String> {
     }
 }
 
+// Quin driver ASIO hi ha carregat ARA (nom + canals + freqüència), o null. Per
+// refrescar la UI del routing en reobrir Settings (el driver pot estar carregat
+// pel botó «Carregar» o per la reproducció).
+#[tauri::command]
+fn asio_loaded_info() -> Result<Option<AsioLoadedInfo>, String> {
+    #[cfg(not(feature = "asio"))]
+    {
+        Ok(None)
+    }
+    #[cfg(feature = "asio")]
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        asio_sender()
+            .send(AsioCmd::LoadedInfo { reply: reply_tx })
+            .map_err(|_| "El fil ASIO no està disponible.".to_string())?;
+        match reply_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(res) => res,
+            Err(_) => Err("Temps esgotat consultant el driver carregat.".into()),
+        }
+    }
+}
+
 #[tauri::command]
 fn asio_release() -> Result<(), String> {
     #[cfg(not(feature = "asio"))]
@@ -2006,6 +2060,7 @@ pub fn run() {
             asio_stop_voice,
             asio_set_gain,
             asio_set_master_gain,
+            asio_loaded_info,
             asio_seek,
             asio_set_paused,
             asio_load,

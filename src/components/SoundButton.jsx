@@ -6,9 +6,6 @@ import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { keyForSlot } from '../lib/keyMap';
 import { hasClip, slotDuration } from '../lib/slotAudio';
 import { getVideoThumb } from '../lib/videoThumb';
-import { isAsioTarget } from '../lib/outputTarget';
-import { asioPosition } from '../lib/asioTelemetry';
-import { PREVIEW_VOICE_ID } from '../lib/asioIds';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
 
@@ -104,17 +101,14 @@ export function SoundButton({ slotId }) {
     let raf;
     const tick = () => {
       const st = useSoundStore.getState();
-      if (segDur > 0) {
-        if (isAsioTarget(st.previewDeviceId)) {
-          // Preview pel motor ASIO: posició per telemetria nativa.
-          const pos = asioPosition(PREVIEW_VOICE_ID);
-          setPreviewProg(pos != null ? Math.min(1, pos / segDur) : 0);
-        } else if (st.previewCtx) {
-          let pos = st.previewCtx.currentTime - st.previewStartedAt;
-          if (slot.loop) pos = pos % segDur;
-          pos = Math.max(0, Math.min(pos, segDur));
-          setPreviewProg(pos / segDur);
-        }
+      // Playhead del preview per RELLOTGE JS (ancorat a previewStartedAt en
+      // performance.now), igual per a ASIO, WASAPI buffer i streaming. Reseteja
+      // net a cada cue, sense dependre de telemetria ni del rellotge del context.
+      if (segDur > 0 && st.previewStartedAt > 0) {
+        let pos = performance.now() / 1000 - st.previewStartedAt;
+        if (slot.loop) pos = ((pos % segDur) + segDur) % segDur;
+        pos = Math.max(0, Math.min(pos, segDur));
+        setPreviewProg(pos / segDur);
       }
       raf = requestAnimationFrame(tick);
     };

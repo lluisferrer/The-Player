@@ -16,7 +16,6 @@ import { availableMonitors } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { applyAsioTelemetry } from './lib/asioTelemetry';
 import { plaOnVoiceEnded } from './lib/playlistAsio';
-import { PREVIEW_VOICE_ID } from './lib/asioIds';
 import './App.css';
 
 // Extensions acceptades pels cues: àudio i vídeo (els de vídeo van a la
@@ -115,9 +114,10 @@ export default function App() {
         un = await listen('asio-voice-ended', (e) => {
           const id = e.payload;
           if (id == null) return;
-          // Pot ser un cue (id = slot), el preview, o una pista de la playlist.
-          if (id === PREVIEW_VOICE_ID) { useSoundStore.getState().previewEnded(); return; }
-          useSoundStore.getState().handleEnded(id);
+          // Pot ser un cue (id = slot), el preview (id rotatiu) o una pista de la playlist.
+          const st = useSoundStore.getState();
+          if (id === st.previewVoiceId) { st.previewEnded(); return; }
+          st.handleEnded(id);
           plaOnVoiceEnded(id);
         });
       } catch { /* fora de Tauri */ }
