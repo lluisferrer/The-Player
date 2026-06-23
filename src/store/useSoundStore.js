@@ -41,6 +41,7 @@ const createEmptySlot = (id) => ({
   sourceNode: null,
   isPlaying: false,
   asioActive: false,   // sona pel motor ASIO natiu (playhead/VU venen per telemetria)
+  nativeActive: false, // sona pel motor natiu cpal (Increment 3, experimental; playhead/VU per telemetria nativa)
   volume: 0.8,
   startedAt: 0,        // instant (audioContext.currentTime) en què va començar a sonar
   pausedAt: null,      // posició (s dins el segment) on s'ha pausat (null = no pausat)
@@ -181,6 +182,9 @@ export const useSoundStore = create((set, get) => ({
   previewVoiceId: PREVIEW_VOICE_ID, // id de la veu ASIO del preview actual (rotatiu)
   previewStartedAt: 0,     // instant (previewCtx) en què va començar el preview
   colorOutputs: savedGlobals.colorOutputs || {}, // { color: deviceId } routing per grup
+  // Increment 3 (experimental): si és true, els cues de ruta WASAPI surten pel
+  // motor natiu cpal en lloc de Web Audio. Default APAGAT (comportament intacte).
+  useNativeCueEngine: savedGlobals.useNativeCueEngine ?? false,
   // Monitor predeterminat de la finestra de sortida de vídeo, identificat per NOM
   // (m.name d'availableMonitors). null = auto (primer monitor no principal).
   videoMonitorName: savedGlobals.videoMonitorName ?? null,
@@ -216,18 +220,27 @@ export const useSoundStore = create((set, get) => ({
     const {
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
+      useNativeCueEngine,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
+      useNativeCueEngine,
     }));
   },
 
   // Recorda si la sortida de vídeo està oberta (persistència de sessió).
   setVideoOutputOpen: (open) => {
     set({ videoOutputOpen: !!open });
+    get().persistGlobals();
+  },
+
+  // Increment 3 (experimental): activa/desactiva el motor natiu cpal per a cues
+  // de ruta WASAPI. Es desa als globals; default APAGAT.
+  setUseNativeCueEngine: (on) => {
+    set({ useNativeCueEngine: !!on });
     get().persistGlobals();
   },
 
@@ -938,6 +951,36 @@ export const useSoundStore = create((set, get) => ({
       return;
     }
 
+    // ── Motor natiu cpal (Increment 3, experimental) ────────────────────────
+    // Si l'interruptor està actiu i el cue és WASAPI (decision.route === 'wasapi')
+    // amb fitxer a disc i NO és visual, enruta'l pel motor natiu cpal en lloc de
+    // Web Audio. Marca nativeActive i NO segueix el camí Web Audio (anti-duplicació).
+    if (get().useNativeCueEngine && decision.route === 'wasapi' && slot.filePath && !isVisual(slot)) {
+      const total = slotDuration(slot);
+      const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || Infinity));
+      const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
+      const segDur = Math.max(0.02, (stopPoint > 0 ? stopPoint : total) - startPoint);
+      const effIn = Math.max(0, Math.min(effFadeIn(slot, globalFadeIn), segDur));
+      const effOut = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
+      invoke('native_play_cue', {
+        voiceId: slot.id,
+        filePath: slot.filePath,
+        gain: slot.volume ?? 0.8,
+        fadeIn: effIn,
+        fadeOut: effOut,
+        channels: [],
+      }).catch((e) => console.warn('[native] play_cue:', e));
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId
+            ? { ...s, isPlaying: true, nativeActive: true, pausedAt: null, startedAt: performance.now() / 1000 }
+            : s
+        ),
+        activeSlot: slotId,
+      }));
+      return;
+    }
+
     // Cue llarg en streaming: reproducció amb element <audio>
     if (slot.isStreaming) { csPlay(get, set, slotId); return; }
 
@@ -1058,6 +1101,19 @@ export const useSoundStore = create((set, get) => ({
       }));
       return;
     }
+    // Cue natiu cpal: congela la veu nativa (la posició ve de la telemetria nativa,
+    // que es desa al mateix Map que la d'ASIO → asioPosition).
+    if (slot.nativeActive) {
+      const pos = asioPosition(slotId) ?? 0;
+      invoke('native_set_paused', { voiceId: slotId, paused: true })
+        .catch((e) => console.warn('[native] pause:', e));
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId ? { ...s, isPlaying: false, pausedAt: pos } : s
+        ),
+      }));
+      return;
+    }
     if (slot.isStreaming) { csPause(get, set, slotId); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
     if (!ctx) return;
@@ -1092,6 +1148,18 @@ export const useSoundStore = create((set, get) => ({
     if (slot.asioActive) {
       invoke('asio_set_paused', { voiceId: slotId, paused: false })
         .catch((e) => console.warn('[asio] resume:', e));
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId ? { ...s, isPlaying: true, pausedAt: null } : s
+        ),
+        activeSlot: slotId,
+      }));
+      return;
+    }
+    // Cue natiu cpal: reprèn la veu nativa des de la posició congelada.
+    if (slot.nativeActive) {
+      invoke('native_set_paused', { voiceId: slotId, paused: false })
+        .catch((e) => console.warn('[native] resume:', e));
       set((state) => ({
         slots: state.slots.map((s) =>
           s.id === slotId ? { ...s, isPlaying: true, pausedAt: null } : s
@@ -1224,10 +1292,10 @@ export const useSoundStore = create((set, get) => ({
     if (!current || !current.isPlaying) return;
     // El cue ha acabat de forma natural: deixa de duckejar (si tocava)
     if (current.duck) duckRemove(get, slotId);
-    if (current.asioActive) clearAsioTelemetry(slotId);
+    if (current.asioActive || current.nativeActive) clearAsioTelemetry(slotId);
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, isPlaying: false, asioActive: false, sourceNode: null } : s
+        s.id === slotId ? { ...s, isPlaying: false, asioActive: false, nativeActive: false, sourceNode: null } : s
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));
@@ -1347,6 +1415,18 @@ export const useSoundStore = create((set, get) => ({
         .catch((e) => console.warn('[asio] seek:', e));
       return;
     }
+    // Cue natiu cpal: reposiciona la veu nativa (mateixa via que ASIO, sense graf
+    // Web Audio). El playhead s'actualitza per la telemetria nativa.
+    if (slot.nativeActive) {
+      const total = slotDuration(slot);
+      const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || 0));
+      const stopPoint = slot.stopPoint != null ? Math.min(slot.stopPoint, total) : total;
+      const segDur = Math.max(0.02, stopPoint - startPoint);
+      const r = Math.min(1, Math.max(0, ratio));
+      invoke('native_seek', { voiceId: slotId, position: startPoint + r * segDur })
+        .catch((e) => console.warn('[native] seek:', e));
+      return;
+    }
     if (slot.isStreaming) { csSeek(get, set, slotId, ratio); return; }
     const ctx = slot.fadeGainNode ? slot.fadeGainNode.context : get().audioContext;
     if (!ctx) return;
@@ -1415,6 +1495,12 @@ export const useSoundStore = create((set, get) => ({
     if (slot.asioActive) {
       invoke('asio_stop_voice', { voiceId: slotId, fadeOut: 0 })
         .catch((e) => console.warn('[asio] stop_voice (clear):', e));
+      clearAsioTelemetry(slotId);
+    }
+    // Atura la veu nativa cpal (sonant o pausada) perquè no quedi penjada al motor
+    if (slot.nativeActive) {
+      invoke('native_stop_voice', { voiceId: slotId, fadeOut: 0 })
+        .catch((e) => console.warn('[native] stop_voice (clear):', e));
       clearAsioTelemetry(slotId);
     }
     // Atura l'streaming (l'element <audio> no és un sourceNode)
@@ -1505,6 +1591,25 @@ export const useSoundStore = create((set, get) => ({
     // pot ser >60s (marcat isStreaming), però NO té graf Web Audio, així que
     // csStop no l'aturaria; ha de parar per la via nativa. (A playSlot el
     // dispatch ASIO també es resol abans de l'streaming.)
+    // Cue natiu cpal: no té graf Web Audio. Atura la veu nativa amb el fade-out
+    // efectiu. Va ABANS del bloc ASIO i de l'streaming (mateix motiu).
+    if (slot.nativeActive) {
+      let fadeSec = 0;
+      if (fade === true) fadeSec = Math.max(0, effFadeOut(slot, globalFadeOut));
+      else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
+      // Pausat: la veu no avança al motor → atura de cop (fade 0).
+      if (slot.pausedAt != null) fadeSec = 0;
+      invoke('native_stop_voice', { voiceId: slot.id, fadeOut: fadeSec })
+        .catch((e) => console.warn('[native] stop_voice:', e));
+      clearAsioTelemetry(slotId);
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.id === slotId ? { ...s, isPlaying: false, nativeActive: false, pausedAt: null } : s
+        ),
+        activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
+      }));
+      return;
+    }
     if (isAsioTarget(resolveCueTargetStr(get(), slot)) && !slot.sourceNode) {
       // Calcula el fade-out: true → efectiu del cue; número → aquests segons.
       let fadeSec = 0;
@@ -1577,6 +1682,11 @@ export const useSoundStore = create((set, get) => ({
     if (slot?.asioActive) {
       invoke('asio_set_gain', { voiceId: slotId, gain: volume })
         .catch((e) => console.warn('[asio] set_gain:', e));
+    }
+    // Cue natiu cpal actiu: aplica el volum a la veu nativa en calent
+    if (slot?.nativeActive) {
+      invoke('native_set_gain', { voiceId: slotId, gain: volume })
+        .catch((e) => console.warn('[native] set_gain:', e));
     }
     if (slot?.isStreaming) csSetVolume(get, slotId, volume);
     // Cue de vídeo en reproducció: aplica el volum a la finestra de sortida

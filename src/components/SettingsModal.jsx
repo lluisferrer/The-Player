@@ -157,6 +157,9 @@ export function SettingsModal({ onClose }) {
   const cuesStopPlaylist = useSoundStore((s) => s.cuesStopPlaylist);
   const setCuesPlaylistAction = useSoundStore((s) => s.setCuesPlaylistAction);
   const setCuesStopOthers = useSoundStore((s) => s.setCuesStopOthers);
+  // Increment 3 (experimental): motor natiu cpal per a cues WASAPI
+  const useNativeCueEngine = useSoundStore((s) => s.useNativeCueEngine);
+  const setUseNativeCueEngine = useSoundStore((s) => s.setUseNativeCueEngine);
 
   const crossfade = useSoundStore((s) => s.crossfade);
   const setCrossfade = useSoundStore((s) => s.setCrossfade);
@@ -519,6 +522,21 @@ export function SettingsModal({ onClose }) {
                 </span>
               </label>
               <div className="settings-note">Each cue can set its own fade in the editor (✎); otherwise it uses these.</div>
+
+              <div className="settings-subtitle">Audio engine</div>
+              <div className="editor-options">
+                <label className="editor-check">
+                  <input
+                    type="checkbox"
+                    checked={useNativeCueEngine}
+                    onChange={(e) => setUseNativeCueEngine(e.target.checked)}
+                  />
+                  Native engine (cpal) for cues — experimental
+                </label>
+              </div>
+              <div className="settings-note">
+                Routes WASAPI cues through the native engine instead of Web Audio. ASIO cues are unaffected. Off by default.
+              </div>
             </>
           )}
 

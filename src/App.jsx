@@ -16,6 +16,7 @@ import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, cl
 import { listen } from '@tauri-apps/api/event';
 import { applyAsioTelemetry } from './lib/asioTelemetry';
 import { plaOnVoiceEnded } from './lib/playlistAsio';
+import logo from './assets/ezyPlayerMinimalLogo.svg';
 import './App.css';
 
 // Extensions acceptades pels cues: àudio, vídeo i imatge (vídeo i imatge van a
@@ -175,6 +176,35 @@ export default function App() {
     return () => { if (un) un(); };
   }, []);
 
+  // Increment 3: el motor natiu cpal informa quan una veu (cue) acaba sola →
+  // reseteja el tile (el voiceId coincideix amb l'id del slot).
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('native-voice-ended', (e) => {
+          const id = e.payload;
+          if (id == null) return;
+          useSoundStore.getState().handleEnded(id);
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // Increment 3: telemetria del motor natiu cpal (~30 Hz). Mateix format
+  // { id, pos, level } que l'ASIO; es desa al MATEIX Map (applyAsioTelemetry) i el
+  // consulten playhead i picòmetre dels slots nativeActive.
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('native-telemetry', (e) => applyAsioTelemetry(e.payload));
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
   // En arrencar: recarrega els cues des de disc (per la ruta desada) i neteja
   // els fantasmes vells (nom sense ruta) perquè no quedin noms penjats.
   useEffect(() => {
@@ -321,15 +351,10 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        {/* Brand logo: (e^P) monogram + wordmark, adapted from ezyRider */}
+        {/* Brand logo: (e^P) monogram + wordmark, idèntic a ezyRider */}
         <h1 className="app-brand">
-          <span className="brand-mark" aria-hidden="true">
-            <span className="brand-paren">(</span>
-            <span className="brand-e">e</span>
-            <span className="brand-sup">P</span>
-            <span className="brand-paren">)</span>
-          </span>
-          <span className="brand-name">ezyPlayer</span>
+          <img src={logo} alt="ezyPlayer logo" className="brand-logo" />
+          <span className="brand-name"><span className="brand-ezy">ezy</span><span className="brand-app">Player</span></span>
         </h1>
 
         {/* Centered view switcher */}

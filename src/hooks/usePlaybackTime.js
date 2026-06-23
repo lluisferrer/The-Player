@@ -17,9 +17,10 @@ export function usePlaybackTime(slot) {
   const duration = Math.max(0, stopPoint - startPoint);
   const isPlaying = Boolean(slot && slot.isPlaying);
   const isStreaming = Boolean(slot && slot.isStreaming);
-  // Cue routejat al motor ASIO natiu: la posició ve per telemetria (no per
-  // AudioContext ni element <audio>). Té prioritat sobre les altres dues vies.
-  const isAsio = Boolean(slot && slot.asioActive);
+  // Cue routejat al motor ASIO natiu o al motor natiu cpal: la posició ve per
+  // telemetria (no per AudioContext ni element <audio>). Tots dos motors desen la
+  // telemetria al mateix Map (asioPosition). Té prioritat sobre les altres vies.
+  const isAsio = Boolean(slot && (slot.asioActive || slot.nativeActive));
   const slotId = slot && slot.id;
   const startedAt = (slot && slot.startedAt) || 0;
   const pausedAt = slot && slot.pausedAt != null ? slot.pausedAt : null;
