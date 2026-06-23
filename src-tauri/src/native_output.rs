@@ -319,27 +319,48 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
 // config triada, clampem el rate desitjat al seu rang. Així un dispositiu de 8
 // sortides s'obre amb 8 canals i el routing per canal funciona de debò (a
 // diferència de `default_output_config()`, que sol donar només 2 canals).
+// Rang de preferència d'un format de mostra que el callback SAP escriure (més baix
+// = millor qualitat). None = format no convertible: l'evitem (abans es podia triar
+// un rang U8 multicanal per davant d'un F32 estèreo i el callback fallava → silenci).
+fn native_fmt_rank(sf: cpal::SampleFormat) -> Option<u8> {
+    match sf {
+        cpal::SampleFormat::F32 => Some(0),
+        cpal::SampleFormat::I16 => Some(1),
+        cpal::SampleFormat::U16 => Some(2),
+        cpal::SampleFormat::U8 => Some(3),
+        _ => None,
+    }
+}
+
 fn native_pick_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
     let ranges = device
         .supported_output_configs()
         .map_err(|e| format!("supported_output_configs(): {}", e))?;
 
-    // Tria el rang amb més canals; en empat, el que permeti acostar-se més a les
-    // freqüències preferides (48000 → 44100 → la màxima del rang).
+    // Tria el rang amb MÉS canals i, en empat de canals, el format de MILLOR qualitat
+    // que sabem escriure (F32 > I16 > U16 > U8). Descarta els formats no convertibles.
+    // La freqüència es resol després (48000 → 44100 → la màxima del rang).
     let mut best: Option<cpal::SupportedStreamConfigRange> = None;
     for r in ranges {
-        best = match best {
-            None => Some(r),
+        let rank = match native_fmt_rank(r.sample_format()) {
+            Some(k) => k,
+            None => continue, // format que el callback no sap escriure: l'ignorem
+        };
+        let take = match &best {
+            None => true,
             Some(b) => {
-                if r.channels() > b.channels() {
-                    Some(r)
-                } else {
-                    Some(b)
-                }
+                r.channels() > b.channels()
+                    || (r.channels() == b.channels()
+                        && rank < native_fmt_rank(b.sample_format()).unwrap_or(u8::MAX))
             }
         };
+        if take {
+            best = Some(r);
+        }
     }
-    let best = best.ok_or_else(|| "El dispositiu no exposa cap config de sortida.".to_string())?;
+    let best = best.ok_or_else(|| {
+        "El dispositiu no exposa cap config de sortida amb un format suportat.".to_string()
+    })?;
 
     // Freqüència desitjada acotada al rang suportat per la config triada.
     let min = best.min_sample_rate().0;
@@ -423,6 +444,7 @@ fn native_ensure_backend(
         cpal::SampleFormat::F32 => build!(f32, |x: f32| x),
         cpal::SampleFormat::I16 => build!(i16, |x: f32| (x * i16::MAX as f32) as i16),
         cpal::SampleFormat::U16 => build!(u16, |x: f32| ((x * 0.5 + 0.5) * u16::MAX as f32) as u16),
+        cpal::SampleFormat::U8 => build!(u8, |x: f32| ((x * 0.5 + 0.5) * u8::MAX as f32) as u8),
         other => return Err(format!("Format de mostra no suportat: {:?}", other)),
     }
     .map_err(|e| format!("build_output_stream(): {}", e))?;
