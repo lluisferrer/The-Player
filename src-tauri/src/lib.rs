@@ -2094,12 +2094,14 @@ fn asio_release() -> Result<(), String> {
 // amb la feature `native` (i, per tant, també amb `asio`). Sense `native` retornen
 // un error explicatiu.
 
-// Reprodueix un cue (fitxer en memòria) pel dispositiu de sortida per defecte via
-// cpal, amb gain i fades. La veu (identificada per `voice_id`) sona junt amb les
-// altres i s'acaba sola; substitueix una veu del mateix id si ja existia.
+// Reprodueix un cue (fitxer en memòria) via cpal pel dispositiu `device_name`
+// (buit = per defecte) i els canals destí indicats (buit = els 2 primers), amb
+// gain i fades. La veu (identificada per `voice_id`) sona junt amb les altres i
+// s'acaba sola; substitueix una veu del mateix id si ja existia (a qualsevol device).
 #[tauri::command]
 fn native_play_cue(
     voice_id: u64,
+    device_name: String,
     file_path: String,
     gain: f32,
     fade_in: f32,
@@ -2108,12 +2110,12 @@ fn native_play_cue(
 ) -> Result<(), String> {
     #[cfg(not(feature = "native"))]
     {
-        let _ = (voice_id, file_path, gain, fade_in, fade_out, channels);
+        let _ = (voice_id, device_name, file_path, gain, fade_in, fade_out, channels);
         Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
     }
     #[cfg(feature = "native")]
     {
-        native_output::play_cue(voice_id, file_path, gain, fade_in, fade_out, channels)
+        native_output::play_cue(voice_id, device_name, file_path, gain, fade_in, fade_out, channels)
     }
 }
 

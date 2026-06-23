@@ -160,6 +160,12 @@ export function SettingsModal({ onClose }) {
   // Increment 3 (experimental): motor natiu cpal per a cues WASAPI
   const useNativeCueEngine = useSoundStore((s) => s.useNativeCueEngine);
   const setUseNativeCueEngine = useSoundStore((s) => s.setUseNativeCueEngine);
+  // Increment 4: routing del motor natiu (dispositiu + canals). SEPARAT del
+  // routing WASAPI/ASIO: usa els NOMS de cpal de list_audio_outputs.
+  const nativeCueDeviceName = useSoundStore((s) => s.nativeCueDeviceName);
+  const setNativeCueDevice = useSoundStore((s) => s.setNativeCueDevice);
+  const nativeCueChannels = useSoundStore((s) => s.nativeCueChannels);
+  const setNativeCueChannels = useSoundStore((s) => s.setNativeCueChannels);
 
   const crossfade = useSoundStore((s) => s.crossfade);
   const setCrossfade = useSoundStore((s) => s.setCrossfade);
@@ -177,6 +183,8 @@ export function SettingsModal({ onClose }) {
   const setDuckSettings = useSoundStore((s) => s.setDuckSettings);
 
   const [outputs, setOutputs] = useState(null);
+  // Increment 4: dispositius natius (noms de cpal) per al selector del motor natiu.
+  const [nativeOutputs, setNativeOutputs] = useState(null);
   const [monitors, setMonitors] = useState([]);  // monitors del sistema (sortida de vídeo)
   const [diagError, setDiagError] = useState(null);
   const [asioOut, setAsioOut] = useState(null);   // dispositius ASIO detectats
@@ -209,6 +217,16 @@ export function SettingsModal({ onClose }) {
       catch (e) { setDiagError(String(e)); }
     })();
   }, [tab, outputs]);
+
+  // Increment 4: carrega els dispositius natius (noms de cpal) quan ets a Cues amb
+  // el motor natiu actiu, per poblar el selector de dispositiu i canals de sortida.
+  useEffect(() => {
+    if (tab !== 'cues' || !useNativeCueEngine || nativeOutputs) return;
+    (async () => {
+      try { setNativeOutputs(await invoke('list_audio_outputs')); }
+      catch { setNativeOutputs([]); }
+    })();
+  }, [tab, useNativeCueEngine, nativeOutputs]);
 
   // Detecció ASIO sota demanda (carregar drivers ASIO és lent i pot bloquejar-se)
   const detectAsio = async () => {
@@ -537,6 +555,63 @@ export function SettingsModal({ onClose }) {
               <div className="settings-note">
                 Routes WASAPI cues through the native engine instead of Web Audio. ASIO cues are unaffected. Off by default.
               </div>
+
+              {useNativeCueEngine && (() => {
+                // Dispositiu natiu seleccionat (per NOM de cpal) i els seus canals.
+                const devs = nativeOutputs || [];
+                const sel = devs.find((d) => d.name === nativeCueDeviceName);
+                // max_channels del dispositiu triat (o per defecte si no n'hi ha).
+                const maxCh = sel ? sel.max_channels : (devs.find((d) => d.is_default)?.max_channels || 2);
+                // Parells de canals disponibles: 1-2, 3-4, … fins a max_channels.
+                const pairs = [];
+                for (let c = 0; c + 1 < maxCh; c += 2) pairs.push([c, c + 1]);
+                if (pairs.length === 0) pairs.push([0, 1]);
+                const curPair = (nativeCueChannels && nativeCueChannels.length === 2)
+                  ? `${nativeCueChannels[0]},${nativeCueChannels[1]}` : '';
+                return (
+                  <>
+                    <label className="ps-row">
+                      <span>Native output device</span>
+                      <span className="ps-cf">
+                        <select
+                          value={nativeCueDeviceName}
+                          onChange={(e) => setNativeCueDevice(e.target.value)}
+                        >
+                          <option value="">System default</option>
+                          {devs.map((d) => (
+                            <option key={d.name} value={d.name}>
+                              {d.name} ({d.max_channels}ch)
+                            </option>
+                          ))}
+                        </select>
+                      </span>
+                    </label>
+                    <label className="ps-row">
+                      <span>Output channels</span>
+                      <span className="ps-cf">
+                        <select
+                          value={curPair}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (!v) { setNativeCueChannels([]); return; }
+                            setNativeCueChannels(v.split(',').map((n) => parseInt(n, 10)));
+                          }}
+                        >
+                          <option value="">Default (1-2)</option>
+                          {pairs.map(([a, b]) => (
+                            <option key={`${a},${b}`} value={`${a},${b}`}>
+                              {a + 1}-{b + 1}
+                            </option>
+                          ))}
+                        </select>
+                      </span>
+                    </label>
+                    <div className="settings-note">
+                      Native routing uses cpal device names (separate from WASAPI/ASIO routing). Pick a device opened with all its channels, then a channel pair.
+                    </div>
+                  </>
+                );
+              })()}
             </>
           )}
 

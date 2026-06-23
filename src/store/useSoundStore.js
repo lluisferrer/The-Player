@@ -185,6 +185,12 @@ export const useSoundStore = create((set, get) => ({
   // Increment 3 (experimental): si és true, els cues de ruta WASAPI surten pel
   // motor natiu cpal en lloc de Web Audio. Default APAGAT (comportament intacte).
   useNativeCueEngine: savedGlobals.useNativeCueEngine ?? false,
+  // Increment 4: routing del motor natiu cpal. `nativeCueDeviceName` és el NOM de
+  // cpal del dispositiu de sortida (de list_audio_outputs; buit = per defecte) —
+  // NO és un deviceId del WebView ni un target ASIO. `nativeCueChannels` són els
+  // canals destí 0-based (p. ex. [0,1] = 1-2, [2,3] = 3-4); buit = els 2 primers.
+  nativeCueDeviceName: savedGlobals.nativeCueDeviceName ?? '',
+  nativeCueChannels: Array.isArray(savedGlobals.nativeCueChannels) ? savedGlobals.nativeCueChannels : [],
   // Monitor predeterminat de la finestra de sortida de vídeo, identificat per NOM
   // (m.name d'availableMonitors). null = auto (primer monitor no principal).
   videoMonitorName: savedGlobals.videoMonitorName ?? null,
@@ -220,14 +226,14 @@ export const useSoundStore = create((set, get) => ({
     const {
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
-      useNativeCueEngine,
+      useNativeCueEngine, nativeCueDeviceName, nativeCueChannels,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
-      useNativeCueEngine,
+      useNativeCueEngine, nativeCueDeviceName, nativeCueChannels,
     }));
   },
 
@@ -241,6 +247,19 @@ export const useSoundStore = create((set, get) => ({
   // de ruta WASAPI. Es desa als globals; default APAGAT.
   setUseNativeCueEngine: (on) => {
     set({ useNativeCueEngine: !!on });
+    get().persistGlobals();
+  },
+
+  // Increment 4: dispositiu de sortida del motor natiu (NOM de cpal; buit = per
+  // defecte). En canviar de dispositiu, el routing de canals deixa de ser vàlid:
+  // el reiniciem a buit (els 2 primers canals) perquè no apunti a canals inexistents.
+  setNativeCueDevice: (name) => {
+    set({ nativeCueDeviceName: name || '', nativeCueChannels: [] });
+    get().persistGlobals();
+  },
+  // Increment 4: canals destí del motor natiu (array 0-based, p. ex. [2,3] = 3-4).
+  setNativeCueChannels: (channels) => {
+    set({ nativeCueChannels: Array.isArray(channels) ? channels : [] });
     get().persistGlobals();
   },
 
@@ -964,11 +983,12 @@ export const useSoundStore = create((set, get) => ({
       const effOut = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
       invoke('native_play_cue', {
         voiceId: slot.id,
+        deviceName: get().nativeCueDeviceName || '',
         filePath: slot.filePath,
         gain: slot.volume ?? 0.8,
         fadeIn: effIn,
         fadeOut: effOut,
-        channels: [],
+        channels: get().nativeCueChannels || [],
       }).catch((e) => console.warn('[native] play_cue:', e));
       set((state) => ({
         slots: state.slots.map((s) =>

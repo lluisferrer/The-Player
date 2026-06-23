@@ -21,27 +21,31 @@
 // notificador (NO cada bloc). La descodificació es fa FORA del callback (al fil de
 // la comanda) i el PCM ja arriba resamplejat.
 //
+// INCREMENT 4: selecció de dispositiu + routing MULTICANAL real. Ara el motor:
+//   · Obre cada dispositiu amb TOTS els seus canals (config amb el màxim nombre de
+//     canals, no la default estèreo), perquè el routing per canal funcioni de debò.
+//   · Manté DIVERSOS dispositius oberts alhora (mapa nom→backend), així cues
+//     diferents poden anar a interfícies físiques diferents simultàniament.
+//   · `PlayCue` rep el `device_name` (buit = per defecte) i els canals destí.
+//
 // Limitacions conscients d'aquest increment (queden per a increments POSTERIORS):
 //   · No hi ha streaming (decode-ahead) per a pistes llargues: tot el PCM es
-//     carrega a memòria. El routing multicanal real per canal + la selecció de
-//     dispositiu i la integració amb la UI React vénen després.
-//   · El WebView només dóna estèreo; aquest motor natiu és la via cap a multicanal
-//     de debò, però aquí encara fem servir el dispositiu de sortida per defecte tal
-//     com cpal el reporta (sovint 2 canals).
+//     carrega a memòria.
 
 #![cfg(feature = "native")]
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::{asio_decode, asio_soft_clip, asio_mix_voice, Voice};
 
-// Estat persistent del backend cpal: l'stream de sortida obert i la llista de
-// veus que el callback mescla. Es manté viu mentre hi hagi reproducció.
+// Estat persistent d'UN dispositiu cpal obert: l'stream de sortida i la llista de
+// veus que el seu callback mescla. Es manté viu mentre hi hagi reproducció.
 //
 // `stream` cal MANTENIR-LO VIU: si es deixés caure, cpal aturaria el dispositiu.
-// `cpal::Stream` NO és Send, per això tot el backend viu en un fil propietari
+// `cpal::Stream` NO és Send, per això tot viu en un fil propietari
 // (vegeu `native_thread_main`) i mai creua fronteres de fil.
 struct NativeBackend {
     // Veus actives compartides amb el callback (fil RT de cpal). Lock curt.
@@ -54,6 +58,11 @@ struct NativeBackend {
     #[allow(dead_code)]
     stream: cpal::Stream,
 }
+
+// Mapa de dispositius oberts: clau = nom de cpal del device (string buit "" = el
+// dispositiu per defecte). Cada entrada té el seu propi stream, veus i freqüència,
+// de manera que cues diferents poden sonar per dispositius físics diferents alhora.
+type NativeBackends = HashMap<String, NativeBackend>;
 
 // ── Fil propietari del backend cpal ──────────────────────────────────────────
 //
@@ -69,10 +78,13 @@ enum NativeCmd {
     // substitueix una veu del mateix id si ja existeix.
     PlayCue {
         voice_id: u64,
+        // Nom de cpal del dispositiu de sortida (buit = per defecte).
+        device_name: String,
         file_path: String,
         gain: f32,
         fade_in: f32,
         fade_out: f32,
+        // Canals de sortida destí (0-based) dins el dispositiu triat.
         channels: Vec<u16>,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
@@ -142,19 +154,32 @@ fn native_notify_ended(voice_id: u64) {
 
 // ── Estat compartit per al fil de telemetria ─────────────────────────────────
 //
-// El fil de telemetria mostreja la llista de veus activa (la mateixa que el
-// callback) i la freqüència del device per convertir frames a segons. S'estableix
-// quan s'obre el backend. Anàleg a `AsioMeterShared`/`ASIO_METER` del motor ASIO.
-struct NativeMeterShared {
+// El fil de telemetria mostreja les llistes de veus actives (les mateixes que els
+// callbacks) i la freqüència de cada device per convertir frames a segons. Amb
+// multi-dispositiu n'hi ha una entrada per device obert; la telemetria s'agrega
+// sobre totes. S'actualitza cada cop que el conjunt de backends canvia. Anàleg a
+// `AsioMeterShared`/`ASIO_METER` del motor ASIO.
+struct NativeMeterDevice {
     voices: Arc<Mutex<Vec<Voice>>>,
     sample_rate: u32,
 }
 
-static NATIVE_METER: OnceLock<Mutex<Option<NativeMeterShared>>> = OnceLock::new();
+static NATIVE_METER: OnceLock<Mutex<Vec<NativeMeterDevice>>> = OnceLock::new();
 
 // Accés mandrós a l'slot compartit de telemetria.
-fn native_meter_slot() -> &'static Mutex<Option<NativeMeterShared>> {
-    NATIVE_METER.get_or_init(|| Mutex::new(None))
+fn native_meter_slot() -> &'static Mutex<Vec<NativeMeterDevice>> {
+    NATIVE_METER.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+// Reconstrueix la taula de telemetria a partir del mapa de backends. Es crida cada
+// cop que s'obre un dispositiu nou (poc freqüent), MAI des del callback RT.
+fn native_publish_meter(backends: &NativeBackends) {
+    if let Ok(mut g) = native_meter_slot().lock() {
+        *g = backends
+            .values()
+            .map(|b| NativeMeterDevice { voices: b.voices.clone(), sample_rate: b.sample_rate })
+            .collect();
+    }
 }
 
 // Un ítem de telemetria per veu activa: id de la veu, posició dins el segment
@@ -195,30 +220,27 @@ pub fn start_notifier(app: tauri::AppHandle) {
         .name("native-telemetry".into())
         .spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_millis(33));
-            // Snapshot curt sota lock: id, posició (s) i nivell de cada veu activa.
+            // Snapshot curt sota lock: id, posició (s) i nivell de cada veu activa,
+            // AGREGAT sobre tots els dispositius oberts.
             let items: Vec<NativeTelemetryItem> = {
                 let guard = match native_meter_slot().lock() {
                     Ok(g) => g,
                     Err(_) => continue,
                 };
-                match guard.as_ref() {
-                    Some(sh) => {
-                        let rate = sh.sample_rate.max(1) as f32;
-                        match sh.voices.lock() {
-                            Ok(vs) => vs
-                                .iter()
-                                .filter(|v| !v.finished)
-                                .map(|v| NativeTelemetryItem {
-                                    id: v.voice_id,
-                                    pos: v.seg_pos() as f32 / rate,
-                                    level: v.meter,
-                                })
-                                .collect(),
-                            Err(_) => continue,
-                        }
+                let mut out: Vec<NativeTelemetryItem> = Vec::new();
+                for dev in guard.iter() {
+                    let rate = dev.sample_rate.max(1) as f32;
+                    if let Ok(vs) = dev.voices.lock() {
+                        out.extend(vs.iter().filter(|v| !v.finished).map(|v| {
+                            NativeTelemetryItem {
+                                id: v.voice_id,
+                                pos: v.seg_pos() as f32 / rate,
+                                level: v.meter,
+                            }
+                        }));
                     }
-                    None => Vec::new(),
                 }
+                out
             };
             // Només emetem si hi ha veus (la UI esborra per caducitat si calla).
             if !items.is_empty() {
@@ -232,48 +254,51 @@ pub fn start_notifier(app: tauri::AppHandle) {
 // (stream + veus) viu entre cues. Aïllem cada ordre amb `catch_unwind` perquè un
 // error d'un device dolent no mati el fil ni deixi el dispositiu en mal estat.
 fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
-    // Backend persistent: None fins al primer cue, després es manté obert.
-    let mut backend: Option<NativeBackend> = None;
+    // Mapa de dispositius oberts: buit fins al primer cue, després es mantenen
+    // oberts (un stream cpal viu per device usat).
+    let mut backends: NativeBackends = NativeBackends::new();
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            NativeCmd::PlayCue { voice_id, file_path, gain, fade_in, fade_out, channels, reply } => {
+            NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    native_play_cue_impl(&mut backend, voice_id, &file_path, gain, fade_in, fade_out, &channels)
+                    native_play_cue_impl(&mut backends, voice_id, &device_name, &file_path, gain, fade_in, fade_out, &channels)
                 }))
                 .unwrap_or_else(|_| Err("Pànic reproduint el cue natiu.".into()));
                 let _ = reply.send(res);
             }
             NativeCmd::StopVoice { voice_id, fade_out, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    native_stop_voice_impl(&backend, voice_id, fade_out)
+                    native_stop_voice_impl(&backends, voice_id, fade_out)
                 }))
                 .unwrap_or_else(|_| Err("Pànic aturant la veu nativa.".into()));
                 let _ = reply.send(res);
             }
             NativeCmd::SetGain { voice_id, gain, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    native_set_gain_impl(&backend, voice_id, gain)
+                    native_set_gain_impl(&backends, voice_id, gain)
                 }))
                 .unwrap_or_else(|_| Err("Pànic canviant el gain natiu.".into()));
                 let _ = reply.send(res);
             }
             NativeCmd::Seek { voice_id, position, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    native_seek_impl(&backend, voice_id, position)
+                    native_seek_impl(&backends, voice_id, position)
                 }))
                 .unwrap_or_else(|_| Err("Pànic fent seek natiu.".into()));
                 let _ = reply.send(res);
             }
             NativeCmd::SetPaused { voice_id, paused, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    native_set_paused_impl(&backend, voice_id, paused)
+                    native_set_paused_impl(&backends, voice_id, paused)
                 }))
                 .unwrap_or_else(|_| Err("Pànic pausant la veu nativa.".into()));
                 let _ = reply.send(res);
             }
             NativeCmd::Stop { reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if let Some(b) = backend.as_ref() {
+                    // Parada global: buida les veus de TOTS els dispositius oberts
+                    // (els streams es mantenen vius, escrivint silenci).
+                    for b in backends.values() {
                         if let Ok(mut v) = b.voices.lock() {
                             v.clear();
                         }
@@ -287,21 +312,83 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
     }
 }
 
-// Assegura que hi ha un backend cpal obert (stream de sortida del dispositiu per
-// defecte + llista de veus + callback de mescla). Idempotent: si ja n'hi ha, el
-// reutilitza. Retorna la freqüència i el nombre de canals del dispositiu.
-fn native_ensure_backend(backend: &mut Option<NativeBackend>) -> Result<(u32, usize), String> {
-    if let Some(b) = backend.as_ref() {
+// Tria la millor config de sortida d'un dispositiu per a routing MULTICANAL: la que
+// ofereix el MÀXIM nombre de canals i, a igualtat de canals, una freqüència
+// raonable (prefereix 48000, si no 44100, si no la més alta dins el rang). Cada
+// `SupportedStreamConfigRange` cobreix un rang [min,max] de freqüència; per a la
+// config triada, clampem el rate desitjat al seu rang. Així un dispositiu de 8
+// sortides s'obre amb 8 canals i el routing per canal funciona de debò (a
+// diferència de `default_output_config()`, que sol donar només 2 canals).
+fn native_pick_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
+    let ranges = device
+        .supported_output_configs()
+        .map_err(|e| format!("supported_output_configs(): {}", e))?;
+
+    // Tria el rang amb més canals; en empat, el que permeti acostar-se més a les
+    // freqüències preferides (48000 → 44100 → la màxima del rang).
+    let mut best: Option<cpal::SupportedStreamConfigRange> = None;
+    for r in ranges {
+        best = match best {
+            None => Some(r),
+            Some(b) => {
+                if r.channels() > b.channels() {
+                    Some(r)
+                } else {
+                    Some(b)
+                }
+            }
+        };
+    }
+    let best = best.ok_or_else(|| "El dispositiu no exposa cap config de sortida.".to_string())?;
+
+    // Freqüència desitjada acotada al rang suportat per la config triada.
+    let min = best.min_sample_rate().0;
+    let max = best.max_sample_rate().0;
+    let pick = |want: u32| want >= min && want <= max;
+    let rate = if pick(48000) {
+        48000
+    } else if pick(44100) {
+        44100
+    } else {
+        max
+    };
+    Ok(best.with_sample_rate(cpal::SampleRate(rate)))
+}
+
+// Resol un dispositiu de sortida pel seu NOM de cpal. Nom buit = dispositiu per
+// defecte del host. Si el nom no es troba, retorna error (no recau silenciosament
+// al per defecte, per no enviar so a un dispositiu equivocat).
+fn native_resolve_device(host: &cpal::Host, device_name: &str) -> Result<cpal::Device, String> {
+    if device_name.is_empty() {
+        return host
+            .default_output_device()
+            .ok_or_else(|| "No hi ha cap dispositiu de sortida per defecte.".to_string());
+    }
+    let mut devices = host
+        .output_devices()
+        .map_err(|e| format!("output_devices(): {}", e))?;
+    devices
+        .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
+        .ok_or_else(|| format!("Dispositiu de sortida no trobat: {}", device_name))
+}
+
+// Assegura que hi ha un backend cpal obert per al dispositiu `device_name` (buit =
+// per defecte): stream de sortida amb TOTS els canals + llista de veus + callback
+// de mescla. Idempotent: si el device ja és obert, el reutilitza. Retorna la
+// freqüència i el nombre de canals d'aquell dispositiu. En obrir-ne un de nou,
+// republica la taula de telemetria (un sol cop, fora del callback RT).
+fn native_ensure_backend(
+    backends: &mut NativeBackends,
+    device_name: &str,
+) -> Result<(u32, usize), String> {
+    if let Some(b) = backends.get(device_name) {
         return Ok((b.sample_rate, b.channels));
     }
 
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| "No hi ha cap dispositiu de sortida per defecte.".to_string())?;
-    let supported = device
-        .default_output_config()
-        .map_err(|e| format!("default_output_config(): {}", e))?;
+    let device = native_resolve_device(&host, device_name)?;
+    // Config MULTICANAL: el màxim de canals del dispositiu (no la default estèreo).
+    let supported = native_pick_config(&device)?;
     let sample_format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
     let channels = config.channels as usize;
@@ -342,13 +429,15 @@ fn native_ensure_backend(backend: &mut Option<NativeBackend>) -> Result<(u32, us
 
     stream.play().map_err(|e| format!("play(): {}", e))?;
 
-    // Publica la llista de veus i la freqüència perquè el fil de telemetria les
-    // mostregi (playhead + VU) sense tocar el callback RT.
-    if let Ok(mut g) = native_meter_slot().lock() {
-        *g = Some(NativeMeterShared { voices: voices.clone(), sample_rate });
-    }
+    backends.insert(
+        device_name.to_string(),
+        NativeBackend { voices, sample_rate, channels, stream },
+    );
 
-    *backend = Some(NativeBackend { voices, sample_rate, channels, stream });
+    // Republica la taula de telemetria amb tots els dispositius oberts (un sol cop,
+    // fora del callback RT).
+    native_publish_meter(backends);
+
     Ok((sample_rate, channels))
 }
 
@@ -416,25 +505,27 @@ fn native_mix_callback<S>(
 // altres veus: poden sonar-ne diverses alhora. Si ja existeix una veu amb el
 // mateix `voice_id`, la substitueix (re-disparo del mateix slot).
 fn native_play_cue_impl(
-    backend: &mut Option<NativeBackend>,
+    backends: &mut NativeBackends,
     voice_id: u64,
+    device_name: &str,
     file_path: &str,
     gain: f32,
     fade_in: f32,
     fade_out: f32,
     channels: &[u16],
 ) -> Result<(), String> {
-    let (sample_rate, dev_channels) = native_ensure_backend(backend)?;
+    let (sample_rate, dev_channels) = native_ensure_backend(backends, device_name)?;
 
-    // Canals destí: els demanats que càpiguen al dispositiu; si no n'hi ha cap
-    // de vàlid, per defecte tots els canals del dispositiu (estèreo habitual).
+    // Canals destí: els demanats que càpiguen al dispositiu; si no n'hi ha cap de
+    // vàlid, per defecte els 2 PRIMERS canals (estèreo a 1-2) — NO tots, perquè en
+    // un dispositiu de 8 sortides no es dupliqui el so a totes elles.
     let out_channels: Vec<usize> = channels
         .iter()
         .map(|&c| c as usize)
         .filter(|&c| c < dev_channels)
         .collect();
     let out_channels = if out_channels.is_empty() {
-        (0..dev_channels).collect()
+        (0..dev_channels.min(2)).collect()
     } else {
         out_channels
     };
@@ -472,11 +563,17 @@ fn native_play_cue_impl(
         meter: 0.0,
     };
 
-    let b = backend.as_ref().ok_or("Backend natiu no disponible.")?;
+    // Re-disparo del mateix slot: treu qualsevol veu anterior amb el mateix id de
+    // TOTS els dispositius (pot haver canviat de device entre dispars), i després
+    // afegeix la nova al device destí. Així no en queda una de penjada a un altre
+    // dispositiu i en poden sonar de diferents alhora (ids diferents).
+    for back in backends.values() {
+        if let Ok(mut vs) = back.voices.lock() {
+            vs.retain(|v| v.voice_id != voice_id);
+        }
+    }
+    let b = backends.get(device_name).ok_or("Backend natiu no disponible.")?;
     if let Ok(mut vs) = b.voices.lock() {
-        // Multi-veu: substitueix només la veu del mateix id (re-disparo) i conserva
-        // la resta, perquè en puguin sonar diverses alhora.
-        vs.retain(|v| v.voice_id != voice_id);
         vs.push(voice);
     }
     Ok(())
@@ -485,28 +582,28 @@ fn native_play_cue_impl(
 // Atura una veu pel seu id. Amb fade_out > 0, n'inicia la rampa de release des de
 // la posició actual (el callback hi aplica el fade i l'elimina en arribar a 0);
 // amb 0, l'elimina immediatament. Reutilitza `release_from`/`release_len` del nucli.
+// Les comandes per veu cerquen el `voice_id` a TOTS els dispositius oberts (els ids
+// són únics per slot, però el slot pot estar enrutat a qualsevol device).
 fn native_stop_voice_impl(
-    backend: &Option<NativeBackend>,
+    backends: &NativeBackends,
     voice_id: u64,
     fade_out: f32,
 ) -> Result<(), String> {
-    let b = match backend.as_ref() {
-        Some(b) => b,
-        None => return Ok(()), // res obert: res a aturar
-    };
-    let sr = b.sample_rate as f32;
-    let rel = (fade_out.max(0.0) * sr) as usize;
-    if let Ok(mut vs) = b.voices.lock() {
-        if fade_out > 0.0 {
-            for v in vs.iter_mut() {
-                if v.voice_id == voice_id && v.release_from.is_none() {
-                    v.release_from = Some(v.seg_pos());
-                    v.release_len = rel.max(1);
-                    v.loop_on = false; // un release acaba la veu encara que fes loop
+    for b in backends.values() {
+        let sr = b.sample_rate as f32;
+        let rel = (fade_out.max(0.0) * sr) as usize;
+        if let Ok(mut vs) = b.voices.lock() {
+            if fade_out > 0.0 {
+                for v in vs.iter_mut() {
+                    if v.voice_id == voice_id && v.release_from.is_none() {
+                        v.release_from = Some(v.seg_pos());
+                        v.release_len = rel.max(1);
+                        v.loop_on = false; // un release acaba la veu encara que fes loop
+                    }
                 }
+            } else {
+                vs.retain(|v| v.voice_id != voice_id);
             }
-        } else {
-            vs.retain(|v| v.voice_id != voice_id);
         }
     }
     Ok(())
@@ -515,18 +612,16 @@ fn native_stop_voice_impl(
 // Canvia el gain (volum lineal) d'una veu activa en calent. El callback ja
 // multiplica per `voice.gain` a cada frame, així que el canvi és immediat.
 fn native_set_gain_impl(
-    backend: &Option<NativeBackend>,
+    backends: &NativeBackends,
     voice_id: u64,
     gain: f32,
 ) -> Result<(), String> {
-    let b = match backend.as_ref() {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-    if let Ok(mut vs) = b.voices.lock() {
-        for v in vs.iter_mut() {
-            if v.voice_id == voice_id {
-                v.gain = gain.max(0.0);
+    for b in backends.values() {
+        if let Ok(mut vs) = b.voices.lock() {
+            for v in vs.iter_mut() {
+                if v.voice_id == voice_id {
+                    v.gain = gain.max(0.0);
+                }
             }
         }
     }
@@ -536,21 +631,19 @@ fn native_set_gain_impl(
 // Reposiciona el playhead d'una veu activa: `position` són segons dins el segment
 // (0 = inici del tram). Es limita a [start_frame, stop_frame).
 fn native_seek_impl(
-    backend: &Option<NativeBackend>,
+    backends: &NativeBackends,
     voice_id: u64,
     position: f32,
 ) -> Result<(), String> {
-    let b = match backend.as_ref() {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-    let rate = b.sample_rate as f32;
-    if let Ok(mut vs) = b.voices.lock() {
-        for v in vs.iter_mut() {
-            if v.voice_id == voice_id {
-                let target = v.start_frame + (position.max(0.0) * rate) as usize;
-                let max = v.stop_frame.saturating_sub(1).max(v.start_frame);
-                v.pos = target.clamp(v.start_frame, max);
+    for b in backends.values() {
+        let rate = b.sample_rate as f32;
+        if let Ok(mut vs) = b.voices.lock() {
+            for v in vs.iter_mut() {
+                if v.voice_id == voice_id {
+                    let target = v.start_frame + (position.max(0.0) * rate) as usize;
+                    let max = v.stop_frame.saturating_sub(1).max(v.start_frame);
+                    v.pos = target.clamp(v.start_frame, max);
+                }
             }
         }
     }
@@ -560,18 +653,16 @@ fn native_seek_impl(
 // Pausa o reprèn una veu activa. La veu es manté a la mescla; pausada, el callback
 // escriu silenci i no avança la posició (el resume continua des d'on era).
 fn native_set_paused_impl(
-    backend: &Option<NativeBackend>,
+    backends: &NativeBackends,
     voice_id: u64,
     paused: bool,
 ) -> Result<(), String> {
-    let b = match backend.as_ref() {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-    if let Ok(mut vs) = b.voices.lock() {
-        for v in vs.iter_mut() {
-            if v.voice_id == voice_id {
-                v.paused = paused;
+    for b in backends.values() {
+        if let Ok(mut vs) = b.voices.lock() {
+            for v in vs.iter_mut() {
+                if v.voice_id == voice_id {
+                    v.paused = paused;
+                }
             }
         }
     }
@@ -597,12 +688,15 @@ fn send_and_wait(
     }
 }
 
-// Reprodueix un cue (fitxer descodificat a memòria) pel dispositiu de sortida per
-// defecte via cpal, amb gain i fades. La veu (identificada per `voice_id`) sona
-// junt amb les altres i s'acaba sola. La descodificació passa al fil natiu; aquí
-// s'hi espera resposta amb timeout ampli (inclou descodificar + resamplejar).
+// Reprodueix un cue (fitxer descodificat a memòria) via cpal pel dispositiu
+// `device_name` (buit = per defecte) i els canals destí indicats, amb gain i fades.
+// La veu (identificada per `voice_id`) sona junt amb les altres i s'acaba sola. La
+// descodificació passa al fil natiu; aquí s'hi espera resposta amb timeout ampli
+// (inclou descodificar + resamplejar).
+#[allow(clippy::too_many_arguments)]
 pub fn play_cue(
     voice_id: u64,
+    device_name: String,
     file_path: String,
     gain: f32,
     fade_in: f32,
@@ -610,7 +704,7 @@ pub fn play_cue(
     channels: Vec<u16>,
 ) -> Result<(), String> {
     send_and_wait(
-        |reply| NativeCmd::PlayCue { voice_id, file_path, gain, fade_in, fade_out, channels, reply },
+        |reply| NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, reply },
         std::time::Duration::from_secs(30),
         "Temps esgotat o error reproduint el cue natiu.",
     )
