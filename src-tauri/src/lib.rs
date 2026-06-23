@@ -2175,6 +2175,21 @@ fn native_set_paused(voice_id: u64, paused: bool) -> Result<(), String> {
     }
 }
 
+// Pre-descodifica un cue i el deixa a la cau del motor natiu (sense reproduir-lo),
+// perquè el seu GO sigui instantani. `device_name` buit = dispositiu per defecte.
+#[tauri::command]
+fn native_preload(device_name: String, file_path: String) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = (device_name, file_path);
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::preload(device_name, file_path)
+    }
+}
+
 // Atura la reproducció del motor natiu (totes les veus actives). Parada global.
 #[tauri::command]
 fn native_stop() -> Result<(), String> {
@@ -2226,6 +2241,7 @@ pub fn run() {
             asio_load,
             asio_release,
             native_play_cue,
+            native_preload,
             native_stop_voice,
             native_set_gain,
             native_seek,

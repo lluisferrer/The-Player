@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::{asio_decode, asio_soft_clip, asio_mix_voice, Voice};
+use crate::{asio_decode, asio_soft_clip, asio_mix_voice, PcmCache, PcmKey, Voice, VoiceSpec};
 
 // Estat persistent d'UN dispositiu cpal obert: l'stream de sortida i la llista de
 // veus que el seu callback mescla. Es manté viu mentre hi hagi reproducció.
@@ -88,6 +88,30 @@ enum NativeCmd {
         channels: Vec<u16>,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
+    // Pre-descodifica un fitxer a la freqüència del dispositiu i el deixa a la cau
+    // (sense reproduir-lo), perquè el GO posterior sigui instantani. El decode va
+    // en un fil a part (CacheStore); aquí només es resol el rate del device.
+    Preload {
+        device_name: String,
+        file_path: String,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    // Enviada per un fil de DECODE quan acaba de descodificar un fitxer per a un
+    // GO: el motor l'insereix a la cau i registra la veu. Així descodificar mai
+    // bloqueja el fil del motor. Fire-and-forget (sense reply).
+    RegisterDecoded {
+        device_name: String,
+        rate: u32,
+        file_path: String,
+        data: Arc<Vec<Vec<f32>>>,
+        spec: VoiceSpec,
+    },
+    // Enviada per un fil de DECODE en pre-càrrega: només desa el PCM a la cau.
+    CacheStore {
+        rate: u32,
+        file_path: String,
+        data: Arc<Vec<Vec<f32>>>,
+    },
     // Atura una veu pel seu id, amb fade-out opcional (segons). Amb fade 0
     // l'elimina a l'instant; amb fade > 0 n'inicia la rampa de release.
     StopVoice {
@@ -132,6 +156,35 @@ fn native_sender() -> &'static std::sync::mpsc::Sender<NativeCmd> {
             .expect("no s'ha pogut arrencar el fil natiu cpal");
         tx
     })
+}
+
+// Clon del sender cap al fil natiu (per als fils de decode, que hi tornen el PCM).
+// None si el motor encara no ha arrencat. Anàleg a `asio_tx_clone`.
+fn native_tx_clone() -> Option<std::sync::mpsc::Sender<NativeCmd>> {
+    NATIVE_TX.get().cloned()
+}
+
+// Descodifica un fitxer en un FIL DE TREBALL (`native-decode`) i n'envia el
+// resultat al fil del motor amb `make_cmd` (RegisterDecoded per reproduir, o
+// CacheStore per pre-carregar). El fil del motor MAI queda bloquejat descodificant
+// (clau per a pistes llargues). Anàleg a `asio_spawn_decode`.
+fn native_spawn_decode<F>(file_path: String, rate: u32, make_cmd: F)
+where
+    F: FnOnce(Arc<Vec<Vec<f32>>>) -> NativeCmd + Send + 'static,
+{
+    let tx = match native_tx_clone() {
+        Some(t) => t,
+        None => return,
+    };
+    std::thread::Builder::new()
+        .name("native-decode".into())
+        .spawn(move || match asio_decode::decode_file(&file_path, rate) {
+            Ok(d) => {
+                let _ = tx.send(make_cmd(Arc::new(d.data)));
+            }
+            Err(e) => eprintln!("[native-decode] '{}': {}", file_path, e),
+        })
+        .ok();
 }
 
 // ── Notificació de final de veu (callback RT → fil notificador → event Tauri) ──
@@ -257,14 +310,38 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
     // Mapa de dispositius oberts: buit fins al primer cue, després es mantenen
     // oberts (un stream cpal viu per device usat).
     let mut backends: NativeBackends = NativeBackends::new();
+    // Cau de PCM descodificat, propietat EXCLUSIVA d'aquest fil (sense locks). Clau
+    // (ruta, rate del DISPOSITIU destí). El decode passa en fils de treball i el PCM
+    // arriba per RegisterDecoded/CacheStore; el callback RT mai la toca.
+    let mut cache = PcmCache::new();
     while let Ok(cmd) = rx.recv() {
         match cmd {
             NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    native_play_cue_impl(&mut backends, voice_id, &device_name, &file_path, gain, fade_in, fade_out, &channels)
+                    native_play_cue_impl(&mut backends, &mut cache, voice_id, &device_name, &file_path, gain, fade_in, fade_out, &channels)
                 }))
                 .unwrap_or_else(|_| Err("Pànic reproduint el cue natiu.".into()));
                 let _ = reply.send(res);
+            }
+            NativeCmd::Preload { device_name, file_path, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    native_preload_impl(&mut backends, &mut cache, &device_name, &file_path)
+                }))
+                .unwrap_or_else(|_| Err("Pànic pre-descodificant el cue natiu.".into()));
+                let _ = reply.send(res);
+            }
+            NativeCmd::RegisterDecoded { device_name, rate, file_path, data, spec } => {
+                // Un fil de decode ha acabat: desa a la cau i registra la veu.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cache.insert((file_path, rate), data.clone());
+                    native_build_and_push_voice(&backends, &device_name, data, rate, spec);
+                }));
+            }
+            NativeCmd::CacheStore { rate, file_path, data } => {
+                // Pre-càrrega acabada en un fil: només desa el PCM a la cau.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cache.insert((file_path, rate), data);
+                }));
             }
             NativeCmd::StopVoice { voice_id, fade_out, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -522,60 +599,62 @@ fn native_mix_callback<S>(
     }
 }
 
-// Descodifica el cue i registra una veu al backend. La descodificació (symphonia
-// + resampling) es fa AQUÍ, al fil natiu, MAI dins el callback RT. NO buida les
-// altres veus: poden sonar-ne diverses alhora. Si ja existeix una veu amb el
-// mateix `voice_id`, la substitueix (re-disparo del mateix slot).
-fn native_play_cue_impl(
-    backends: &mut NativeBackends,
-    voice_id: u64,
-    device_name: &str,
-    file_path: &str,
-    gain: f32,
-    fade_in: f32,
-    fade_out: f32,
-    channels: &[u16],
-) -> Result<(), String> {
-    let (sample_rate, dev_channels) = native_ensure_backend(backends, device_name)?;
-
-    // Canals destí: els demanats que càpiguen al dispositiu; si no n'hi ha cap de
-    // vàlid, per defecte els 2 PRIMERS canals (estèreo a 1-2) — NO tots, perquè en
-    // un dispositiu de 8 sortides no es dupliqui el so a totes elles.
-    let out_channels: Vec<usize> = channels
+// Resol els canals destí: els demanats que càpiguen al dispositiu; si no n'hi ha
+// cap de vàlid, per defecte els 2 PRIMERS canals (estèreo a 1-2) — NO tots, perquè
+// en un dispositiu de 8 sortides no es dupliqui el so a totes elles.
+fn native_resolve_out_channels(channels: &[u16], dev_channels: usize) -> Vec<usize> {
+    let out: Vec<usize> = channels
         .iter()
         .map(|&c| c as usize)
         .filter(|&c| c < dev_channels)
         .collect();
-    let out_channels = if out_channels.is_empty() {
+    if out.is_empty() {
         (0..dev_channels.min(2)).collect()
     } else {
-        out_channels
-    };
+        out
+    }
+}
 
-    // Descodifica + resampleja a la freqüència REAL del dispositiu.
-    let decoded = asio_decode::decode_file(file_path, sample_rate)?;
-    let data = Arc::new(decoded.data);
-    let src_channels = data.len().max(1);
+// Construeix una `Voice` a partir del PCM ja descodificat + el `VoiceSpec` i
+// l'afegeix a la mescla del dispositiu destí (substituint qualsevol veu amb el
+// mateix id a QUALSEVOL device, perquè el slot pot haver canviat de sortida). Si
+// entre la petició i ara el device s'ha tancat, descarta la veu. La descodificació
+// ja s'ha fet fora; aquí només es clona l'Arc del PCM i s'omple la `Voice`.
+fn native_build_and_push_voice(
+    backends: &NativeBackends,
+    device_name: &str,
+    data: Arc<Vec<Vec<f32>>>,
+    rate: u32,
+    spec: VoiceSpec,
+) {
     let total = data.iter().map(|c| c.len()).max().unwrap_or(0);
     if total == 0 {
-        return Err("El fitxer no té cap mostra reproduïble.".into());
+        eprintln!("[native-voice] voice={} sense mostres → descartada", spec.voice_id);
+        return;
     }
-
-    // Fades en frames a la freqüència del dispositiu (acotats a la durada).
-    let sr = sample_rate as f32;
-    let fade_in_len = ((fade_in.max(0.0) * sr) as usize).min(total);
-    let fade_out_len = ((fade_out.max(0.0) * sr) as usize).min(total);
+    let src_channels = data.len().max(1);
+    let sr = rate as f32;
+    let start_frame = ((spec.start_point.max(0.0) * sr) as usize).min(total);
+    let stop_frame = if spec.stop_point > 0.0 {
+        ((spec.stop_point * sr) as usize).min(total)
+    } else {
+        total
+    };
+    let stop_frame = stop_frame.max(start_frame + 1).min(total.max(start_frame + 1));
+    let seg_len = stop_frame.saturating_sub(start_frame);
+    let fade_in_len = ((spec.fade_in.max(0.0) * sr) as usize).min(seg_len);
+    let fade_out_len = ((spec.fade_out.max(0.0) * sr) as usize).min(seg_len);
 
     let voice = Voice {
-        voice_id,
+        voice_id: spec.voice_id,
         data,
         src_channels,
-        out_channels,
-        pos: 0,
-        start_frame: 0,
-        stop_frame: total,
-        gain: gain.max(0.0),
-        loop_on: false,
+        out_channels: spec.out_channels,
+        pos: start_frame,
+        start_frame,
+        stop_frame,
+        gain: spec.gain.max(0.0),
+        loop_on: spec.loop_on,
         fade_in_len,
         fade_out_len,
         release_from: None,
@@ -591,13 +670,94 @@ fn native_play_cue_impl(
     // dispositiu i en poden sonar de diferents alhora (ids diferents).
     for back in backends.values() {
         if let Ok(mut vs) = back.voices.lock() {
-            vs.retain(|v| v.voice_id != voice_id);
+            vs.retain(|v| v.voice_id != spec.voice_id);
         }
     }
-    let b = backends.get(device_name).ok_or("Backend natiu no disponible.")?;
-    if let Ok(mut vs) = b.voices.lock() {
-        vs.push(voice);
+    match backends.get(device_name) {
+        Some(b) => {
+            if let Ok(mut vs) = b.voices.lock() {
+                vs.push(voice);
+            }
+        }
+        None => eprintln!("[native-voice] voice={} sense backend → descartada", spec.voice_id),
     }
+}
+
+// Dispara un cue SENSE BLOQUEJAR el fil del motor descodificant. Resol el device
+// (per saber-ne el rate i els canals) i mira la cau:
+//   · HIT  → construeix la `Voice` i la registra a l'INSTANT (només clona un Arc).
+//   · MISS → llança el decode en un fil (`native-decode`); quan acaba, RegisterDecoded
+//            desa el PCM a la cau i registra la veu. El GO retorna immediatament.
+// Per a un cue ja pre-carregat (HIT) el so és instantani; mai hi ha decode síncron
+// al fil del motor (eliminant els ~4 s de latència que tenia abans).
+fn native_play_cue_impl(
+    backends: &mut NativeBackends,
+    cache: &mut PcmCache,
+    voice_id: u64,
+    device_name: &str,
+    file_path: &str,
+    gain: f32,
+    fade_in: f32,
+    fade_out: f32,
+    channels: &[u16],
+) -> Result<(), String> {
+    let (sample_rate, dev_channels) = native_ensure_backend(backends, device_name)?;
+    let out_channels = native_resolve_out_channels(channels, dev_channels);
+
+    // Paràmetres de la veu (sense PCM). Mantenim el comportament de l'increment 1:
+    // sense start/stop point ni loop (la firma pública no els porta).
+    let spec = VoiceSpec {
+        voice_id,
+        out_channels,
+        gain,
+        fade_in,
+        fade_out,
+        loop_on: false,
+        start_point: 0.0,
+        stop_point: 0.0,
+    };
+
+    // HIT de cau (p. ex. pre-carregat): registra la veu A L'INSTANT.
+    let key: PcmKey = (file_path.to_string(), sample_rate);
+    if let Some(data) = cache.get(&key) {
+        native_build_and_push_voice(backends, device_name, data, sample_rate, spec);
+        return Ok(());
+    }
+
+    // MISS: descodifica en un FIL a part i registra la veu quan arribi el PCM
+    // (RegisterDecoded). El fil del motor no es bloqueja descodificant.
+    let dev = device_name.to_string();
+    let path = file_path.to_string();
+    native_spawn_decode(path.clone(), sample_rate, move |data| NativeCmd::RegisterDecoded {
+        device_name: dev,
+        rate: sample_rate,
+        file_path: path,
+        data,
+        spec,
+    });
+    Ok(())
+}
+
+// Pre-descodifica un fitxer i el deixa a la cau, SENSE reproduir-lo. Obre el device
+// demanat (si cal) només per conèixer-ne la freqüència; el decode va en un fil a
+// part (CacheStore). El GO posterior trobarà el PCM a la cau i serà instantani.
+fn native_preload_impl(
+    backends: &mut NativeBackends,
+    cache: &mut PcmCache,
+    device_name: &str,
+    file_path: &str,
+) -> Result<(), String> {
+    let (sample_rate, _dev_channels) = native_ensure_backend(backends, device_name)?;
+    let key: PcmKey = (file_path.to_string(), sample_rate);
+    if cache.get(&key).is_some() {
+        return Ok(()); // ja a la cau
+    }
+    let path = file_path.to_string();
+    native_spawn_decode(path.clone(), sample_rate, move |data| NativeCmd::CacheStore {
+        rate: sample_rate,
+        file_path: path,
+        data,
+    });
     Ok(())
 }
 
@@ -710,11 +870,12 @@ fn send_and_wait(
     }
 }
 
-// Reprodueix un cue (fitxer descodificat a memòria) via cpal pel dispositiu
-// `device_name` (buit = per defecte) i els canals destí indicats, amb gain i fades.
-// La veu (identificada per `voice_id`) sona junt amb les altres i s'acaba sola. La
-// descodificació passa al fil natiu; aquí s'hi espera resposta amb timeout ampli
-// (inclou descodificar + resamplejar).
+// Reprodueix un cue via cpal pel dispositiu `device_name` (buit = per defecte) i
+// els canals destí indicats, amb gain i fades. La veu (identificada per `voice_id`)
+// sona junt amb les altres i s'acaba sola. El fil del motor NO descodifica de forma
+// síncrona: amb el PCM a la cau registra la veu a l'instant; si no, llança el decode
+// en un fil i retorna de seguida. Per això el timeout pot ser curt (només esperem
+// que el motor accepti la comanda, no que descodifiqui).
 #[allow(clippy::too_many_arguments)]
 pub fn play_cue(
     voice_id: u64,
@@ -727,8 +888,19 @@ pub fn play_cue(
 ) -> Result<(), String> {
     send_and_wait(
         |reply| NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, reply },
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(5),
         "Temps esgotat o error reproduint el cue natiu.",
+    )
+}
+
+// Pre-descodifica un cue i el deixa a la cau del motor natiu, perquè el seu GO sigui
+// instantani (sense la latència de descodificar). No reprodueix res. El decode va en
+// un fil a part; aquí només esperem que el motor obri el device i accepti la feina.
+pub fn preload(device_name: String, file_path: String) -> Result<(), String> {
+    send_and_wait(
+        |reply| NativeCmd::Preload { device_name, file_path, reply },
+        std::time::Duration::from_secs(10),
+        "Temps esgotat o error pre-descodificant el cue natiu.",
     )
 }
 

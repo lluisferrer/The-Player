@@ -248,6 +248,8 @@ export const useSoundStore = create((set, get) => ({
   setUseNativeCueEngine: (on) => {
     set({ useNativeCueEngine: !!on });
     get().persistGlobals();
+    // En activar el motor natiu, pre-descodifica ja els cues que hi routejaran.
+    if (on) get().preloadAllNativeCues();
   },
 
   // Increment 4: dispositiu de sortida del motor natiu (NOM de cpal; buit = per
@@ -256,11 +258,17 @@ export const useSoundStore = create((set, get) => ({
   setNativeCueDevice: (name) => {
     set({ nativeCueDeviceName: name || '', nativeCueChannels: [] });
     get().persistGlobals();
+    // El dispositiu natiu (i, per tant, la seva freqüència) ha canviat: re-preload
+    // a la nova freqüència perquè la cau tingui el PCM al rate correcte.
+    get().preloadAllNativeCues();
   },
   // Increment 4: canals destí del motor natiu (array 0-based, p. ex. [2,3] = 3-4).
   setNativeCueChannels: (channels) => {
     set({ nativeCueChannels: Array.isArray(channels) ? channels : [] });
     get().persistGlobals();
+    // Els canals no afecten el rate ni el PCM, però reprecarreguem per coherència
+    // (idempotent: si ja és a la cau, el motor no torna a descodificar).
+    get().preloadAllNativeCues();
   },
 
   // Monitor predeterminat de la finestra de sortida de vídeo (per nom; null = auto).
@@ -385,6 +393,8 @@ export const useSoundStore = create((set, get) => ({
     get().persistGlobals();
     // El routing per color ha canviat: pre-descodifica els cues que ara són ASIO.
     get().preloadAllAsioCues();
+    // ...i els que ara routegen a WASAPI pel motor natiu (si està actiu).
+    get().preloadAllNativeCues();
   },
 
   setGlobalFades: (patch) => {
@@ -736,6 +746,8 @@ export const useSoundStore = create((set, get) => ({
     get().persistSlots();
     // El fitxer o el color (→ routing) poden haver canviat: re-preload si és ASIO.
     get().preloadAsioSlot(slotId);
+    // I, si el motor natiu està actiu i el cue routeja a WASAPI, pre-decode natiu.
+    get().preloadNativeSlot(slotId);
   },
 
   // Actualitza els camps d'edició d'un slot (startPoint, stopPoint, fadeIn, fadeOut)
@@ -772,6 +784,33 @@ export const useSoundStore = create((set, get) => ({
     }
   },
 
+  // ── Pre-decode motor NATIU cpal (dispar instantani) ───────────────────────
+  // Equivalent natiu de `preloadAsioSlot`: demana a Rust que descodifiqui i deixi
+  // a la cau del motor natiu el PCM d'un cue que hi routejarà, perquè el seu GO no
+  // carregui la latència de descodificació (~4 s). Només actua si el motor natiu
+  // està actiu i el cue surt per WASAPI (la mateixa condició que a `playSlot`).
+  preloadNativeSlot: (slotId) => {
+    if (!get().useNativeCueEngine) return;
+    const slot = get().slots.find((s) => s.id === slotId);
+    if (!slot || !slot.filePath || isVisual(slot)) return;
+    // Mateixa decisió de routing que al dispar: si va a ASIO, no és cosa del natiu.
+    const decision = dispatchCue(get(), slot, { kind: 'preload' });
+    if (decision.route !== 'wasapi') return;
+    invoke('native_preload', {
+      deviceName: get().nativeCueDeviceName || '',
+      filePath: slot.filePath,
+    }).catch((e) => console.warn('[native] preload:', e));
+  },
+
+  // Pre-descodifica al motor natiu tots els cues carregats que hi routejaran.
+  // S'hi crida en activar el motor natiu o en canviar-ne el dispositiu/canals.
+  preloadAllNativeCues: () => {
+    if (!get().useNativeCueEngine) return;
+    for (const s of get().slots) {
+      if (s.filePath) get().preloadNativeSlot(s.id);
+    }
+  },
+
   setSelectedDevice: async (deviceId) => {
     const { audioContext } = get();
     set({ selectedDeviceId: deviceId });
@@ -789,6 +828,8 @@ export const useSoundStore = create((set, get) => ({
     get().persistGlobals();
     // El bus de Cues ha canviat: pre-descodifica els cues que ara routegen a ASIO.
     get().preloadAllAsioCues();
+    // ...i els que ara routegen a WASAPI pel motor natiu (si està actiu).
+    get().preloadAllNativeCues();
   },
 
   // Detecta quants canals de sortida exposa el dispositiu seleccionat.
@@ -861,6 +902,8 @@ export const useSoundStore = create((set, get) => ({
     get().persistSlots();
     // Si aquest cue routeja a ASIO, pre-descodifica'l ja per a un GO instantani.
     get().preloadAsioSlot(slotId);
+    // I si el motor natiu està actiu i routeja a WASAPI, pre-decode natiu equivalent.
+    get().preloadNativeSlot(slotId);
   },
 
   playSlot: (slotId, opts = {}) => {
