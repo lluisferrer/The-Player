@@ -6,10 +6,10 @@ use serde::Serialize;
 #[cfg(feature = "native")]
 mod asio_decode;
 
-// Descodificació en STREAMING (decode-ahead) per a pistes llargues. De moment
-// només la consumeix el motor ASIO (les veus en streaming són ASIO-específiques);
-// el backend cpal de l'increment 1 encara no fa streaming.
-#[cfg(feature = "asio")]
+// Descodificació en STREAMING (decode-ahead) per a pistes llargues. La consumeixen
+// tant el motor ASIO com el backend cpal natiu (les veus en streaming són nucli
+// reutilitzable). Disponible amb `native` (i, per implicació, amb `asio`).
+#[cfg(feature = "native")]
 mod asio_stream;
 
 // Backend de sortida natiu basat en cpal (host per defecte: WASAPI a Windows,
@@ -360,7 +360,10 @@ impl Voice {
 // Per a pistes llargues: en comptes de tenir tot el PCM a `data`, llegeix d'un
 // ring buffer que un fil descodificador va omplint (asio_stream). El callback
 // resampleja al consumidor (interpolació lineal) a la freqüència del driver.
-#[cfg(feature = "asio")]
+//
+// NUCLI reutilitzable (feature `native`): tant el callback ASIO com el backend
+// cpal mesclen aquestes veus amb `asio_mix_stream_voice`. Independent d'ASIO.
+#[cfg(feature = "native")]
 struct StreamVoice {
     voice_id: u64,
     ring: std::sync::Arc<std::sync::Mutex<asio_stream::StreamRing>>,
@@ -385,11 +388,35 @@ struct StreamVoice {
     meter: f32,
 }
 
+#[cfg(feature = "native")]
+impl StreamVoice {
+    // Posició del playhead (segons dins el fitxer) per a la telemetria. Es deriva
+    // dels frames de FONT consumits. En loop amb out-point el descodificador empeny
+    // un flux continu i `src_consumed` creix sense parar: el pleguem al tram perquè
+    // el playhead torni a l'inici visualment. Compartit pels dos backends (cpal i
+    // ASIO) per no duplicar el càlcul.
+    fn telemetry_pos(&self) -> f32 {
+        if self.file_rate == 0 {
+            return 0.0;
+        }
+        let mut consumed = self.src_consumed;
+        if self.loop_on && self.stop_secs > 0.0 {
+            let seg = (((self.stop_secs - self.start_secs).max(0.0)) * self.file_rate as f64) as usize;
+            if seg > 0 {
+                consumed %= seg;
+            }
+        }
+        // Posició DINS el tram (igual que les veus en memòria reporten seg_pos);
+        // la UI hi suma l'start_point si li cal la posició absoluta.
+        consumed as f32 / self.file_rate as f32
+    }
+}
+
 // Mescla una veu de streaming als acumuladors de sortida. Llegeix del ring amb
 // interpolació lineal (resample file_rate → driver_rate). Marca `finished` en
 // arribar al final (eof i buit) o en acabar el release; aleshores atura el fil
 // descodificador. Underrun (buffer buit sense eof) → silenci sense avançar.
-#[cfg(feature = "asio")]
+#[cfg(feature = "native")]
 fn asio_mix_stream_voice(v: &mut StreamVoice, acc: &mut [Vec<f32>], buffer_size: usize) {
     use std::sync::atomic::Ordering;
     if v.finished {
@@ -2099,6 +2126,7 @@ fn asio_release() -> Result<(), String> {
 // gain i fades. La veu (identificada per `voice_id`) sona junt amb les altres i
 // s'acaba sola; substitueix una veu del mateix id si ja existia (a qualsevol device).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn native_play_cue(
     voice_id: u64,
     device_name: String,
@@ -2107,15 +2135,19 @@ fn native_play_cue(
     fade_in: f32,
     fade_out: f32,
     channels: Vec<u16>,
+    loop_on: bool,
+    start_point: f32,
+    stop_point: f32,
+    streaming: bool,
 ) -> Result<(), String> {
     #[cfg(not(feature = "native"))]
     {
-        let _ = (voice_id, device_name, file_path, gain, fade_in, fade_out, channels);
+        let _ = (voice_id, device_name, file_path, gain, fade_in, fade_out, channels, loop_on, start_point, stop_point, streaming);
         Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
     }
     #[cfg(feature = "native")]
     {
-        native_output::play_cue(voice_id, device_name, file_path, gain, fade_in, fade_out, channels)
+        native_output::play_cue(voice_id, device_name, file_path, gain, fade_in, fade_out, channels, loop_on, start_point, stop_point, streaming)
     }
 }
 

@@ -16,7 +16,10 @@
 //
 // El callback NO toca symphonia ni assigna res gran; només llegeix del deque.
 
-#![cfg(feature = "asio")]
+// Disponible amb la feature `native` (i, per implicació, amb `asio`): tant el
+// backend cpal com el motor ASIO l'usen per a pistes llargues. És codi
+// INDEPENDENT d'ASIO (només symphonia + un ring f32).
+#![cfg(feature = "native")]
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};

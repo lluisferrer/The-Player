@@ -39,7 +39,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::{asio_decode, asio_soft_clip, asio_mix_voice, PcmCache, PcmKey, Voice, VoiceSpec};
+use crate::{
+    asio_decode, asio_mix_stream_voice, asio_mix_voice, asio_soft_clip, asio_stream, PcmCache,
+    PcmKey, StreamVoice, Voice, VoiceSpec,
+};
 
 // Estat persistent d'UN dispositiu cpal obert: l'stream de sortida i la llista de
 // veus que el seu callback mescla. Es manté viu mentre hi hagi reproducció.
@@ -50,6 +53,10 @@ use crate::{asio_decode, asio_soft_clip, asio_mix_voice, PcmCache, PcmKey, Voice
 struct NativeBackend {
     // Veus actives compartides amb el callback (fil RT de cpal). Lock curt.
     voices: Arc<Mutex<Vec<Voice>>>,
+    // Veus en STREAMING (pistes llargues): llista separada de les veus en memòria.
+    // El callback les mescla amb `asio_mix_stream_voice` (decode-ahead al fil de
+    // `spawn_stream`; aquí el callback només llegeix el ring, com fa ASIO).
+    stream_voices: Arc<Mutex<Vec<StreamVoice>>>,
     // Freqüència real del dispositiu obert (per descodificar al rate correcte).
     sample_rate: u32,
     // Nombre de canals del dispositiu (per validar el routing dels cues).
@@ -86,6 +93,13 @@ enum NativeCmd {
         fade_out: f32,
         // Canals de sortida destí (0-based) dins el dispositiu triat.
         channels: Vec<u16>,
+        // Segment i loop (només els respecta el camí STREAMING; el camí en memòria
+        // encara els ignora, limitació coneguda dels increments 1-5).
+        loop_on: bool,
+        start_point: f32, // segons dins el fitxer
+        stop_point: f32,  // segons (<=0 = fins al final)
+        // true = decode-ahead (pistes llargues): no passa per la cau ni decode complet.
+        streaming: bool,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     // Pre-descodifica un fitxer a la freqüència del dispositiu i el deixa a la cau
@@ -214,6 +228,7 @@ fn native_notify_ended(voice_id: u64) {
 // `AsioMeterShared`/`ASIO_METER` del motor ASIO.
 struct NativeMeterDevice {
     voices: Arc<Mutex<Vec<Voice>>>,
+    stream_voices: Arc<Mutex<Vec<StreamVoice>>>,
     sample_rate: u32,
 }
 
@@ -230,7 +245,11 @@ fn native_publish_meter(backends: &NativeBackends) {
     if let Ok(mut g) = native_meter_slot().lock() {
         *g = backends
             .values()
-            .map(|b| NativeMeterDevice { voices: b.voices.clone(), sample_rate: b.sample_rate })
+            .map(|b| NativeMeterDevice {
+                voices: b.voices.clone(),
+                stream_voices: b.stream_voices.clone(),
+                sample_rate: b.sample_rate,
+            })
             .collect();
     }
 }
@@ -292,6 +311,19 @@ pub fn start_notifier(app: tauri::AppHandle) {
                             }
                         }));
                     }
+                    // Veus en streaming: el playhead es deriva dels frames de FONT
+                    // consumits. En loop amb out-point el descodificador empeny un
+                    // flux continu i src_consumed creix sense parar: plega'l al tram
+                    // perquè el playhead torni a l'inici visualment (igual que ASIO).
+                    if let Ok(svs) = dev.stream_voices.lock() {
+                        out.extend(svs.iter().filter(|s| !s.finished).map(|s| {
+                            NativeTelemetryItem {
+                                id: s.voice_id,
+                                pos: s.telemetry_pos(),
+                                level: s.meter,
+                            }
+                        }));
+                    }
                 }
                 out
             };
@@ -316,9 +348,9 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
     let mut cache = PcmCache::new();
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, reply } => {
+            NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, loop_on, start_point, stop_point, streaming, reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    native_play_cue_impl(&mut backends, &mut cache, voice_id, &device_name, &file_path, gain, fade_in, fade_out, &channels)
+                    native_play_cue_impl(&mut backends, &mut cache, voice_id, &device_name, &file_path, gain, fade_in, fade_out, &channels, loop_on, start_point, stop_point, streaming)
                 }))
                 .unwrap_or_else(|_| Err("Pànic reproduint el cue natiu.".into()));
                 let _ = reply.send(res);
@@ -374,10 +406,18 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
             NativeCmd::Stop { reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     // Parada global: buida les veus de TOTS els dispositius oberts
-                    // (els streams es mantenen vius, escrivint silenci).
+                    // (els streams cpal es mantenen vius, escrivint silenci). Per a
+                    // les veus en streaming, atura abans els fils descodificadors
+                    // (posa ctrl.stop) com fa `asio_teardown_mix`.
                     for b in backends.values() {
                         if let Ok(mut v) = b.voices.lock() {
                             v.clear();
+                        }
+                        if let Ok(mut svs) = b.stream_voices.lock() {
+                            for sv in svs.iter() {
+                                sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            svs.clear();
                         }
                     }
                     Ok(())
@@ -494,6 +534,8 @@ fn native_ensure_backend(
 
     // Llista de veus compartida amb el callback (fil RT de cpal).
     let voices: Arc<Mutex<Vec<Voice>>> = Arc::new(Mutex::new(Vec::new()));
+    // Llista de veus en streaming (pistes llargues), separada de les de memòria.
+    let stream_voices: Arc<Mutex<Vec<StreamVoice>>> = Arc::new(Mutex::new(Vec::new()));
     // Acumuladors pre-allocats (un Vec per canal): el callback els reutilitza
     // zerant-los cada bloc, sense assignar memòria al fil d'àudio.
     let acc: Arc<Mutex<Vec<Vec<f32>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -505,11 +547,12 @@ fn native_ensure_backend(
     macro_rules! build {
         ($sample:ty, $to:expr) => {{
             let cb_voices = voices.clone();
+            let cb_stream_voices = stream_voices.clone();
             let cb_acc = acc.clone();
             device.build_output_stream(
                 &config,
                 move |data: &mut [$sample], _: &cpal::OutputCallbackInfo| {
-                    native_mix_callback(data, channels, &cb_voices, &cb_acc, &$to);
+                    native_mix_callback(data, channels, &cb_voices, &cb_stream_voices, &cb_acc, &$to);
                 },
                 err_fn,
                 None,
@@ -530,7 +573,7 @@ fn native_ensure_backend(
 
     backends.insert(
         device_name.to_string(),
-        NativeBackend { voices, sample_rate, channels, stream },
+        NativeBackend { voices, stream_voices, sample_rate, channels, stream },
     );
 
     // Republica la taula de telemetria amb tots els dispositius oberts (un sol cop,
@@ -554,6 +597,7 @@ fn native_mix_callback<S>(
     data: &mut [S],
     channels: usize,
     voices: &Arc<Mutex<Vec<Voice>>>,
+    stream_voices: &Arc<Mutex<Vec<StreamVoice>>>,
     acc: &Arc<Mutex<Vec<Vec<f32>>>>,
     to_native: &impl Fn(f32) -> S,
 ) where
@@ -588,6 +632,22 @@ fn native_mix_callback<S>(
             }
         }
         vs.retain(|v| !v.finished);
+    }
+
+    // Veus en STREAMING: mateix patró dual que `asio_ensure_mix`. El decode-ahead
+    // corre al fil de `spawn_stream`; aquí el callback només llegeix del ring (cap
+    // alloc/IO/decode). `asio_mix_stream_voice` ja marca `finished` i atura el fil
+    // descodificador en acabar (eof o release).
+    if let Ok(mut svs) = stream_voices.lock() {
+        for sv in svs.iter_mut() {
+            asio_mix_stream_voice(sv, &mut acc_guard, frames);
+        }
+        for sv in svs.iter() {
+            if sv.finished {
+                native_notify_ended(sv.voice_id);
+            }
+        }
+        svs.retain(|sv| !sv.finished);
     }
 
     // Entrellaça: data[frame*channels + ch] = clip(acc[ch][frame]).
@@ -683,6 +743,83 @@ fn native_build_and_push_voice(
     }
 }
 
+// Arrenca un fil descodificador (`spawn_stream`) i registra una `StreamVoice` al
+// dispositiu destí, perquè soni tan aviat com el ring té el primer tros (sense la
+// latència del decode complet). Substitueix qualsevol veu del mateix id (de QUALSEVOL
+// de les dues llistes, a QUALSEVOL device): el slot pot haver canviat de sortida o de
+// memòria↔streaming entre dispars. Per a streaming SÍ que respectem start/stop/loop:
+// `spawn_stream` ja els accepta (si loop, fa el flux continu gapless al fil).
+#[allow(clippy::too_many_arguments)]
+fn native_build_and_push_stream_voice(
+    backends: &NativeBackends,
+    device_name: &str,
+    voice_id: u64,
+    file_path: &str,
+    sample_rate: u32,
+    out_channels: Vec<usize>,
+    gain: f32,
+    fade_in: f32,
+    fade_out: f32,
+    loop_on: bool,
+    start_point: f32,
+    stop_point: f32,
+) {
+    let start_secs = start_point.max(0.0) as f64;
+    let stop_secs = if stop_point > 0.0 { stop_point as f64 } else { 0.0 };
+    let handle = asio_stream::spawn_stream(file_path.to_string(), start_secs, stop_secs, loop_on);
+    let fade_in_len = (fade_in.max(0.0) * sample_rate as f32) as usize;
+    let sv = StreamVoice {
+        voice_id,
+        ring: handle.ring,
+        ctrl: handle.ctrl,
+        out_channels,
+        driver_rate: sample_rate,
+        gain: gain.max(0.0),
+        fade_in_len,
+        played_out: 0,
+        frac: 0.0,
+        start_secs,
+        stop_secs,
+        loop_on,
+        fade_out_secs: fade_out.max(0.0) as f64,
+        src_consumed: 0,
+        file_rate: 0,
+        release_from: None,
+        release_len: 0,
+        paused: false,
+        finished: false,
+        meter: 0.0,
+    };
+
+    // Re-disparo del mateix slot: treu qualsevol veu anterior amb el mateix id de
+    // TOTS els dispositius, en AMBDUES llistes (memòria i streaming). Per a les
+    // stream voices, atura abans el fil descodificador (ctrl.stop) per no deixar-lo
+    // penjat. Després afegeix la nova al device destí.
+    for back in backends.values() {
+        if let Ok(mut vs) = back.voices.lock() {
+            vs.retain(|v| v.voice_id != voice_id);
+        }
+        if let Ok(mut svs) = back.stream_voices.lock() {
+            for old in svs.iter().filter(|x| x.voice_id == voice_id) {
+                old.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            svs.retain(|x| x.voice_id != voice_id);
+        }
+    }
+    match backends.get(device_name) {
+        Some(b) => {
+            if let Ok(mut svs) = b.stream_voices.lock() {
+                svs.push(sv);
+            }
+        }
+        None => {
+            // El device s'ha tancat entremig: atura el fil que acabem d'arrencar.
+            sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("[native-voice] stream voice={} sense backend → descartada", voice_id);
+        }
+    }
+}
+
 // Dispara un cue SENSE BLOQUEJAR el fil del motor descodificant. Resol el device
 // (per saber-ne el rate i els canals) i mira la cau:
 //   · HIT  → construeix la `Voice` i la registra a l'INSTANT (només clona un Arc).
@@ -690,6 +827,7 @@ fn native_build_and_push_voice(
 //            desa el PCM a la cau i registra la veu. El GO retorna immediatament.
 // Per a un cue ja pre-carregat (HIT) el so és instantani; mai hi ha decode síncron
 // al fil del motor (eliminant els ~4 s de latència que tenia abans).
+#[allow(clippy::too_many_arguments)]
 fn native_play_cue_impl(
     backends: &mut NativeBackends,
     cache: &mut PcmCache,
@@ -700,12 +838,28 @@ fn native_play_cue_impl(
     fade_in: f32,
     fade_out: f32,
     channels: &[u16],
+    loop_on: bool,
+    start_point: f32,
+    stop_point: f32,
+    streaming: bool,
 ) -> Result<(), String> {
     let (sample_rate, dev_channels) = native_ensure_backend(backends, device_name)?;
     let out_channels = native_resolve_out_channels(channels, dev_channels);
 
-    // Paràmetres de la veu (sense PCM). Mantenim el comportament de l'increment 1:
-    // sense start/stop point ni loop (la firma pública no els porta).
+    // ── Camí STREAMING (pistes llargues): decode-ahead, sense carregar tot a RAM ──
+    // No passa per la cau ni per un decode complet: arrenca el fil descodificador i
+    // registra una StreamVoice que sona tan aviat com el ring té el primer tros →
+    // sense la latència del decode complet. Reutilitza el mateix mecanisme d'ASIO.
+    if streaming {
+        native_build_and_push_stream_voice(
+            backends, device_name, voice_id, file_path, sample_rate, out_channels, gain, fade_in,
+            fade_out, loop_on, start_point, stop_point,
+        );
+        return Ok(());
+    }
+
+    // Paràmetres de la veu (sense PCM). El camí en memòria encara ignora
+    // start/stop point i loop (limitació coneguda dels increments 1-5).
     let spec = VoiceSpec {
         voice_id,
         out_channels,
@@ -787,6 +941,23 @@ fn native_stop_voice_impl(
                 vs.retain(|v| v.voice_id != voice_id);
             }
         }
+        // Veus en streaming: release amb fade (sobre played_out, frames de sortida),
+        // o atura el fil i elimina si fade 0. Mateix patró que el camí ASIO.
+        if let Ok(mut svs) = b.stream_voices.lock() {
+            if fade_out > 0.0 {
+                for sv in svs.iter_mut() {
+                    if sv.voice_id == voice_id && sv.release_from.is_none() {
+                        sv.release_from = Some(sv.played_out);
+                        sv.release_len = rel.max(1);
+                    }
+                }
+            } else {
+                for sv in svs.iter().filter(|x| x.voice_id == voice_id) {
+                    sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                svs.retain(|sv| sv.voice_id != voice_id);
+            }
+        }
     }
     Ok(())
 }
@@ -803,6 +974,13 @@ fn native_set_gain_impl(
             for v in vs.iter_mut() {
                 if v.voice_id == voice_id {
                     v.gain = gain.max(0.0);
+                }
+            }
+        }
+        if let Ok(mut svs) = b.stream_voices.lock() {
+            for sv in svs.iter_mut() {
+                if sv.voice_id == voice_id {
+                    sv.gain = gain.max(0.0);
                 }
             }
         }
@@ -828,6 +1006,26 @@ fn native_seek_impl(
                 }
             }
         }
+        // Veus en streaming: `position` és ABSOLUT (segons dins el fitxer), igual que
+        // ASIO. Demana el seek absolut al fil descodificador i ajusta posició/consum
+        // perquè telemetria i out-point hi quadrin. Buida el ring per no sentir el
+        // tram vell. Mateixa lògica que `asio_seek_impl`.
+        if let Ok(mut svs) = b.stream_voices.lock() {
+            for sv in svs.iter_mut() {
+                if sv.voice_id == voice_id {
+                    let abs = position.max(0.0) as f64;
+                    let rel = (abs - sv.start_secs).max(0.0);
+                    sv.ctrl.seek_ms.store((abs * 1000.0) as i64, std::sync::atomic::Ordering::Relaxed);
+                    sv.played_out = (rel * rate as f64) as usize;
+                    sv.frac = 0.0;
+                    sv.src_consumed = if sv.file_rate > 0 { (rel * sv.file_rate as f64) as usize } else { 0 };
+                    if let Ok(mut r) = sv.ring.lock() {
+                        r.samples.clear();
+                        r.eof = false;
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -844,6 +1042,13 @@ fn native_set_paused_impl(
             for v in vs.iter_mut() {
                 if v.voice_id == voice_id {
                     v.paused = paused;
+                }
+            }
+        }
+        if let Ok(mut svs) = b.stream_voices.lock() {
+            for sv in svs.iter_mut() {
+                if sv.voice_id == voice_id {
+                    sv.paused = paused;
                 }
             }
         }
@@ -885,9 +1090,16 @@ pub fn play_cue(
     fade_in: f32,
     fade_out: f32,
     channels: Vec<u16>,
+    loop_on: bool,
+    start_point: f32,
+    stop_point: f32,
+    streaming: bool,
 ) -> Result<(), String> {
     send_and_wait(
-        |reply| NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, reply },
+        |reply| NativeCmd::PlayCue {
+            voice_id, device_name, file_path, gain, fade_in, fade_out, channels,
+            loop_on, start_point, stop_point, streaming, reply,
+        },
         std::time::Duration::from_secs(5),
         "Temps esgotat o error reproduint el cue natiu.",
     )

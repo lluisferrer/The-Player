@@ -793,6 +793,9 @@ export const useSoundStore = create((set, get) => ({
     if (!get().useNativeCueEngine) return;
     const slot = get().slots.find((s) => s.id === slotId);
     if (!slot || !slot.filePath || isVisual(slot)) return;
+    // Cue llarg (streaming): NO té sentit fer-ne full-decode a la cau; el dispar
+    // ja va per decode-ahead. Saltem la precàrrega nativa.
+    if (slot.isStreaming) return;
     // Mateixa decisió de routing que al dispar: si va a ASIO, no és cosa del natiu.
     const decision = dispatchCue(get(), slot, { kind: 'preload' });
     if (decision.route !== 'wasapi') return;
@@ -1032,6 +1035,12 @@ export const useSoundStore = create((set, get) => ({
         fadeIn: effIn,
         fadeOut: effOut,
         channels: get().nativeCueChannels || [],
+        loopOn: !!slot.loop,
+        startPoint,
+        stopPoint,
+        // Cue llarg (>60s): render natiu en streaming (decode-ahead), no a RAM sencer.
+        // Així el GO sona quasi a l'instant (sense esperar el decode complet).
+        streaming: !!slot.isStreaming,
       }).catch((e) => console.warn('[native] play_cue:', e));
       set((state) => ({
         slots: state.slots.map((s) =>
