@@ -11,6 +11,10 @@ export function CueTransport() {
   const activeSlot     = useSoundStore((s) => s.activeSlot);
   const previewingSlot = useSoundStore((s) => s.previewingSlot);
   const slots          = useSoundStore((s) => s.slots);
+  const idlePattern    = useSoundStore((s) => s.videoIdlePattern); // patró de blackout (Settings → Video)
+
+  // Etiqueta del botó de blackout segons el patró seleccionat a Settings → Video.
+  const blackoutLabel = idlePattern === 'bars' ? 'BARS' : idlePattern === 'testcard' ? 'CARD' : 'BLACK';
 
   const { selectStep, go, stopSlot, stopAll } = useSoundStore.getState();
 
@@ -35,8 +39,8 @@ export function CueTransport() {
         <button className="cue-stop-all" onClick={() => stopAll()} title="Stop all (panic)">
           <Square size={16} fill="currentColor" /> ALL
         </button>
-        <button className="cue-black" onClick={() => emitVideoBlack()} title="Black: cut the video output to black">
-          <MonitorOff size={16} /> BLACK
+        <button className="cue-black" onClick={() => emitVideoBlack()} title={`Blackout: cut the video output to the idle screen (${blackoutLabel})`}>
+          <MonitorOff size={16} /> {blackoutLabel}
         </button>
       </div>
 

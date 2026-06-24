@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Fons fosc arrodonit (mateix to que la capçalera d'ezyRider) -->
+  <rect width="512" height="512" rx="104" fill="#161616"/>
+
+  <!-- Monograma (e^P), idèntic al de la capçalera, centrat i ampliat -->
+  <g text-anchor="middle" transform="translate(256 256) scale(1.30) translate(-250 -240)">
+    <text x="150" y="300" font-size="180" fill="#ffffff" font-family="Arial">(</text>
+    <text x="350" y="300" font-size="180" fill="#ffffff" font-family="Arial">)</text>
+    <text x="234" y="332" font-size="230" fill="#ffffff" font-family="Segoe Script, cursive">e</text>
+    <text x="300" y="195" font-size="60" fill="#ffffff" font-family="Calibri, Arial">P</text>
+  </g>
+</svg>

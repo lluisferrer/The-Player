@@ -45,8 +45,20 @@ asio = ["native", "cpal/asio", "dep:asio-sys"]
 # el descodificador MP3 de symphonia és ~30-100× més lent sense optimitzar
 # (descodificar 2 min trigava 30 s en debug; amb això, <1 s). Es compila un cop
 # i queda a la caché.
+#
+# `debug = false` a les dependències: NO emetem info de depuració per a elles (no
+# hi entrem mai amb el depurador). El nostre crate sí que conserva la info (vegeu
+# avall). Sense això, el PDB conjunt de tots els deps optimitzats supera el límit
+# del format i el linker MSVC peta amb LNK1140 ("limit exceeded for program
+# database"). Amb deps sense PDB, el fitxer torna a cabre i enllaça bé.
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
+
+# El nostre crate manté info de depuració de taules de línies (debug = 1: prou per
+# posar breakpoints i veure on peta) sense inflar el PDB com la info completa (2).
+[profile.dev]
+debug = 1
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }

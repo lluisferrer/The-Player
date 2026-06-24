@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { Maximize, Minimize } from 'lucide-react';
 import { useSoundStore } from './store/useSoundStore';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { SoundBoard } from './components/SoundBoard';
@@ -41,9 +42,21 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showSave, setShowSave] = useState(false);
   const [outputOpen, setOutputOpen] = useState(false); // estat de la finestra de sortida
+  const [isFullscreen, setIsFullscreen] = useState(false); // pantalla completa de la finestra principal
   // Flag: l'app s'està tancant. Mentre val true, no persistim videoOutputOpen=false
   // en destruir-se la sortida (volem que es recordi oberta per la pròxima arrencada).
   const appClosingRef = useRef(false);
+
+  // Commuta pantalla completa real (amaga la barra de títol de Windows i la
+  // taskbar). El comparteixen la tecla F11 i el botó de la capçalera.
+  const toggleFullscreen = async () => {
+    try {
+      const w = getCurrentWindow();
+      const next = !(await w.isFullscreen());
+      await w.setFullscreen(next);
+      setIsFullscreen(next);
+    } catch { /* fora de Tauri */ }
+  };
 
   useEffect(() => {
     const loadDevices = async () => {
@@ -104,6 +117,25 @@ export default function App() {
       } catch { /* fora de Tauri */ }
     })();
     return () => { if (unlisten) unlisten(); };
+  }, []);
+
+  // F11: commuta pantalla completa real de la finestra principal (amaga la barra
+  // de títol de Windows i la taskbar). Funciona sempre, també escrivint o editant.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'F11') return;
+      e.preventDefault();
+      toggleFullscreen();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Sincronitza l'estat inicial (per si s'arrenca ja en pantalla completa).
+  useEffect(() => {
+    (async () => {
+      try { setIsFullscreen(await getCurrentWindow().isFullscreen()); } catch { /* res */ }
+    })();
   }, []);
 
   // Obre/tanca la finestra de sortida de vídeo i en sincronitza l'estat del botó.
@@ -384,6 +416,13 @@ export default function App() {
 
           <button className="library-btn" onClick={() => setShowSave(true)}>FILES</button>
           <button className="library-btn" onClick={() => setShowSettings(true)}>SETTINGS</button>
+          <button
+            className={`library-btn icon-btn ${isFullscreen ? 'active' : ''}`}
+            onClick={toggleFullscreen}
+            title="Toggle fullscreen (F11)"
+          >
+            {isFullscreen ? <Minimize size={15} /> : <Maximize size={15} />}
+          </button>
         </div>
       </header>
 

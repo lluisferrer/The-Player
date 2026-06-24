@@ -383,7 +383,7 @@ export function SoundButton({ slotId }) {
             {/* Temps (només vídeo; les imatges no tenen durada) */}
             {!isImageCue && <span className="slot-time">{vidTimeLabel}</span>}
             {/* Badge del cue visual (mateix estil que STREAM dels àudios llargs) */}
-            <span className="slot-stream-badge">{isImageCue ? 'IMATGE' : (isPreviewing ? 'PREVIEW' : 'VIDEO')}</span>
+            <span className="slot-stream-badge">{isImageCue ? 'IMAGE' : (isPreviewing ? 'PREVIEW' : 'VIDEO')}</span>
             {/* Playhead del preview (vermell) mentre es previsualitza al tile (vídeo) */}
             {isVideoCue && isPreviewing && (
               <div className="slot-playhead preview" style={{ left: `${previewVidPct}%` }} />

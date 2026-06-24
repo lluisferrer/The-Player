@@ -54,55 +54,33 @@ body {
   flex-shrink: 0;
 }
 
-/* ─── BRAND LOGO (ezyPlayer, adapted from ezyRider) ─── */
+/* ─── BRAND LOGO (ezyPlayer, idèntic a ezyRider) ─── */
 
 .app-brand {
+  margin: 0;
   display: flex;
   align-items: center;
-  gap: 9px;
-  color: var(--text-primary);
+  gap: 10px;
   user-select: none;
 }
 
-.brand-mark {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  font-size: 22px;
-  line-height: 1;
+/* Mateixos valors que .header__logo d'ezyRider */
+.brand-logo {
+  height: 36px;
+  flex-shrink: 0;
+  mix-blend-mode: screen;
 }
 
-.brand-paren {
-  font-family: Arial, sans-serif;
-  font-weight: 400;
-  color: var(--text-primary);
-}
-
-.brand-e {
-  font-family: 'Segoe Script', 'Brush Script MT', cursive;
-  font-size: 24px;
-  margin: 0 1px;
-  color: var(--text-primary);
-}
-
-/* Superscript letter (P for Player), like the eR / eD monograms */
-.brand-sup {
-  font-family: Calibri, Arial, sans-serif;
-  font-size: 11px;
-  font-weight: 600;
-  align-self: flex-start;
-  margin-left: -2px;
-  margin-top: 1px;
-  color: var(--text-primary);
-}
-
+/* Wordmark amb la tipografia i pesos d'ezyRider (.header h1) */
 .brand-name {
-  font-family: Calibri, 'Segoe UI', Arial, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
   font-size: 17px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  color: var(--text-primary);
+  font-weight: 700;
+  letter-spacing: -0.3px;
 }
+
+.brand-ezy { color: #eee; }
+.brand-app { color: #4a90d9; }
 
 .header-controls {
   display: flex;
@@ -2024,6 +2002,14 @@ body {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+/* Botó d'icona (p. ex. pantalla completa): quadrat i centrat */
+.library-btn.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
 }
 
 .library-panel {
