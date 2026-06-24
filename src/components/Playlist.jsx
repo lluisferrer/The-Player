@@ -72,7 +72,7 @@ export function Playlist() {
     try {
       const sel = await open({
         multiple: true,
-        filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'flac'] }],
+        filters: [{ name: 'Audio', extensions: ['mp3', 'mpeg', 'mpg', 'm4a', 'aac', 'wav', 'ogg', 'flac'] }],
       });
       if (!sel) return;
       const paths = Array.isArray(sel) ? sel : [sel];
