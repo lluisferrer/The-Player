@@ -307,12 +307,16 @@ export const useSoundStore = create((set, get) => ({
   setAsioMasterGain: (v) => {
     const gain = Math.max(0, Math.min(1.5, v));
     set({ asioMasterGain: gain });
+    // Un sol guany mestre per als dos motors natius (ASIO i cpal).
     invoke('asio_set_master_gain', { gain }).catch(() => { /* sense ASIO */ });
+    invoke('native_set_master_gain', { gain }).catch(() => { /* sense motor natiu */ });
     get().persistGlobals();
   },
-  // Aplica el gain mestre desat al motor en arrencar.
+  // Aplica el gain mestre desat als motors en arrencar.
   initAsioMaster: () => {
-    invoke('asio_set_master_gain', { gain: get().asioMasterGain ?? 1 }).catch(() => { /* res */ });
+    const gain = get().asioMasterGain ?? 1;
+    invoke('asio_set_master_gain', { gain }).catch(() => { /* res */ });
+    invoke('native_set_master_gain', { gain }).catch(() => { /* res */ });
   },
 
   // Info dels drivers ASIO carregats ara (per a les opcions de routing). Es manté

@@ -157,6 +157,21 @@ enum NativeCmd {
     },
 }
 
+// Guany mestre del bus natiu (lineal), aplicat a la mescla just abans del
+// soft-clip a CADA dispositiu obert. La UI el canvia amb `native_set_master_gain`
+// (paritat amb `asio_set_master_gain`). Guardat com a bits de f32. Inici 1.0.
+static NATIVE_MASTER_GAIN: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x3f80_0000); // 1.0_f32.to_bits()
+
+fn native_master_gain() -> f32 {
+    f32::from_bits(NATIVE_MASTER_GAIN.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+// Fixa el guany mestre del bus natiu (es llegeix al callback de tots els devices).
+pub fn set_master_gain(gain: f32) {
+    NATIVE_MASTER_GAIN.store(gain.max(0.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
 // Sender únic cap al fil natiu. S'inicialitza mandrós el primer cop que cal.
 static NATIVE_TX: OnceLock<std::sync::mpsc::Sender<NativeCmd>> = OnceLock::new();
 
@@ -650,10 +665,12 @@ fn native_mix_callback<S>(
         svs.retain(|sv| !sv.finished);
     }
 
-    // Entrellaça: data[frame*channels + ch] = clip(acc[ch][frame]).
+    // Entrellaça aplicant el guany mestre abans del soft-clip:
+    // data[frame*channels + ch] = clip(master * acc[ch][frame]).
+    let master = native_master_gain();
     for f in 0..frames {
         for ch in 0..channels {
-            let s = asio_soft_clip(acc_guard[ch][f]);
+            let s = asio_soft_clip(acc_guard[ch][f] * master);
             data[f * channels + ch] = to_native(s);
         }
     }

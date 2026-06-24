@@ -2165,6 +2165,22 @@ fn native_stop_voice(voice_id: u64, fade_out: f32) -> Result<(), String> {
     }
 }
 
+// Estableix el gain mestre del bus natiu (0..1+; aplicat abans del soft clip a
+// tots els dispositius oberts). No passa pel fil del motor: només un àtom.
+#[tauri::command]
+fn native_set_master_gain(gain: f32) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = gain;
+        Ok(())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::set_master_gain(gain);
+        Ok(())
+    }
+}
+
 // Canvia el volum (gain lineal) d'una veu nativa activa en calent.
 #[tauri::command]
 fn native_set_gain(voice_id: u64, gain: f32) -> Result<(), String> {
@@ -2276,6 +2292,7 @@ pub fn run() {
             native_preload,
             native_stop_voice,
             native_set_gain,
+            native_set_master_gain,
             native_seek,
             native_set_paused,
             native_stop
