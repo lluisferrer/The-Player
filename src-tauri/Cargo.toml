@@ -76,5 +76,9 @@ asio-sys = { version = "0.2", optional = true }
 # build. `optional` + lligat a la feature `native`: el build Web Audio pur no el porta.
 symphonia = { version = "0.5", optional = true, default-features = false, features = [
     "mp3", "wav", "ogg", "vorbis", "flac", "pcm", "isomp4",
+    # AAC: per descodificar la pista d'àudio dels vídeos (.mp4/.mov/.m4v) quan se
+    # separa l'àudio del vídeo cap al motor natiu (Fase 4c). isomp4 ja és el lector
+    # del contenidor; aac és el descodificador del còdec.
+    "aac",
 ] }
 

@@ -22,7 +22,7 @@ import { dispatchCue } from '../lib/cueDispatch';
 import { isAsioTarget, resolveCueTargetStr, parseTarget } from '../lib/outputTarget';
 import { clearAsioTelemetry, asioPosition } from '../lib/asioTelemetry';
 import { PREVIEW_VOICE_ID } from '../lib/asioIds';
-import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek, emitVideoIdlePattern } from '../lib/videoOutput';
+import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek, emitVideoIdlePattern, startVideoResync, stopVideoResync } from '../lib/videoOutput';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
 const NUM_PAGES = 4;         // pàgines de cues (4 × 32 = 128 cues)
@@ -214,6 +214,10 @@ export const useSoundStore = create((set, get) => ({
   // Si la finestra de sortida de vídeo estava oberta en tancar l'app: es torna a
   // obrir automàticament a la pròxima arrencada (persistència de sessió).
   videoOutputOpen: savedGlobals.videoOutputOpen ?? false,
+  // 4c (opt-in, experimental): separa l'àudio del vídeo. Amb el motor natiu actiu,
+  // el vídeo sona pel motor (routing/fades/ducking/multicanal, també a Mac) i la
+  // imatge va silenciada a la sortida, sincronitzada per resync. Default APAGAT.
+  separateVideoAudio: savedGlobals.separateVideoAudio ?? false,
 
   // ── Playlist (VLC) ──
   playlist: Array.isArray(savedPlaylist.tracks) ? savedPlaylist.tracks : [],
@@ -241,7 +245,7 @@ export const useSoundStore = create((set, get) => ({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
       useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
-      nativePreviewDeviceName, nativePreviewChannels,
+      nativePreviewDeviceName, nativePreviewChannels, separateVideoAudio,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist,
@@ -249,7 +253,7 @@ export const useSoundStore = create((set, get) => ({
       colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
       useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
-      nativePreviewDeviceName, nativePreviewChannels,
+      nativePreviewDeviceName, nativePreviewChannels, separateVideoAudio,
     }));
   },
 
@@ -341,6 +345,8 @@ export const useSoundStore = create((set, get) => ({
     get().persistGlobals();
     emitVideoIdlePattern(p);
   },
+
+  setSeparateVideoAudio: (on) => { set({ separateVideoAudio: !!on }); get().persistGlobals(); },
 
   // Marca/desmarca un dispositiu WASAPI com a "Usar" (curació del pool de Routing).
   // Llista buida = tots actius; en desmarcar el primer, materialitza la llista
@@ -1064,6 +1070,10 @@ export const useSoundStore = create((set, get) => ({
       // respecta el terra del crossfade entre cues (igual que els camins d'àudio).
       const effIn = Math.max(0, xFadeIn(slot));
       const effOut = Math.max(0, effFadeOut(slot, globalFadeOut));
+      // 4c (opt-in): separar l'àudio del vídeo. Amb el motor natiu actiu i un cue de
+      // VÍDEO (no imatge), l'àudio surt pel motor (routing/fades/ducking/multicanal,
+      // també a Mac) i la imatge va silenciada a la sortida, sincronitzada per resync.
+      const separated = get().separateVideoAudio && get().useNativeCueEngine && isVideo(slot);
       emitVideoPlay(slot.filePath, slot.startPoint || 0, slot.stopPoint || 0, slotId, {
         volume: slot.volume,
         fadeIn: effIn,
@@ -1071,7 +1081,28 @@ export const useSoundStore = create((set, get) => ({
         deviceId: outDev,
         loop: !!slot.loop,
         mediaType: slot.mediaType,
+        muted: separated,
       });
+      if (separated) {
+        const total = slotDuration(slot);
+        const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || Infinity));
+        const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0;
+        const segDur = Math.max(0.02, (stopPoint > 0 ? stopPoint : total) - startPoint);
+        invoke('native_play_cue', {
+          voiceId: slot.id,
+          deviceName: get().nativeCueDeviceName || '',
+          filePath: slot.filePath,
+          gain: slot.volume ?? 0.8,
+          fadeIn: Math.max(0, Math.min(effIn, segDur)),
+          fadeOut: Math.max(0, Math.min(effOut, segDur)),
+          channels: get().nativeCueChannels || [],
+          loopOn: !!slot.loop,
+          startPoint,
+          stopPoint,
+          streaming: !!slot.isStreaming,
+        }).catch((e) => console.warn('[native] video-audio:', e));
+        startVideoResync(slotId, startPoint);
+      }
       // Ducking: si aquest cue de vídeo abaixa la playlist, incrementa el comptador
       if (slot.duck) duckAdd(get, slotId);
       // Stop Playlist: si aquest cue atura del tot la playlist, atura-la ara
@@ -1079,7 +1110,7 @@ export const useSoundStore = create((set, get) => ({
       set((state) => ({
         slots: state.slots.map((s) =>
           // startedAt en rellotge de paret (s) per estimar el playhead/temps al tile
-          s.id === slotId ? { ...s, isPlaying: true, pausedAt: null, startedAt: performance.now() / 1000 } : s
+          s.id === slotId ? { ...s, isPlaying: true, pausedAt: null, startedAt: performance.now() / 1000, videoSeparated: separated } : s
         ),
         activeSlot: slotId,
       }));
@@ -1483,9 +1514,15 @@ export const useSoundStore = create((set, get) => ({
     // El cue ha acabat de forma natural: deixa de duckejar (si tocava)
     if (current.duck) duckRemove(get, slotId);
     if (current.asioActive || current.nativeActive) clearAsioTelemetry(slotId);
+    // 4c separat: si l'àudio del vídeo (motor) ha acabat, atura la imatge i el resync.
+    if (current.videoSeparated) {
+      emitVideoStop(0);
+      stopVideoResync();
+      clearAsioTelemetry(slotId);
+    }
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, isPlaying: false, asioActive: false, nativeActive: false, sourceNode: null } : s
+        s.id === slotId ? { ...s, isPlaying: false, asioActive: false, nativeActive: false, sourceNode: null, videoSeparated: false } : s
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));
@@ -1498,9 +1535,15 @@ export const useSoundStore = create((set, get) => ({
     // duckejar (idempotent) abans de resetejar el seu estat.
     const cur = get().slots.find((s) => s.id === slotId);
     if (cur && cur.mediaType === 'video' && cur.duck) duckRemove(get, slotId);
+    // 4c separat: si la imatge ha acabat, atura també l'àudio del motor i el resync.
+    if (cur && cur.videoSeparated) {
+      invoke('native_stop_voice', { voiceId: slotId, fadeOut: 0 }).catch(() => {});
+      stopVideoResync();
+      clearAsioTelemetry(slotId);
+    }
     set((state) => ({
       slots: state.slots.map((s) =>
-        s.id === slotId && s.mediaType === 'video' ? { ...s, isPlaying: false, pausedAt: null } : s
+        s.id === slotId && s.mediaType === 'video' ? { ...s, isPlaying: false, pausedAt: null, videoSeparated: false } : s
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));
@@ -1765,9 +1808,15 @@ export const useSoundStore = create((set, get) => ({
         }
       } else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
       emitVideoStop(fadeSec);
+      // 4c separat: atura també l'àudio del vídeo (motor natiu) i el resync.
+      if (slot.videoSeparated) {
+        invoke('native_stop_voice', { voiceId: slot.id, fadeOut: fadeSec }).catch(() => {});
+        stopVideoResync();
+        clearAsioTelemetry(slotId);
+      }
       set((state) => ({
         slots: state.slots.map((s) =>
-          s.id === slotId ? { ...s, isPlaying: false, pausedAt: null } : s
+          s.id === slotId ? { ...s, isPlaying: false, pausedAt: null, videoSeparated: false } : s
         ),
         activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
       }));

@@ -6,6 +6,7 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { availableMonitors, primaryMonitor } from '@tauri-apps/api/window';
 import { emit } from '@tauri-apps/api/event';
+import { asioPosition } from './asioTelemetry';
 
 export const OUTPUT_LABEL = 'output';
 
@@ -133,8 +134,30 @@ export async function emitVideoPlay(filePath, startPoint = 0, stopPoint = null, 
       deviceId: opts.deviceId || 'default',
       loop: !!opts.loop,
       mediaType: opts.mediaType || 'video',
+      // 4c separat: la sortida silencia el <video> (l'àudio surt pel motor) i la
+      // imatge segueix l'àudio via els events de resync.
+      muted: !!opts.muted,
     });
   } catch (e) { console.warn('video-play:', e); }
+}
+
+// ── Resync imatge→àudio (Fase 4c, separació d'àudio) ──
+// Quan l'àudio d'un cue de vídeo surt pel motor (no pel <video>), la imatge de la
+// sortida es manté sincronitzada amb l'àudio: cada ~400 ms enviem el temps absolut
+// d'àudio (startPoint + posició dins el segment, de la telemetria nativa) i la
+// finestra de sortida nomès corregeix el currentTime del vídeo si la deriva és
+// gran. MAI toquem l'àudio (que és el rellotge mestre), així no hi ha glitches.
+let resyncTimer = null;
+export function startVideoResync(slotId, startPoint = 0) {
+  stopVideoResync();
+  resyncTimer = setInterval(() => {
+    const pos = asioPosition(slotId);            // null si encara no arriba telemetria
+    if (pos == null) return;
+    emit('video-resync', { time: (startPoint || 0) + pos }).catch(() => {});
+  }, 400);
+}
+export function stopVideoResync() {
+  if (resyncTimer != null) { clearInterval(resyncTimer); resyncTimer = null; }
 }
 
 // Atura el vídeo (manté la finestra negra). Amb fadeOut>0, la sortida fa un

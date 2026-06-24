@@ -33,7 +33,7 @@ export function VideoOutput() {
   // Paràmetres del cue actual (en segons / 0..1). En una ref perquè estiguin
   // disponibles als handlers del <video> encara que es munti després.
   const playInfo = useRef({
-    startPoint: 0, stopPoint: 0, volume: 0.8, fadeIn: 0, fadeOut: 0, deviceId: 'default', loop: false,
+    startPoint: 0, stopPoint: 0, volume: 0.8, fadeIn: 0, fadeOut: 0, deviceId: 'default', loop: false, muted: false,
   });
   const rafRef = useRef(null);             // id del requestAnimationFrame del fade de volum
   const fadingOut = useRef(false);         // ja s'ha llançat el fade out d'aquest segment?
@@ -128,6 +128,9 @@ export function VideoOutput() {
           fadeOut,
           deviceId: p.deviceId || 'default',
           loop: !!p.loop,
+          // 4c separat: l'àudio surt pel motor → silenciem el <video> i la imatge
+          // segueix l'àudio (events video-resync). Sense àudio propi ni setSinkId.
+          muted: !!p.muted,
         };
         const kind = p.mediaType === 'image' ? 'image' : 'video';
         kindRef.current = kind;
@@ -156,6 +159,17 @@ export function VideoOutput() {
         const v = videoRef.current;
         if (v && t != null) { try { v.currentTime = t; } catch { /* res */ } }
       }));
+      // Resync (4c separat): l'àudio del motor és el rellotge mestre. Corregim el
+      // currentTime del vídeo NOMÉS si la deriva supera un llindar, per no fer
+      // seeks constants (que es veurien com a tremolor). Llindar ~150 ms.
+      unlisteners.push(await listen('video-resync', (e) => {
+        const t = e.payload && e.payload.time;
+        const v = videoRef.current;
+        if (!v || t == null || !playInfo.current.muted) return;
+        if (Math.abs(v.currentTime - t) > 0.15) {
+          try { v.currentTime = t; } catch { /* res */ }
+        }
+      }));
       // Canvi del patró de blackout en calent (des de Settings → Vídeo)
       unlisteners.push(await listen('video-idle-pattern', (e) => {
         const p = e.payload && e.payload.pattern;
@@ -174,10 +188,14 @@ export function VideoOutput() {
   const handleLoaded = async () => {
     const v = videoRef.current;
     if (!v) return;
-    const { startPoint, volume, fadeIn, deviceId } = playInfo.current;
+    const { startPoint, volume, fadeIn, deviceId, muted } = playInfo.current;
 
-    // Routing de sortida: setSinkId si el navegador ho suporta i no és 'default'
-    if (typeof v.setSinkId === 'function' && deviceId && deviceId !== 'default') {
+    // 4c separat: àudio pel motor → vídeo MUT, sense routing propi (l'àudio del
+    // motor ja s'enruta). Només l'opacitat fa el fade visual; el volum no s'usa.
+    if (muted) {
+      try { v.muted = true; v.volume = 0; } catch { /* res */ }
+    } else if (typeof v.setSinkId === 'function' && deviceId && deviceId !== 'default') {
+      // Routing de sortida: setSinkId si el navegador ho suporta i no és 'default'
       try { await v.setSinkId(deviceId); } catch { /* el WebView pot no suportar-ho */ }
     }
 
@@ -186,12 +204,12 @@ export function VideoOutput() {
     }
 
     if (fadeIn > 0) {
-      try { v.volume = 0; } catch { /* res */ }
+      if (!muted) { try { v.volume = 0; } catch { /* res */ } }
       setFadeDur(fadeIn);
       setOpacity(1); // dispara la transició CSS d'opacitat 0→1 (durada = fadeIn)
-      rampVolume(0, volume, fadeIn);
+      if (!muted) rampVolume(0, volume, fadeIn);
     } else {
-      try { v.volume = volume; } catch { /* res */ }
+      if (!muted) { try { v.volume = volume; } catch { /* res */ } }
       setFadeDur(0);
       setOpacity(1);
     }

@@ -184,6 +184,8 @@ export function SettingsModal({ onClose }) {
   const videoMonitorName = useSoundStore((s) => s.videoMonitorName);
   const setVideoMonitorName = useSoundStore((s) => s.setVideoMonitorName);
   const videoIdlePattern = useSoundStore((s) => s.videoIdlePattern);
+  const separateVideoAudio = useSoundStore((s) => s.separateVideoAudio);
+  const setSeparateVideoAudio = useSoundStore((s) => s.setSeparateVideoAudio);
   const setVideoIdlePattern = useSoundStore((s) => s.setVideoIdlePattern);
 
   const duckEnabled = useSoundStore((s) => s.duckEnabled);
@@ -558,6 +560,24 @@ export function SettingsModal({ onClose }) {
               <div className="settings-note">
                 What shows on the output when nothing is playing (blackout). <b>Full black</b> is
                 pure black, no text. Applies instantly to the open window.
+              </div>
+
+              <div className="settings-subtitle">Video audio (experimental)</div>
+              <div className="editor-options">
+                <label className="editor-check">
+                  <input
+                    type="checkbox"
+                    checked={separateVideoAudio}
+                    onChange={(e) => setSeparateVideoAudio(e.target.checked)}
+                    disabled={!useNativeCueEngine}
+                  />
+                  Route video audio through the native engine
+                </label>
+              </div>
+              <div className="settings-note">
+                Plays the video’s sound through the native engine (routing, fades, ducking,
+                multichannel — also on macOS) while the output shows muted video, kept in sync.
+                Requires the native engine (Cues tab). Off by default.
               </div>
             </>
           )}
