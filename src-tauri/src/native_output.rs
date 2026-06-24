@@ -858,17 +858,19 @@ fn native_play_cue_impl(
         return Ok(());
     }
 
-    // Paràmetres de la veu (sense PCM). El camí en memòria encara ignora
-    // start/stop point i loop (limitació coneguda dels increments 1-5).
+    // Paràmetres de la veu (sense PCM). El camí en memòria ja respecta loop i
+    // segment start/stop: `native_build_and_push_voice` els tradueix a frames
+    // (start_frame/stop_frame/fade) igual que ASIO. La cau guarda el fitxer
+    // SENCER a la freqüència del driver; el segment només limita la lectura.
     let spec = VoiceSpec {
         voice_id,
         out_channels,
         gain,
         fade_in,
         fade_out,
-        loop_on: false,
-        start_point: 0.0,
-        stop_point: 0.0,
+        loop_on,
+        start_point,
+        stop_point,
     };
 
     // HIT de cau (p. ex. pre-carregat): registra la veu A L'INSTANT.
