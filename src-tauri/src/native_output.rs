@@ -162,6 +162,12 @@ enum NativeCmd {
         keep: Vec<String>,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
+    // Tancament de l'app: atura els fils descodificadors i fa DROP de TOTS els
+    // streams cpal en aquest fil (el propietari) perquè WASAPI/CoreAudio els
+    // alliberin net i el procés pugui sortir sense penjar-se.
+    Shutdown {
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
 }
 
 // Guany mestre del bus natiu (lineal), aplicat a la mescla just abans del
@@ -466,6 +472,26 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
                     Ok(())
                 }))
                 .unwrap_or_else(|_| Err("Pànic tancant dispositius natius.".into()));
+                let _ = reply.send(res);
+            }
+            NativeCmd::Shutdown { reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // Atura els fils descodificadors de les veus en streaming i,
+                    // tot seguit, fa DROP de tots els backends: això tanca cada
+                    // cpal::Stream EN AQUEST fil (el que les va crear), de manera que
+                    // WASAPI/CoreAudio les alliberen net i el procés pot sortir.
+                    for b in backends.values() {
+                        if let Ok(svs) = b.stream_voices.lock() {
+                            for sv in svs.iter() {
+                                sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    backends.clear();
+                    native_publish_meter(&backends);
+                    Ok(())
+                }))
+                .unwrap_or_else(|_| Err("Pànic aturant el motor natiu (shutdown).".into()));
                 let _ = reply.send(res);
             }
         }
@@ -1216,5 +1242,19 @@ pub fn close_unused(keep: Vec<String>) -> Result<(), String> {
         |reply| NativeCmd::CloseUnused { keep, reply },
         std::time::Duration::from_secs(5),
         "Temps esgotat o error alliberant dispositius natius.",
+    )
+}
+
+// Teardown en tancar l'app: fa drop net de tots els streams cpal. Timeout curt: si
+// el fil del motor estigués encallat, no volem bloquejar el tancament — el procés
+// sortirà igualment. Si el motor no s'ha arrencat mai, és un no-op barat.
+pub fn shutdown() -> Result<(), String> {
+    if NATIVE_TX.get().is_none() {
+        return Ok(()); // el motor natiu no s'ha usat: res a tancar
+    }
+    send_and_wait(
+        |reply| NativeCmd::Shutdown { reply },
+        std::time::Duration::from_secs(2),
+        "Temps esgotat aturant el motor natiu en tancar.",
     )
 }

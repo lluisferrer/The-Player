@@ -2313,6 +2313,20 @@ pub fn run() {
             native_set_paused,
             native_stop
         ])
+        // Tancament fiable: en tancar la finestra PRINCIPAL, aturem el motor natiu
+        // net (drop dels streams cpal al seu fil → WASAPI/CoreAudio no penja) i
+        // sortim de TOTA l'app. Sense això, si quedava oberta la finestra de sortida
+        // de vídeo o algun stream actiu, el procés no acabava de tancar-se.
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if window.label() == "main" {
+                    #[cfg(feature = "native")]
+                    let _ = native_output::shutdown();
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
