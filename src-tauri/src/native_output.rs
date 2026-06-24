@@ -155,6 +155,13 @@ enum NativeCmd {
     Stop {
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
+    // Tanca (allibera) els dispositius oberts que NO siguin a `keep` i que no
+    // tinguin cap veu sonant. Així, en canviar de dispositiu de sortida, el vell
+    // queda lliure per a altres aplicacions en lloc de quedar obert escrivint silenci.
+    CloseUnused {
+        keep: Vec<String>,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
 }
 
 // Guany mestre del bus natiu (lineal), aplicat a la mescla just abans del
@@ -438,6 +445,27 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
                     Ok(())
                 }))
                 .unwrap_or_else(|_| Err("Pànic aturant el motor natiu.".into()));
+                let _ = reply.send(res);
+            }
+            NativeCmd::CloseUnused { keep, reply } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // Tanca els dispositius que no estan a `keep` i que no tenen cap
+                    // veu (ni en memòria ni en streaming) sonant. Eliminar-los del
+                    // mapa fa drop de la cpal::Stream al fil propietari → s'allibera el
+                    // dispositiu. Els que encara sonen es mantenen fins que acabin.
+                    backends.retain(|name, b| {
+                        if keep.iter().any(|k| k == name) {
+                            return true;
+                        }
+                        let busy_voices = b.voices.lock().map(|v| !v.is_empty()).unwrap_or(true);
+                        let busy_streams = b.stream_voices.lock().map(|s| !s.is_empty()).unwrap_or(true);
+                        busy_voices || busy_streams
+                    });
+                    // Republica la taula de telemetria sense els dispositius tancats.
+                    native_publish_meter(&backends);
+                    Ok(())
+                }))
+                .unwrap_or_else(|_| Err("Pànic tancant dispositius natius.".into()));
                 let _ = reply.send(res);
             }
         }
@@ -1177,5 +1205,16 @@ pub fn stop() -> Result<(), String> {
         |reply| NativeCmd::Stop { reply },
         std::time::Duration::from_secs(5),
         "Temps esgotat o error aturant el motor natiu.",
+    )
+}
+
+// Allibera els dispositius oberts que no estiguin a `keep` i que no sonin. Es crida
+// en canviar els dispositius de sortida (cues/playlist/preview) perquè el vell no
+// quedi reservat. Els dispositius encara actius es mantenen fins que les veus acabin.
+pub fn close_unused(keep: Vec<String>) -> Result<(), String> {
+    send_and_wait(
+        |reply| NativeCmd::CloseUnused { keep, reply },
+        std::time::Duration::from_secs(5),
+        "Temps esgotat o error alliberant dispositius natius.",
     )
 }

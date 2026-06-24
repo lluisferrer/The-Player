@@ -266,6 +266,18 @@ export const useSoundStore = create((set, get) => ({
     get().persistGlobals();
     // En activar el motor natiu, pre-descodifica ja els cues que hi routejaran.
     if (on) get().preloadAllNativeCues();
+    // En desactivar-lo, allibera tots els dispositius natius que no sonin.
+    else get().closeUnusedNativeDevices();
+  },
+
+  // Allibera els dispositius cpal oberts que ja no usa cap rol (cues/playlist/
+  // preview) i que no sonin, perquè en canviar de sortida el vell quedi lliure.
+  closeUnusedNativeDevices: () => {
+    const st = get();
+    const keep = st.useNativeCueEngine
+      ? [st.nativeCueDeviceName || '', st.nativePlaylistDeviceName || '', st.nativePreviewDeviceName || '']
+      : [];
+    invoke('native_close_unused', { keep }).catch(() => { /* sense motor natiu */ });
   },
 
   // Increment 4: dispositiu de sortida del motor natiu (NOM de cpal; buit = per
@@ -277,6 +289,7 @@ export const useSoundStore = create((set, get) => ({
     // El dispositiu natiu (i, per tant, la seva freqüència) ha canviat: re-preload
     // a la nova freqüència perquè la cau tingui el PCM al rate correcte.
     get().preloadAllNativeCues();
+    get().closeUnusedNativeDevices(); // allibera el dispositiu anterior si ja no s'usa
   },
   // Increment 4: canals destí del motor natiu (array 0-based, p. ex. [2,3] = 3-4).
   setNativeCueChannels: (channels) => {
@@ -293,6 +306,7 @@ export const useSoundStore = create((set, get) => ({
     if (get().plIsNative()) plnSetDevice(get);
     set({ nativePlaylistDeviceName: name || '', nativePlaylistChannels: [] });
     get().persistGlobals();
+    get().closeUnusedNativeDevices();
   },
   setNativePlaylistChannels: (channels) => {
     set({ nativePlaylistChannels: Array.isArray(channels) ? channels : [] });
@@ -305,6 +319,7 @@ export const useSoundStore = create((set, get) => ({
     if (get().previewingSlot != null) get().stopPreview();
     set({ nativePreviewDeviceName: name || '', nativePreviewChannels: [] });
     get().persistGlobals();
+    get().closeUnusedNativeDevices();
   },
   setNativePreviewChannels: (channels) => {
     set({ nativePreviewChannels: Array.isArray(channels) ? channels : [] });

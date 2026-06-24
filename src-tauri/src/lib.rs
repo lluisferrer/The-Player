@@ -2181,6 +2181,21 @@ fn native_set_master_gain(gain: f32) -> Result<(), String> {
     }
 }
 
+// Allibera els dispositius natius oberts que no estiguin a `keep` i no sonin
+// (en canviar de dispositiu de sortida, perquè el vell quedi lliure).
+#[tauri::command]
+fn native_close_unused(keep: Vec<String>) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = keep;
+        Ok(())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::close_unused(keep)
+    }
+}
+
 // Canvia el volum (gain lineal) d'una veu nativa activa en calent.
 #[tauri::command]
 fn native_set_gain(voice_id: u64, gain: f32) -> Result<(), String> {
@@ -2293,6 +2308,7 @@ pub fn run() {
             native_stop_voice,
             native_set_gain,
             native_set_master_gain,
+            native_close_unused,
             native_seek,
             native_set_paused,
             native_stop
