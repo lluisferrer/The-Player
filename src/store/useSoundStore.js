@@ -200,6 +200,10 @@ export const useSoundStore = create((set, get) => ({
   // separar música de fons i efectes). Buit = per defecte / 2 primers canals.
   nativePlaylistDeviceName: savedGlobals.nativePlaylistDeviceName ?? '',
   nativePlaylistChannels: Array.isArray(savedGlobals.nativePlaylistChannels) ? savedGlobals.nativePlaylistChannels : [],
+  // Dispositiu/canals cpal del bus de PREVIEW (PFL) quan va pel motor natiu
+  // (típicament uns auriculars en una sortida a part). Buit = per defecte.
+  nativePreviewDeviceName: savedGlobals.nativePreviewDeviceName ?? '',
+  nativePreviewChannels: Array.isArray(savedGlobals.nativePreviewChannels) ? savedGlobals.nativePreviewChannels : [],
   // Monitor predeterminat de la finestra de sortida de vídeo, identificat per NOM
   // (m.name d'availableMonitors). null = auto (primer monitor no principal).
   videoMonitorName: savedGlobals.videoMonitorName ?? null,
@@ -236,6 +240,7 @@ export const useSoundStore = create((set, get) => ({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
       useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
+      nativePreviewDeviceName, nativePreviewChannels,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
@@ -243,6 +248,7 @@ export const useSoundStore = create((set, get) => ({
       colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
       useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
+      nativePreviewDeviceName, nativePreviewChannels,
     }));
   },
 
@@ -289,6 +295,18 @@ export const useSoundStore = create((set, get) => ({
   },
   setNativePlaylistChannels: (channels) => {
     set({ nativePlaylistChannels: Array.isArray(channels) ? channels : [] });
+    get().persistGlobals();
+  },
+
+  // Dispositiu/canals cpal del bus de preview natiu. Canviar-los atura el preview
+  // en curs (no es pot migrar en calent entre dispositius cpal).
+  setNativePreviewDevice: (name) => {
+    if (get().previewingSlot != null) get().stopPreview();
+    set({ nativePreviewDeviceName: name || '', nativePreviewChannels: [] });
+    get().persistGlobals();
+  },
+  setNativePreviewChannels: (channels) => {
+    set({ nativePreviewChannels: Array.isArray(channels) ? channels : [] });
     get().persistGlobals();
   },
 
@@ -552,6 +570,32 @@ export const useSoundStore = create((set, get) => ({
       return;
     }
 
+    // Preview pel motor natiu cpal: si el motor natiu està actiu i el dispositiu de
+    // preview NO és ASIO, toca el cue pel bus natiu cap als canals de preview. Dona
+    // pre-escolta multicanal real també a Mac (curt i streaming).
+    if (get().useNativeCueEngine && !isAsioTarget(get().previewDeviceId)) {
+      get().stopPreview();
+      const voiceId = PREVIEW_VOICE_ID + (previewSeq = (previewSeq + 1) % 100000);
+      const total = slotDuration(slot);
+      const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || 0));
+      const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
+      invoke('native_play_cue', {
+        voiceId,
+        deviceName: get().nativePreviewDeviceName || '',
+        filePath: slot.filePath,
+        channels: get().nativePreviewChannels || [],
+        gain: slot.volume ?? 0.8,
+        fadeIn: 0,
+        fadeOut: 0,
+        loopOn: !!slot.loop,
+        startPoint,
+        stopPoint,
+        streaming: !!slot.isStreaming,
+      }).catch((e) => console.warn('[native] preview:', e));
+      set({ previewingSlot: slotId, previewStartedAt: performance.now() / 1000, previewVoiceId: voiceId });
+      return;
+    }
+
     // Cue en streaming: preview amb element <audio> al bus de preview
     if (slot.isStreaming) {
       get().stopPreview();
@@ -593,6 +637,8 @@ export const useSoundStore = create((set, get) => ({
     const pvid = get().previewVoiceId;
     if (isAsioTarget(get().previewDeviceId)) {
       invoke('asio_stop_voice', { voiceId: pvid, fadeOut: 0 }).catch(() => {});
+    } else if (get().useNativeCueEngine) {
+      invoke('native_stop_voice', { voiceId: pvid, fadeOut: 0 }).catch(() => {});
     }
     clearAsioTelemetry(pvid);
     set({ previewingSlot: null });

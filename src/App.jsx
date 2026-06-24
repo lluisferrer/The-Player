@@ -218,8 +218,10 @@ export default function App() {
         un = await listen('native-voice-ended', (e) => {
           const id = e.payload;
           if (id == null) return;
-          // Pot ser un cue (id = slot) o una pista de la playlist nativa.
-          useSoundStore.getState().handleEnded(id);
+          // Pot ser un cue (id = slot), el preview (id rotatiu) o la playlist nativa.
+          const st = useSoundStore.getState();
+          if (id === st.previewVoiceId) { st.previewEnded(); return; }
+          st.handleEnded(id);
           plnOnVoiceEnded(id);
         });
       } catch { /* fora de Tauri */ }

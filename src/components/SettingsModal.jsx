@@ -171,6 +171,10 @@ export function SettingsModal({ onClose }) {
   const setNativePlaylistDevice = useSoundStore((s) => s.setNativePlaylistDevice);
   const nativePlaylistChannels = useSoundStore((s) => s.nativePlaylistChannels);
   const setNativePlaylistChannels = useSoundStore((s) => s.setNativePlaylistChannels);
+  const nativePreviewDeviceName = useSoundStore((s) => s.nativePreviewDeviceName);
+  const setNativePreviewDevice = useSoundStore((s) => s.setNativePreviewDevice);
+  const nativePreviewChannels = useSoundStore((s) => s.nativePreviewChannels);
+  const setNativePreviewChannels = useSoundStore((s) => s.setNativePreviewChannels);
 
   const crossfade = useSoundStore((s) => s.crossfade);
   const setCrossfade = useSoundStore((s) => s.setCrossfade);
@@ -226,7 +230,7 @@ export function SettingsModal({ onClose }) {
   // Increment 4: carrega els dispositius natius (noms de cpal) quan ets a Cues amb
   // el motor natiu actiu, per poblar el selector de dispositiu i canals de sortida.
   useEffect(() => {
-    if ((tab !== 'cues' && tab !== 'playlist') || !useNativeCueEngine || nativeOutputs) return;
+    if ((tab !== 'cues' && tab !== 'playlist' && tab !== 'routing') || !useNativeCueEngine || nativeOutputs) return;
     (async () => {
       try { setNativeOutputs(await invoke('list_audio_outputs')); }
       catch { setNativeOutputs([]); }
@@ -437,6 +441,53 @@ export function SettingsModal({ onClose }) {
                   defaultLabel="Default"
                 />
               </div>
+
+              {useNativeCueEngine && (() => {
+                // Dispositiu/canals del bus de preview pel motor natiu cpal (els
+                // selectors WASAPI/ASIO de dalt no enruten quan el motor natiu és on).
+                const devs = nativeOutputs || [];
+                const sel = devs.find((d) => d.name === nativePreviewDeviceName);
+                const maxCh = sel ? sel.max_channels : (devs.find((d) => d.is_default)?.max_channels || 2);
+                const pairs = [];
+                for (let c = 0; c + 1 < maxCh; c += 2) pairs.push([c, c + 1]);
+                if (pairs.length === 0) pairs.push([0, 1]);
+                const curPair = (nativePreviewChannels && nativePreviewChannels.length === 2)
+                  ? `${nativePreviewChannels[0]},${nativePreviewChannels[1]}` : '';
+                return (
+                  <>
+                    <div className="settings-row">
+                      <label htmlFor="dev-preview-native">Preview (native)</label>
+                      <select
+                        id="dev-preview-native"
+                        value={nativePreviewDeviceName}
+                        onChange={(e) => setNativePreviewDevice(e.target.value)}
+                      >
+                        <option value="">System default</option>
+                        {devs.map((d) => (
+                          <option key={d.name} value={d.name}>{d.name} ({d.max_channels}ch)</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="settings-row">
+                      <label htmlFor="ch-preview-native">Preview channels</label>
+                      <select
+                        id="ch-preview-native"
+                        value={curPair}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (!v) { setNativePreviewChannels([]); return; }
+                          setNativePreviewChannels(v.split(',').map((n) => parseInt(n, 10)));
+                        }}
+                      >
+                        <option value="">Default (1-2)</option>
+                        {pairs.map(([a, b]) => (
+                          <option key={`${a},${b}`} value={`${a},${b}`}>{a + 1}-{b + 1}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                );
+              })()}
 
               <div className="settings-subtitle">Per-color routing (cues)</div>
               <div className="settings-note">
