@@ -14,12 +14,14 @@ const active = new Map(); // slotId → { audio, g, startPoint, stopPoint, segDu
 let previewEl = null;     // { audio, srcNode, gain }
 
 // ── Helpers ──
-function segmentOf(get, slot) {
+function segmentOf(get, slot, fadeInFloor = 0) {
   const total = slot.streamDuration || 0;
   const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total));
   const stopPoint = Math.min(slot.stopPoint ?? total, total);
   const segDur = Math.max(0.05, stopPoint - startPoint);
-  const fadeIn = Math.max(0, Math.min(effFadeIn(slot, get().globalFadeIn), segDur));
+  // El fade-in respecta un terra opcional (crossfade entre cues): el propi del
+  // cue o el global, però mai per sota del temps de crossfade demanat.
+  const fadeIn = Math.max(0, Math.min(Math.max(effFadeIn(slot, get().globalFadeIn), fadeInFloor), segDur));
   const fadeOut = Math.max(0, Math.min(effFadeOut(slot, get().globalFadeOut), segDur));
   return { total, startPoint, stopPoint, segDur, fadeIn, fadeOut };
 }
@@ -89,7 +91,8 @@ function onEnded(get, set, slotId) {
 // ── API ──
 
 // offset != null → reprèn des d'aquesta posició dins el segment (sense fade in)
-export function csPlay(get, set, slotId, { offset = null } = {}) {
+// fadeInFloor → terra del fade-in (crossfade entre cues)
+export function csPlay(get, set, slotId, { offset = null, fadeInFloor = 0 } = {}) {
   const slot = get().slots.find((s) => s.id === slotId);
   if (!slot || !slot.isStreaming) return;
   const src = slot.audioUrl;
@@ -97,7 +100,7 @@ export function csPlay(get, set, slotId, { offset = null } = {}) {
 
   killSlot(slotId);
 
-  const { startPoint, stopPoint, segDur, fadeIn, fadeOut } = segmentOf(get, slot);
+  const { startPoint, stopPoint, segDur, fadeIn, fadeOut } = segmentOf(get, slot, fadeInFloor);
   const resuming = offset != null;
   const begin = resuming ? startPoint + Math.max(0, Math.min(offset, segDur)) : startPoint;
 

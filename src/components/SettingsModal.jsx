@@ -153,6 +153,8 @@ export function SettingsModal({ onClose }) {
   const globalFadeOut = useSoundStore((s) => s.globalFadeOut);
   const setGlobalFades = useSoundStore((s) => s.setGlobalFades);
   const cuesStopOthers = useSoundStore((s) => s.cuesStopOthers);
+  const cuesCrossfade = useSoundStore((s) => s.cuesCrossfade);
+  const setCuesCrossfade = useSoundStore((s) => s.setCuesCrossfade);
   const cuesDuck = useSoundStore((s) => s.cuesDuck);
   const cuesStopPlaylist = useSoundStore((s) => s.cuesStopPlaylist);
   const setCuesPlaylistAction = useSoundStore((s) => s.setCuesPlaylistAction);
@@ -596,6 +598,15 @@ export function SettingsModal({ onClose }) {
                 </span>
               </label>
               <div className="settings-note">Each cue can set its own fade in the editor (✎); otherwise it uses these.</div>
+
+              <label className="ps-row">
+                <span>Crossfade between cues</span>
+                <span className="ps-cf">
+                  <input type="number" min="0" max="30" step="0.1" value={cuesCrossfade}
+                    onChange={(e) => setCuesCrossfade(Math.max(0, parseFloat(e.target.value) || 0))} /> s
+                </span>
+              </label>
+              <div className="settings-note">When a cue with “stop others” fires, outgoing cues fade out over this time while the new one fades in. 0 = hard cut.</div>
 
               <div className="settings-subtitle">Audio engine</div>
               <div className="editor-options">

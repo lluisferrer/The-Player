@@ -152,6 +152,7 @@ export const useSoundStore = create((set, get) => ({
   globalFadeIn: savedGlobals.globalFadeIn ?? 0,   // fades per defecte de tots els cues
   globalFadeOut: savedGlobals.globalFadeOut ?? 0,
   cuesStopOthers: savedGlobals.cuesStopOthers ?? false, // Stop Others global per a tots els cues
+  cuesCrossfade: savedGlobals.cuesCrossfade ?? 0,       // crossfade (s) entre cues quan un en para d'altres (0 = tall sec)
   cuesDuck: savedGlobals.cuesDuck ?? false,             // Ducking per defecte dels cues nous
   cuesStopPlaylist: savedGlobals.cuesStopPlaylist ?? false, // Stop Playlist per defecte dels cues nous
   // ── Ducking de la Playlist (híbrid: paràmetres globals + activador per cue) ──
@@ -237,13 +238,13 @@ export const useSoundStore = create((set, get) => ({
 
   persistGlobals: () => {
     const {
-      globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
+      globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
       useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
       nativePreviewDeviceName, nativePreviewChannels,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
-      globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
+      globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
@@ -373,6 +374,7 @@ export const useSoundStore = create((set, get) => ({
 
   // Stop Others global: en disparar qualsevol cue, atura la resta
   setCuesStopOthers: (on) => { set({ cuesStopOthers: !!on }); get().persistGlobals(); },
+  setCuesCrossfade: (sec) => { set({ cuesCrossfade: Math.max(0, sec) }); get().persistGlobals(); },
   // Acció per defecte dels cues nous sobre la Playlist: 'none' | 'duck' | 'stop'
   // (duck i stop són mútuament excloents)
   setCuesPlaylistAction: (action) => {
@@ -1012,14 +1014,23 @@ export const useSoundStore = create((set, get) => ({
     }
 
     // "Stop others" del cue: atura la resta de cues que sonin, excepte els que
-    // formen part de la mateixa cadena auto-continue (opts.exemptIds).
+    // formen part de la mateixa cadena auto-continue (opts.exemptIds). Amb crossfade
+    // entre cues (cuesCrossfade>0), els sortints s'esvaeixen en aquest temps i el
+    // nou entra amb el mateix fade-in (xfadeIn) → encavalcament suau.
+    const cuesCrossfade = Math.max(0, get().cuesCrossfade || 0);
+    let xfadeIn = 0;
     if (slot.stopOthers) {
       const exempt = opts.exemptIds;
       slots.forEach((s) => {
         if (s.id === slotId || (exempt && exempt.has(s.id))) return;
-        if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id);
+        if (s.isPlaying || s.pausedAt != null) {
+          get().stopSlot(s.id, cuesCrossfade > 0 ? cuesCrossfade : false);
+          if (cuesCrossfade > 0) xfadeIn = cuesCrossfade;
+        }
       });
     }
+    // Fade-in efectiu del cue entrant (el propi o el global), amb terra al crossfade.
+    const xFadeIn = (slot) => Math.max(effFadeIn(slot, globalFadeIn), xfadeIn);
 
     // Cue visual (vídeo o imatge): es reprodueix a la finestra de sortida (no
     // per Web Audio). Emet l'event video-play amb un payload ric (volum, fades
@@ -1080,7 +1091,7 @@ export const useSoundStore = create((set, get) => ({
       const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || Infinity));
       const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
       const segDur = Math.max(0.02, (stopPoint > 0 ? stopPoint : total) - startPoint);
-      const effIn = Math.max(0, Math.min(effFadeIn(slot, globalFadeIn), segDur));
+      const effIn = Math.max(0, Math.min(xFadeIn(slot), segDur));
       const effOut = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
       invoke('asio_play_voice', {
         voiceId: slot.id,
@@ -1116,7 +1127,7 @@ export const useSoundStore = create((set, get) => ({
       const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || Infinity));
       const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
       const segDur = Math.max(0.02, (stopPoint > 0 ? stopPoint : total) - startPoint);
-      const effIn = Math.max(0, Math.min(effFadeIn(slot, globalFadeIn), segDur));
+      const effIn = Math.max(0, Math.min(xFadeIn(slot), segDur));
       const effOut = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
       invoke('native_play_cue', {
         voiceId: slot.id,
@@ -1145,7 +1156,7 @@ export const useSoundStore = create((set, get) => ({
     }
 
     // Cue llarg en streaming: reproducció amb element <audio>
-    if (slot.isStreaming) { csPlay(get, set, slotId); return; }
+    if (slot.isStreaming) { csPlay(get, set, slotId, { fadeInFloor: xfadeIn }); return; }
 
     // Atura qualsevol font residual d'aquest slot (p. ex. en ple fade out)
     if (slot.sourceNode) {
@@ -1184,7 +1195,7 @@ export const useSoundStore = create((set, get) => ({
     const stopPoint  = Math.min(slot.stopPoint ?? total, total);
     const segDur     = Math.max(0.02, stopPoint - startPoint);
     // Fades efectius: el propi del cue si és >0, si no el global
-    const fadeIn     = Math.max(0, Math.min(effFadeIn(slot, globalFadeIn), segDur));
+    const fadeIn     = Math.max(0, Math.min(xFadeIn(slot), segDur));
     const fadeOut    = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
 
     const now = ctx.currentTime;
