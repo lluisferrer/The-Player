@@ -672,12 +672,19 @@ export const useSoundStore = create((set, get) => ({
     set((state) => {
       const idx = state.playlist.findIndex((t) => t.id === id);
       const playlist = state.playlist.filter((t) => t.id !== id);
+      // Marcador de pista sonant: si s'esborra una pista d'abans, decreix; si
+      // s'esborra la que sona, el marcador deixa de ser vàlid a la nova llista (-1;
+      // l'auto-avanç del motor el reposarà al seu índex en encadenar).
       let playlistIndex = state.playlistIndex;
-      if (idx >= 0 && idx < playlistIndex) playlistIndex -= 1;
+      if (idx >= 0) {
+        if (idx < playlistIndex) playlistIndex -= 1;
+        else if (idx === playlistIndex) playlistIndex = -1;
+      }
+      if (playlistIndex > playlist.length - 1) playlistIndex = -1;
       // Manté el cursor de selecció coherent amb la nova llista
       let playlistSelected = state.playlistSelected;
       if (idx >= 0 && idx < playlistSelected) playlistSelected -= 1;
-      playlistSelected = Math.max(0, Math.min(playlistSelected, playlist.length - 1));
+      playlistSelected = playlist.length === 0 ? 0 : Math.max(0, Math.min(playlistSelected, playlist.length - 1));
       return { playlist, playlistIndex, playlistSelected };
     });
     get().persistPlaylist();
@@ -689,12 +696,18 @@ export const useSoundStore = create((set, get) => ({
       if (from < 0 || from >= playlist.length || to < 0 || to >= playlist.length) return {};
       const [item] = playlist.splice(from, 1);
       playlist.splice(to, 0, item);
-      // El cursor de selecció segueix el moviment de les pistes
-      let playlistSelected = state.playlistSelected;
-      if (playlistSelected === from) playlistSelected = to;
-      else if (from < playlistSelected && to >= playlistSelected) playlistSelected -= 1;
-      else if (from > playlistSelected && to <= playlistSelected) playlistSelected += 1;
-      return { playlist, playlistSelected };
+      // Tant el cursor de selecció com el marcador de pista sonant segueixen el
+      // moviment de les pistes (mateixa transformació d'índexs).
+      const follow = (i) => {
+        if (i < 0) return i;
+        if (i === from) return to;
+        if (from < i && to >= i) return i - 1;
+        if (from > i && to <= i) return i + 1;
+        return i;
+      };
+      const playlistSelected = follow(state.playlistSelected);
+      const playlistIndex = follow(state.playlistIndex);
+      return { playlist, playlistSelected, playlistIndex };
     });
     get().persistPlaylist();
   },
