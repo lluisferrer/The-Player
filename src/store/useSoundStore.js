@@ -12,6 +12,10 @@ import {
   plaPlayPause, plaStop, plaNext, plaPrev, plaPlayIndex, plaSetVolume, plaSeek, plaSetDevice,
   plaPosition, plaStartAt, plaDetach,
 } from '../lib/playlistAsio';
+import {
+  plnPlayPause, plnStop, plnNext, plnPrev, plnPlayIndex, plnSetVolume, plnSeek, plnSetDevice,
+  plnPosition, plnStartAt, plnDetach,
+} from '../lib/playlistNative';
 import { invoke } from '@tauri-apps/api/core';
 import { hasClip, isVideo, isImage, isVisual, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
 import { dispatchCue } from '../lib/cueDispatch';
@@ -191,6 +195,11 @@ export const useSoundStore = create((set, get) => ({
   // canals destí 0-based (p. ex. [0,1] = 1-2, [2,3] = 3-4); buit = els 2 primers.
   nativeCueDeviceName: savedGlobals.nativeCueDeviceName ?? '',
   nativeCueChannels: Array.isArray(savedGlobals.nativeCueChannels) ? savedGlobals.nativeCueChannels : [],
+  // Dispositiu/canals cpal de la PLAYLIST quan va pel motor natiu (mateix espai de
+  // noms que nativeCueDeviceName; pot ser un dispositiu diferent del dels cues per
+  // separar música de fons i efectes). Buit = per defecte / 2 primers canals.
+  nativePlaylistDeviceName: savedGlobals.nativePlaylistDeviceName ?? '',
+  nativePlaylistChannels: Array.isArray(savedGlobals.nativePlaylistChannels) ? savedGlobals.nativePlaylistChannels : [],
   // Monitor predeterminat de la finestra de sortida de vídeo, identificat per NOM
   // (m.name d'availableMonitors). null = auto (primer monitor no principal).
   videoMonitorName: savedGlobals.videoMonitorName ?? null,
@@ -226,14 +235,14 @@ export const useSoundStore = create((set, get) => ({
     const {
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
-      useNativeCueEngine, nativeCueDeviceName, nativeCueChannels,
+      useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
     } = get();
     localStorage.setItem('the-player-globals', JSON.stringify({
       globalFadeIn, globalFadeOut, cuesStopOthers, cuesDuck, cuesStopPlaylist,
       cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
       colorOutputs,
       duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
-      useNativeCueEngine, nativeCueDeviceName, nativeCueChannels,
+      useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
     }));
   },
 
@@ -269,6 +278,18 @@ export const useSoundStore = create((set, get) => ({
     // Els canals no afecten el rate ni el PCM, però reprecarreguem per coherència
     // (idempotent: si ja és a la cau, el motor no torna a descodificar).
     get().preloadAllNativeCues();
+  },
+
+  // Dispositiu/canals cpal de la PLAYLIST nativa. Canviar-los atura la playlist
+  // nativa actual (no es pot migrar l'stream en calent entre dispositius cpal).
+  setNativePlaylistDevice: (name) => {
+    if (get().plIsNative()) plnSetDevice(get);
+    set({ nativePlaylistDeviceName: name || '', nativePlaylistChannels: [] });
+    get().persistGlobals();
+  },
+  setNativePlaylistChannels: (channels) => {
+    set({ nativePlaylistChannels: Array.isArray(channels) ? channels : [] });
+    get().persistGlobals();
   },
 
   // Monitor predeterminat de la finestra de sortida de vídeo (per nom; null = auto).
@@ -451,14 +472,17 @@ export const useSoundStore = create((set, get) => ({
     const wasPlaying = get().playlistPlaying;
     let resumeIndex = -1, resumePos = 0;
     if (wasPlaying) {
-      const p = wasAsio ? plaPosition() : plPosition();
+      // Motor antic: ASIO si ho era; si no, natiu cpal quan està actiu, o Web Audio.
+      const p = wasAsio ? plaPosition() : (get().useNativeCueEngine ? plnPosition() : plPosition());
       if (p && p.index >= 0) { resumeIndex = p.index; resumePos = Math.max(0, p.elapsed); }
     }
     get().playlistStop(); // atura el motor antic (routeja amb el deviceId encara antic)
     set({ playlistDeviceId: deviceId });
     if (wasPlaying && resumeIndex >= 0) {
       const cf = Math.max(0, get().crossfade || 0);
+      // Motor nou segons el dispositiu destí i si el motor natiu està actiu.
       if (willAsio) plaStartAt(get, set, resumeIndex, resumePos, cf);
+      else if (get().useNativeCueEngine) plnStartAt(get, set, resumeIndex, resumePos, cf);
       else plStartAt(get, set, resumeIndex, resumePos, cf);
     }
     get().persistGlobals();
@@ -640,7 +664,7 @@ export const useSoundStore = create((set, get) => ({
   // despenjada sona fins que acaba sola, o fins a un Stop / Play d'una altra
   // pista de la nova llista. No interfereix amb l'índex de la llista nova.
   loadPlaylistKeepPlaying: (tracks) => {
-    if (get().plIsAsio()) plaDetach(get, set); else plDetach(get, set);
+    if (get().plIsAsio()) plaDetach(get, set); else if (get().plIsNative()) plnDetach(get, set); else plDetach(get, set);
     set({
       playlist: (tracks || []).map((t) => ({ id: plNextId++, filePath: t.filePath, label: t.label })),
       playlistIndex: -1,
@@ -653,6 +677,10 @@ export const useSoundStore = create((set, get) => ({
 
   // Cert si la playlist routeja a un dispositiu ASIO (→ motor natiu de veus).
   plIsAsio: () => isAsioTarget(get().playlistDeviceId),
+  // La playlist va pel motor natiu cpal quan aquest està actiu i el dispositiu NO
+  // és ASIO (l'ASIO té el seu propi camí). Cobreix WASAPI a Windows i CoreAudio a
+  // Mac amb routing multicanal real (que el WebView no pot fer a Mac).
+  plIsNative: () => get().useNativeCueEngine && !isAsioTarget(get().playlistDeviceId),
 
   setCrossfade: (sec) => { set({ crossfade: Math.max(0, sec) }); get().persistPlaylist(); },
   // Cicla el mode de repetició: off → song → list → off
@@ -664,17 +692,17 @@ export const useSoundStore = create((set, get) => ({
   togglePlaylistShuffle: () => { set((s) => ({ playlistShuffle: !s.playlistShuffle })); get().persistPlaylist(); },
   setPlaylistVolume: (v) => {
     set({ playlistVolume: v });
-    if (get().plIsAsio()) plaSetVolume(get); else plSetVolume(get);
+    if (get().plIsAsio()) plaSetVolume(get); else if (get().plIsNative()) plnSetVolume(get); else plSetVolume(get);
     get().persistPlaylist();
   },
 
-  playlistPlayPause: () => (get().plIsAsio() ? plaPlayPause(get, set) : plPlayPause(get, set)),
-  playlistStop: () => (get().plIsAsio() ? plaStop(get, set) : plStop(get, set)),
-  playlistNext: () => (get().plIsAsio() ? plaNext(get, set) : plNext(get, set)),
-  playlistPrev: () => (get().plIsAsio() ? plaPrev(get, set) : plPrev(get, set)),
+  playlistPlayPause: () => (get().plIsAsio() ? plaPlayPause(get, set) : get().plIsNative() ? plnPlayPause(get, set) : plPlayPause(get, set)),
+  playlistStop: () => (get().plIsAsio() ? plaStop(get, set) : get().plIsNative() ? plnStop(get, set) : plStop(get, set)),
+  playlistNext: () => (get().plIsAsio() ? plaNext(get, set) : get().plIsNative() ? plnNext(get, set) : plNext(get, set)),
+  playlistPrev: () => (get().plIsAsio() ? plaPrev(get, set) : get().plIsNative() ? plnPrev(get, set) : plPrev(get, set)),
   playlistPlayIndex: (i) => {
     set({ playlistSelected: i });
-    if (get().plIsAsio()) plaPlayIndex(get, set, i); else plPlayIndex(get, set, i);
+    if (get().plIsAsio()) plaPlayIndex(get, set, i); else if (get().plIsNative()) plnPlayIndex(get, set, i); else plPlayIndex(get, set, i);
   },
 
   // Selecció (cursor) de la llista: clic o fletxes
@@ -693,10 +721,10 @@ export const useSoundStore = create((set, get) => ({
     const { playlist, playlistSelected } = get();
     if (playlist.length === 0) return;
     const i = Math.max(0, Math.min(playlistSelected || 0, playlist.length - 1));
-    if (get().plIsAsio()) plaPlayIndex(get, set, i); else plPlayIndex(get, set, i);
+    if (get().plIsAsio()) plaPlayIndex(get, set, i); else if (get().plIsNative()) plnPlayIndex(get, set, i); else plPlayIndex(get, set, i);
   },
   // Salta a una fracció (0..1) de la pista que sona ara
-  playlistSeek: (fraction) => (get().plIsAsio() ? plaSeek(get, fraction) : plSeek(get, fraction)),
+  playlistSeek: (fraction) => (get().plIsAsio() ? plaSeek(get, fraction) : get().plIsNative() ? plnSeek(get, fraction) : plSeek(get, fraction)),
 
   // Salta un cue de vídeo en reproducció a "elapsed" segons dins el segment.
   // Emet el seek a la sortida i ajusta startedAt perquè el playhead del tile hi quadri.

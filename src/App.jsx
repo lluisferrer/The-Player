@@ -17,6 +17,7 @@ import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, cl
 import { listen } from '@tauri-apps/api/event';
 import { applyAsioTelemetry } from './lib/asioTelemetry';
 import { plaOnVoiceEnded } from './lib/playlistAsio';
+import { plnOnVoiceEnded } from './lib/playlistNative';
 import logo from './assets/ezyPlayerMinimalLogo.svg';
 import './App.css';
 
@@ -217,7 +218,9 @@ export default function App() {
         un = await listen('native-voice-ended', (e) => {
           const id = e.payload;
           if (id == null) return;
+          // Pot ser un cue (id = slot) o una pista de la playlist nativa.
           useSoundStore.getState().handleEnded(id);
+          plnOnVoiceEnded(id);
         });
       } catch { /* fora de Tauri */ }
     })();

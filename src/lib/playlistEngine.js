@@ -44,11 +44,17 @@ const duckSet = new Set(); // ids de cues de ducking actius (evita doble compte)
 let asioDuckApply = null;
 export function setAsioDuckListener(fn) { asioDuckApply = fn; }
 
-// Reaplica el volum a la pista actual amb el duckGain vigent. Toca tant la pista
-// WASAPI (<audio>) com la veu ASIO nativa (si la playlist va per ASIO).
+// Listener equivalent per al motor cpal natiu (el registra playlistNative). Només
+// un dels dos motors (ASIO o cpal) està actiu alhora segons el routing.
+let nativeDuckApply = null;
+export function setNativeDuckListener(fn) { nativeDuckApply = fn; }
+
+// Reaplica el volum a la pista actual amb el duckGain vigent. Toca la pista
+// WASAPI (<audio>) i les veus natives (ASIO o cpal) si la playlist hi va.
 function duckReapply() {
   if (cur && duckGetRef) applyVol(duckGetRef, cur.audio, cur.audio._gain ?? 1);
   if (asioDuckApply) asioDuckApply(duckGain);
+  if (nativeDuckApply) nativeDuckApply(duckGain);
 }
 
 // Factor de ducking vigent (1 = sense duck), perquè el motor ASIO el pugui

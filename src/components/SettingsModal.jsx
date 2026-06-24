@@ -166,6 +166,11 @@ export function SettingsModal({ onClose }) {
   const setNativeCueDevice = useSoundStore((s) => s.setNativeCueDevice);
   const nativeCueChannels = useSoundStore((s) => s.nativeCueChannels);
   const setNativeCueChannels = useSoundStore((s) => s.setNativeCueChannels);
+  // Dispositiu/canals natius de la PLAYLIST (mateix espai de noms cpal que els cues).
+  const nativePlaylistDeviceName = useSoundStore((s) => s.nativePlaylistDeviceName);
+  const setNativePlaylistDevice = useSoundStore((s) => s.setNativePlaylistDevice);
+  const nativePlaylistChannels = useSoundStore((s) => s.nativePlaylistChannels);
+  const setNativePlaylistChannels = useSoundStore((s) => s.setNativePlaylistChannels);
 
   const crossfade = useSoundStore((s) => s.crossfade);
   const setCrossfade = useSoundStore((s) => s.setCrossfade);
@@ -221,7 +226,7 @@ export function SettingsModal({ onClose }) {
   // Increment 4: carrega els dispositius natius (noms de cpal) quan ets a Cues amb
   // el motor natiu actiu, per poblar el selector de dispositiu i canals de sortida.
   useEffect(() => {
-    if (tab !== 'cues' || !useNativeCueEngine || nativeOutputs) return;
+    if ((tab !== 'cues' && tab !== 'playlist') || !useNativeCueEngine || nativeOutputs) return;
     (async () => {
       try { setNativeOutputs(await invoke('list_audio_outputs')); }
       catch { setNativeOutputs([]); }
@@ -624,6 +629,63 @@ export function SettingsModal({ onClose }) {
                     onChange={(e) => setCrossfade(parseFloat(e.target.value) || 0)} /> s
                 </span>
               </label>
+
+              {useNativeCueEngine && (() => {
+                // Dispositiu/canals natius de la playlist (visible només amb el motor
+                // natiu actiu; el routing WASAPI/ASIO de la playlist és a part).
+                const devs = nativeOutputs || [];
+                const sel = devs.find((d) => d.name === nativePlaylistDeviceName);
+                const maxCh = sel ? sel.max_channels : (devs.find((d) => d.is_default)?.max_channels || 2);
+                const pairs = [];
+                for (let c = 0; c + 1 < maxCh; c += 2) pairs.push([c, c + 1]);
+                if (pairs.length === 0) pairs.push([0, 1]);
+                const curPair = (nativePlaylistChannels && nativePlaylistChannels.length === 2)
+                  ? `${nativePlaylistChannels[0]},${nativePlaylistChannels[1]}` : '';
+                return (
+                  <>
+                    <div className="settings-subtitle">Native engine output (cpal)</div>
+                    <label className="ps-row">
+                      <span>Native output device</span>
+                      <span className="ps-cf">
+                        <select
+                          value={nativePlaylistDeviceName}
+                          onChange={(e) => setNativePlaylistDevice(e.target.value)}
+                        >
+                          <option value="">System default</option>
+                          {devs.map((d) => (
+                            <option key={d.name} value={d.name}>
+                              {d.name} ({d.max_channels}ch)
+                            </option>
+                          ))}
+                        </select>
+                      </span>
+                    </label>
+                    <label className="ps-row">
+                      <span>Output channels</span>
+                      <span className="ps-cf">
+                        <select
+                          value={curPair}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (!v) { setNativePlaylistChannels([]); return; }
+                            setNativePlaylistChannels(v.split(',').map((n) => parseInt(n, 10)));
+                          }}
+                        >
+                          <option value="">Default (1-2)</option>
+                          {pairs.map(([a, b]) => (
+                            <option key={`${a},${b}`} value={`${a},${b}`}>
+                              {a + 1}-{b + 1}
+                            </option>
+                          ))}
+                        </select>
+                      </span>
+                    </label>
+                    <div className="settings-note">
+                      With the native engine on, the playlist plays through cpal (WASAPI/CoreAudio) for real multichannel routing — including on macOS, where the WebView can't pick an output. Routes here, not by the WASAPI/ASIO device above.
+                    </div>
+                  </>
+                );
+              })()}
 
               <div className="settings-subtitle">Ducking (lower the playlist under cues)</div>
               <div className="editor-options">
