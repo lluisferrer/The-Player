@@ -1060,8 +1060,9 @@ export const useSoundStore = create((set, get) => ({
       // no és servible per vídeo → caiem al bus de Cues WASAPI per defecte.
       const colorOut = slot.color ? colorOutputs[slot.color] : null;
       const outDev = (colorOut && !isAsioTarget(colorOut)) ? colorOut : get().selectedDeviceId;
-      // Fades efectius: el propi del cue si és >0, si no el global
-      const effIn = Math.max(0, effFadeIn(slot, globalFadeIn));
+      // Fades efectius: el propi del cue si és >0, si no el global; el fade-in
+      // respecta el terra del crossfade entre cues (igual que els camins d'àudio).
+      const effIn = Math.max(0, xFadeIn(slot));
       const effOut = Math.max(0, effFadeOut(slot, globalFadeOut));
       emitVideoPlay(slot.filePath, slot.startPoint || 0, slot.stopPoint || 0, slotId, {
         volume: slot.volume,
