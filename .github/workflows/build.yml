@@ -17,11 +17,13 @@ jobs:
         include:
           # CI compila amb el motor cpal multiplataforma (`native`), NO amb `asio`:
           # ASIO no existeix a Mac i requereix l'ASIO SDK + MSVC (no als runners).
+          # El CLI de Tauri v2 NO té flag `--no-default-features`; el passem al
+          # runner (cargo) després de `--` perquè desactivi el default `asio`.
           - platform: macos-latest
-            args: "--target universal-apple-darwin --no-default-features --features native"
+            args: "--target universal-apple-darwin --features native -- --no-default-features"
             rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
           - platform: windows-latest
-            args: "--no-default-features --features native"
+            args: "--features native -- --no-default-features"
             rust-targets: ""
 
     runs-on: ${{ matrix.platform }}
