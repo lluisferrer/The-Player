@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { useSoundStore } from '../store/useSoundStore';
 import { drawWavePathRange } from '../lib/waveformDraw';
+import { observeResize } from '../lib/resizeObserver';
 import { CUE_COLORS } from '../lib/colors';
 import { hasClip, isVideo, isImage, slotDuration } from '../lib/slotAudio';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
@@ -158,10 +159,7 @@ export function SlotEditor() {
       if (xStop >= 0 && xStop <= w)   ctx.fillRect(xStop - 3, 0, 6, 8);
     };
 
-    draw();
-    const ro = new ResizeObserver(draw);
-    ro.observe(wrap);
-    return () => ro.disconnect();
+    return observeResize(wrap, draw);
   }, [hasAudio, isVid, slot, total, start, stop, fadeIn, fadeOut, segDur, zoom, viewClamped, span, globalFadeIn, globalFadeOut]);
 
   // ─── Regla de temps (finestra visible) ───
@@ -209,10 +207,7 @@ export function SlotEditor() {
       }
     };
 
-    draw();
-    const ro = new ResizeObserver(draw);
-    ro.observe(host);
-    return () => ro.disconnect();
+    return observeResize(host, draw);
   }, [hasAudio, total, slot, zoom, viewClamped, span]);
 
   // ─── Accions ───

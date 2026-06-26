@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { drawWavePath } from '../lib/waveformDraw';
+import { observeResize } from '../lib/resizeObserver';
 
 // Colors de la forma d'ona
 const WAVE_COLOR        = '#52525b'; // gris en repòs
@@ -53,10 +54,7 @@ export function Waveform({ audioBuffer, peaks = null, active, startRatio = 0, st
       }
     };
 
-    draw();
-    const ro = new ResizeObserver(draw);
-    ro.observe(wrap);
-    return () => ro.disconnect();
+    return observeResize(wrap, draw);
   }, [audioBuffer, peaks, active, startRatio, stopRatio]);
 
   return (

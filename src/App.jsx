@@ -60,10 +60,15 @@ export default function App() {
   };
 
   useEffect(() => {
+    // `navigator.mediaDevices` no existeix al WKWebView de macOS Mojave (Safari 12)
+    // ni en contextos no segurs: a Mac la selecció de dispositius va pel motor natiu
+    // (Rust list_audio_outputs), així que aquí simplement ho ometem si no hi és.
+    const md = (typeof navigator !== 'undefined') ? navigator.mediaDevices : null;
     const loadDevices = async () => {
+      if (!md) return;
       try {
-        await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {});
-        const devices = await navigator.mediaDevices.enumerateDevices();
+        await md.getUserMedia({ audio: true }).catch(() => {});
+        const devices = await md.enumerateDevices();
         const outputs = devices.filter((d) => d.kind === 'audiooutput');
         setAudioDevices(outputs);
       } catch (e) {
@@ -72,8 +77,10 @@ export default function App() {
     };
 
     loadDevices().then(() => useSoundStore.getState().detectOutputChannels());
-    navigator.mediaDevices.addEventListener('devicechange', loadDevices);
-    return () => navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
+    if (md && md.addEventListener) {
+      md.addEventListener('devicechange', loadDevices);
+      return () => md.removeEventListener('devicechange', loadDevices);
+    }
   }, [setAudioDevices]);
 
   // Aplica el gain mestre ASIO desat al motor natiu en arrencar.
