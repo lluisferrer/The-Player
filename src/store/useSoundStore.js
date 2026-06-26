@@ -24,6 +24,12 @@ import { clearAsioTelemetry, asioPosition } from '../lib/asioTelemetry';
 import { PREVIEW_VOICE_ID } from '../lib/asioIds';
 import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek, emitVideoIdlePattern, startVideoResync, stopVideoResync } from '../lib/videoOutput';
 
+// Constructor d'AudioContext amb fallback amb prefix: el WKWebView de macOS Mojave
+// (Safari 12) NOMÉS exposa webkitAudioContext; el nom sense prefix no va arribar
+// fins a Safari 14.1. Sense això, `new AudioCtx()` peta amb "Can't find
+// variable: AudioContext" i el frontend no arrenca al Mac.
+const AudioCtx = (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) || null;
+
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
 const NUM_PAGES = 4;         // pàgines de cues (4 × 32 = 128 cues)
 const NUM_SLOTS = SLOTS_PER_PAGE * NUM_PAGES;
@@ -235,7 +241,7 @@ export const useSoundStore = create((set, get) => ({
   initAudioContext: () => {
     const existing = get().audioContext;
     if (existing && existing.state !== 'closed') return existing;
-    const ctx = new AudioContext();
+    const ctx = new AudioCtx();
     set({ audioContext: ctx });
     return ctx;
   },
@@ -440,7 +446,7 @@ export const useSoundStore = create((set, get) => ({
     }
     let ctx = cueCtxRegistry.get(deviceId);
     if (!ctx || ctx.state === 'closed') {
-      ctx = new AudioContext();
+      ctx = new AudioCtx();
       if (ctx.setSinkId) { try { ctx.setSinkId(deviceId); } catch { /* res */ } }
       cueCtxRegistry.set(deviceId, ctx);
     }
@@ -472,7 +478,7 @@ export const useSoundStore = create((set, get) => ({
   ensurePlaylistCtx: () => {
     let ctx = get().playlistCtx;
     if (!ctx || ctx.state === 'closed') {
-      ctx = new AudioContext();
+      ctx = new AudioCtx();
       set({ playlistCtx: ctx });
       const dev = get().playlistDeviceId;
       if (ctx.setSinkId && dev) { try { ctx.setSinkId(dev); } catch { /* res */ } }
@@ -484,7 +490,7 @@ export const useSoundStore = create((set, get) => ({
   ensurePreviewCtx: () => {
     let ctx = get().previewCtx;
     if (!ctx || ctx.state === 'closed') {
-      ctx = new AudioContext();
+      ctx = new AudioCtx();
       set({ previewCtx: ctx });
       const dev = get().previewDeviceId;
       if (ctx.setSinkId && dev) { try { ctx.setSinkId(dev); } catch { /* res */ } }
