@@ -52,7 +52,9 @@ function buildGraph(get, slot, audio) {
 function destroyEntry(entry) {
   if (!entry) return;
   const { audio, g } = entry;
-  if (audio._watch) cancelAnimationFrame(audio._watch);
+  // Neteja el mecanisme de vigilància (interval + listener timeupdate). No
+  // depèn de rAF perquè ha de seguir funcionant amb la finestra oculta.
+  if (audio._watchStop) { audio._watchStop(); audio._watchStop = null; }
   try { audio.pause(); } catch { /* res */ }
   try { g.srcNode.disconnect(); g.fadeGain.disconnect(); g.volGain.disconnect(); g.analyser.disconnect(); } catch { /* res */ }
   try { audio.removeAttribute('src'); audio.load(); } catch { /* res */ }
@@ -127,7 +129,16 @@ export function csPlay(get, set, slotId, { offset = null, fadeInFloor = 0 } = {}
   else audio.addEventListener('loadedmetadata', seekStart, { once: true });
   audio.play().catch(() => {});
 
-  // Vigila el punt de stop, el loop i el fade out final
+  // Vigila el punt de stop, el loop i el fade out final.
+  // A2: el WebView congela requestAnimationFrame quan la finestra és oculta o
+  // minimitzada, però aquesta vigilància és CONTROL (no dibuix) i ha de seguir
+  // funcionant. Per això ens basem en:
+  //   - l'event 'timeupdate' de l'<audio> (font principal, ~4/s, segueix
+  //     disparant amb finestra oculta),
+  //   - un setInterval curt de seguretat (per si 'timeupdate' és massa espaiat),
+  //   - i, per al fade-out final, el rellotge del AudioContext
+  //     (linearRampToValueAtTime), que NO es congela: un cop programat el ramp
+  //     s'executa sol encara que el tick trigui a comprovar el punt de stop.
   let fadedOut = false;
   const watch = () => {
     const cur = active.get(slotId);
@@ -152,10 +163,15 @@ export function csPlay(get, set, slotId, { offset = null, fadeInFloor = 0 } = {}
         return;
       }
     }
-    audio._watch = requestAnimationFrame(watch);
+  };
+  // Registra les dues fonts i deixa una funció de neteja única a l'element.
+  const watchTimer = setInterval(watch, 120);
+  audio.addEventListener('timeupdate', watch);
+  audio._watchStop = () => {
+    clearInterval(watchTimer);
+    audio.removeEventListener('timeupdate', watch);
   };
   audio.addEventListener('ended', () => { if (!slot.loop) onEnded(get, set, slotId); }, { once: true });
-  audio._watch = requestAnimationFrame(watch);
 
   active.set(slotId, { audio, g, startPoint, stopPoint, segDur });
   set((state) => ({
@@ -177,7 +193,10 @@ export function csStop(get, set, slotId, fade = false) {
   if (fade === true && slot) fadeSec = segmentOf(get, slot).fadeOut;
   else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
 
-  if (entry.audio._watch) cancelAnimationFrame(entry.audio._watch);
+  // Atura la vigilància (interval + timeupdate) però NO destrueixis encara
+  // l'entry si hi ha fade out: el ramp del fadeGain ja està programat amb el
+  // rellotge del AudioContext i s'executa sol.
+  if (entry.audio._watchStop) { entry.audio._watchStop(); entry.audio._watchStop = null; }
   setStopped(set, slotId);
 
   if (fadeSec > 0) {
@@ -274,15 +293,22 @@ export function csPreviewStart(get, set, slotId) {
   else audio.addEventListener('loadedmetadata', seekStart, { once: true });
   audio.play().catch(() => {});
 
+  // Vigilància de stop/loop del preview: mateix criteri A2 que el watch de
+  // reproducció (timeupdate + interval de seguretat, no rAF, per no congelar-se
+  // amb la finestra oculta).
   const watch = () => {
     if (!previewEl || previewEl.audio !== audio) return;
     if (audio.currentTime >= stopPoint - 0.02) {
       if (slot.loop) { try { audio.currentTime = startPoint; } catch { /* res */ } }
       else { csPreviewStop(); set({ previewingSlot: null }); return; }
     }
-    audio._watch = requestAnimationFrame(watch);
   };
-  audio._watch = requestAnimationFrame(watch);
+  const watchTimer = setInterval(watch, 120);
+  audio.addEventListener('timeupdate', watch);
+  audio._watchStop = () => {
+    clearInterval(watchTimer);
+    audio.removeEventListener('timeupdate', watch);
+  };
   previewEl = { audio, srcNode, gain };
   return true;
 }
@@ -290,7 +316,7 @@ export function csPreviewStart(get, set, slotId) {
 export function csPreviewStop() {
   if (!previewEl) return;
   const { audio, srcNode, gain } = previewEl;
-  if (audio._watch) cancelAnimationFrame(audio._watch);
+  if (audio._watchStop) { audio._watchStop(); audio._watchStop = null; }
   try { audio.pause(); } catch { /* res */ }
   try { srcNode.disconnect(); gain.disconnect(); } catch { /* res */ }
   try { audio.removeAttribute('src'); audio.load(); } catch { /* res */ }

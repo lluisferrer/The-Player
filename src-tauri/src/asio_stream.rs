@@ -239,7 +239,9 @@ fn decoder_main(
 
         // Backpressure: si el buffer ja té prou, dorm una mica.
         {
-            let r = match ring.lock() { Ok(r) => r, Err(_) => return };
+            // Recupera el guard si el lock estigués enverinat (simetria amb A1): un
+            // panic aïllat no ha de matar el fil descodificador i deixar el ring buit.
+            let r = ring.lock().unwrap_or_else(|e| e.into_inner());
             if r.cap_samples > 0 && r.samples.len() >= r.cap_samples {
                 drop(r);
                 std::thread::sleep(std::time::Duration::from_millis(4));
@@ -310,6 +312,15 @@ fn decoder_main(
                         r.channels = channels;
                         r.file_rate = file_rate;
                         r.cap_samples = (file_rate as usize * channels * 4).max(1 << 15); // ~4 s
+                        // Reserva la capacitat UN sol cop, ara que coneixem channels/rate.
+                        // Motiu: els `extend` posteriors s'executen amb el Mutex agafat i el
+                        // callback RT espera EXACTAMENT aquest mateix lock. Si la VecDeque
+                        // reallocés dins l'`extend`, el callback quedaria bloquejat durant la
+                        // còpia → glitch/silenci. El backpressure manté len ≤ cap_samples,
+                        // però un paquet pot passar-se lleugerament del límit; reservem un
+                        // marge (1<<15 mostres) perquè aquest excedent tampoc reallociï.
+                        let reserva = r.cap_samples + (1 << 15);
+                        r.samples.reserve(reserva);
                     }
                     r.samples.extend(scratch.iter().copied());
                 }

@@ -990,26 +990,27 @@ fn asio_start_notifier(app: tauri::AppHandle) {
             std::thread::sleep(std::time::Duration::from_millis(33));
             // Snapshot curt sota lock: id, posició (s) i nivell de cada veu real.
             let items: Vec<TelemetryItem> = {
-                let guard = match asio_meter_slot().lock() {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
+                // Recuperació de poisoning: si el callback RT enverinés algun d'aquests
+                // locks amb un panic, rendir-se aquí deixaria la telemetria (playhead +
+                // picòmetre) morta per sempre. Recuperem el guard amb `into_inner()`.
+                let guard = asio_meter_slot().lock().unwrap_or_else(|e| e.into_inner());
                 match guard.as_ref() {
                     Some(sh) => {
                         let rate = sh.sample_rate.max(1) as f32;
-                        let mut v: Vec<TelemetryItem> = match sh.voices.lock() {
-                            Ok(vs) => vs
-                                .iter()
+                        let mut v: Vec<TelemetryItem> = {
+                            let vs = sh.voices.lock().unwrap_or_else(|e| e.into_inner());
+                            vs.iter()
                                 .filter(|v| v.voice_id != u64::MAX && !v.finished)
                                 .map(|v| TelemetryItem {
                                     id: v.voice_id,
                                     pos: v.seg_pos() as f32 / rate,
                                     level: v.meter,
                                 })
-                                .collect(),
-                            Err(_) => continue,
+                                .collect()
                         };
-                        if let Ok(svs) = sh.stream_voices.lock() {
+                        {
+                            // Recuperació de poisoning (vegeu el lock de veus a dalt).
+                            let svs = sh.stream_voices.lock().unwrap_or_else(|e| e.into_inner());
                             v.extend(svs.iter().filter(|s| !s.finished).map(|s| {
                                 // En loop amb out-point, el descodificador fa un flux
                                 // continu i src_consumed creix sense parar: plega'l al
@@ -1309,17 +1310,24 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
     // Locks curts (Mutex de veus i de streams), acceptable a aquesta escala.
     let callback_id = driver.add_callback(move |info: &asio_sys::CallbackInfo| {
         let bi = info.buffer_index as usize;
-        let mut lock = match cb_streams.lock() { Ok(l) => l, Err(_) => return };
+        // Recuperació de poisoning: si un buffer anterior hagués fet panic amb algun
+        // d'aquests locks agafat, `lock()` retornaria Err per sempre i el callback RT
+        // quedaria MUT permanentment (silenci fins a reiniciar l'app). Recuperem el
+        // guard amb `into_inner()` perquè un panic aïllat no mati el motor.
+        let mut lock = cb_streams.lock().unwrap_or_else(|e| e.into_inner());
         let stream = match lock.output { Some(ref mut s) => s, None => return };
 
         // Acumuladors pre-allocats: zera cada canal (sense reassignar memòria).
-        let mut acc_guard = match cb_acc.lock() { Ok(a) => a, Err(_) => return };
+        let mut acc_guard = cb_acc.lock().unwrap_or_else(|e| e.into_inner());
         let acc = &mut *acc_guard;
         for ch in acc.iter_mut() {
             ch.fill(0.0);
         }
 
-        if let Ok(mut voices) = cb_voices.lock() {
+        // Recuperació de poisoning (vegeu a dalt): no rendir-se davant un lock
+        // enverinat, o el callback deixaria de mesclar veus per sempre.
+        {
+            let mut voices = cb_voices.lock().unwrap_or_else(|e| e.into_inner());
             for voice in voices.iter_mut() {
                 asio_mix_voice(voice, acc, buffer_size);
             }
@@ -1334,8 +1342,9 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
             voices.retain(|v| !v.finished);
         }
 
-        // Veus en STREAMING (pistes llargues).
-        if let Ok(mut svs) = cb_stream_voices.lock() {
+        // Veus en STREAMING (pistes llargues). Recuperació de poisoning (vegeu a dalt).
+        {
+            let mut svs = cb_stream_voices.lock().unwrap_or_else(|e| e.into_inner());
             for sv in svs.iter_mut() {
                 asio_mix_stream_voice(sv, acc, buffer_size);
             }
@@ -2346,6 +2355,42 @@ fn native_stop() -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Panic hook amb log a fitxer. Un panic en un fil de treball (decode, motor,
+    // callbacks auxiliars) només sortiria per stderr, invisible en producció (l'app
+    // empaquetada no té consola). Encadenem el hook per defecte (manté el
+    // comportament habitual) i, a més, escrivim missatge + ubicació a un fitxer al
+    // directori temporal del sistema, que és portable Win/Mac i sempre escrivible.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Primer el comportament per defecte (stderr, backtrace si RUST_BACKTRACE).
+        default_hook(info);
+        // Després, deixa constància en disc. Cap `unwrap`: si el log falla, no
+        // volem un segon panic dins el hook.
+        use std::io::Write as _;
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "ubicació desconeguda".to_string());
+        // El payload sol ser &str o String.
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "(payload de pànic no textual)".to_string()
+        };
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<sense nom>");
+        let path = std::env::temp_dir().join("ezyplayer-panic.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(
+                f,
+                "[PANIC] fil «{}» a {} → {}",
+                thread_name, location, msg
+            );
+        }
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

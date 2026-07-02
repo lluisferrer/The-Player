@@ -390,14 +390,15 @@ pub fn start_notifier(app: tauri::AppHandle) {
             // Snapshot curt sota lock: id, posició (s) i nivell de cada veu activa,
             // AGREGAT sobre tots els dispositius oberts.
             let items: Vec<NativeTelemetryItem> = {
-                let guard = match native_meter_slot().lock() {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
+                // Recuperació de poisoning: si el callback RT enverinés algun d'aquests
+                // locks amb un panic, rendir-se aquí deixaria la telemetria (playhead +
+                // picòmetre) morta per sempre. Recuperem el guard amb `into_inner()`.
+                let guard = native_meter_slot().lock().unwrap_or_else(|e| e.into_inner());
                 let mut out: Vec<NativeTelemetryItem> = Vec::new();
                 for dev in guard.iter() {
                     let rate = dev.sample_rate.max(1) as f32;
-                    if let Ok(vs) = dev.voices.lock() {
+                    {
+                        let vs = dev.voices.lock().unwrap_or_else(|e| e.into_inner());
                         out.extend(vs.iter().filter(|v| !v.finished).map(|v| {
                             NativeTelemetryItem {
                                 id: v.voice_id,
@@ -410,7 +411,9 @@ pub fn start_notifier(app: tauri::AppHandle) {
                     // consumits. En loop amb out-point el descodificador empeny un
                     // flux continu i src_consumed creix sense parar: plega'l al tram
                     // perquè el playhead torni a l'inici visualment (igual que ASIO).
-                    if let Ok(svs) = dev.stream_voices.lock() {
+                    {
+                        // Recuperació de poisoning (vegeu el lock de veus a dalt).
+                        let svs = dev.stream_voices.lock().unwrap_or_else(|e| e.into_inner());
                         out.extend(svs.iter().filter(|s| !s.finished).map(|s| {
                             NativeTelemetryItem {
                                 id: s.voice_id,
@@ -741,10 +744,11 @@ fn native_mix_callback<S>(
 {
     let frames = if channels > 0 { data.len() / channels } else { 0 };
 
-    let mut acc_guard = match acc.lock() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
+    // Recuperació de poisoning: si un bloc anterior hagués fet panic amb aquest
+    // lock agafat, `lock()` retornaria Err per sempre i el callback quedaria mut de
+    // manera PERMANENT. Recuperem el guard amb `into_inner()` perquè un panic aïllat
+    // no deixi el motor sense so fins a reiniciar l'app.
+    let mut acc_guard = acc.lock().unwrap_or_else(|e| e.into_inner());
     // Ajusta la forma dels acumuladors al bloc actual (normalment només el 1r cop).
     if acc_guard.len() != channels {
         acc_guard.resize_with(channels, Vec::new);
@@ -758,7 +762,10 @@ fn native_mix_callback<S>(
 
     // Mescla totes les veus actives als acumuladors, notifica les acabades i
     // treu-les. La notificació és un `send` barat (només en acabar, no cada bloc).
-    if let Ok(mut vs) = voices.lock() {
+    // Recuperació de poisoning (vegeu acc_guard): no rendir-se davant un lock
+    // enverinat, o el callback deixaria de mesclar veus per sempre.
+    {
+        let mut vs = voices.lock().unwrap_or_else(|e| e.into_inner());
         for v in vs.iter_mut() {
             asio_mix_voice(v, &mut acc_guard, frames);
         }
@@ -774,7 +781,9 @@ fn native_mix_callback<S>(
     // corre al fil de `spawn_stream`; aquí el callback només llegeix del ring (cap
     // alloc/IO/decode). `asio_mix_stream_voice` ja marca `finished` i atura el fil
     // descodificador en acabar (eof o release).
-    if let Ok(mut svs) = stream_voices.lock() {
+    // Recuperació de poisoning (vegeu acc_guard).
+    {
+        let mut svs = stream_voices.lock().unwrap_or_else(|e| e.into_inner());
         for sv in svs.iter_mut() {
             asio_mix_stream_voice(sv, &mut acc_guard, frames);
         }

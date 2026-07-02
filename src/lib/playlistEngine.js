@@ -34,7 +34,7 @@ function killFadeOut() {
 // mantenim en recrear pistes (crossfade, next/prev…). Multiplica el volum a
 // applyVol, així conviu amb el ramping de crossfade i el master sense trepitjar-se.
 let duckGain = 1;          // valor actual del factor de ducking
-let duckRaf = null;        // requestAnimationFrame del ramp del duck
+let duckRaf = null;        // id de setInterval del ramp del duck (A2, no rAF)
 let duckGetRef = null;     // referència a get() per reaplicar el volum durant el ramp
 const duckSet = new Set(); // ids de cues de ducking actius (evita doble compte)
 
@@ -63,20 +63,27 @@ export function currentDuckGain() {
   return duckGain;
 }
 
-// Ramp del duckGain de l'actual cap a "to" durant "dur" segons (lineal)
+// Ramp del duckGain de l'actual cap a "to" durant "dur" segons (lineal).
+// A2: usem setInterval + performance.now() en lloc de requestAnimationFrame.
+// El rellotge performance.now() NO es congela amb la finestra oculta (el que
+// es congela és la CRIDA de rAF); així el ramp de ducking arriba fins al final
+// encara que l'app estigui minimitzada. duckRaf ara guarda un id d'interval.
 function rampDuck(get, to, dur) {
   duckGetRef = get;
-  if (duckRaf) { cancelAnimationFrame(duckRaf); duckRaf = null; }
+  if (duckRaf) { clearInterval(duckRaf); duckRaf = null; }
   const from = duckGain;
   if (dur <= 0 || from === to) { duckGain = to; duckReapply(); return; }
   const start = performance.now();
+  // Capturem l'id LOCALMENT: si entre ticks es reentra rampDuck, el step vell
+  // ha de netejar el SEU interval, no l'id vigent (que ja seria d'un ramp nou).
+  let id;
   const step = () => {
     const t = Math.min(1, (performance.now() - start) / (dur * 1000));
     duckGain = from + (to - from) * t;
     duckReapply();
-    if (t < 1) duckRaf = requestAnimationFrame(step);
-    else { duckRaf = null; }
+    if (t >= 1) { clearInterval(id); if (duckRaf === id) duckRaf = null; }
   };
+  id = duckRaf = setInterval(step, 40);
   step();
 }
 
@@ -130,22 +137,37 @@ function applyVol(get, audio, gain) {
   audio.volume = Math.max(0, Math.min(1, gain * master * duckGain));
 }
 
+// A2: ramp de volum d'un <audio> amb setInterval + performance.now() en lloc de
+// requestAnimationFrame. El volum de la playlist no passa per Web Audio (és
+// audio.volume directe), així que no es pot programar amb el rellotge del ctx;
+// però performance.now() NO es congela amb la finestra oculta (només ho fa la
+// crida de rAF), de manera que crossfades i fades acaben correctament encara
+// que l'app estigui minimitzada. audio._raf ara guarda un id d'interval.
 function rampVol(get, audio, from, to, dur, onDone) {
-  if (audio._raf) cancelAnimationFrame(audio._raf);
+  if (audio._raf) { clearInterval(audio._raf); audio._raf = null; }
   if (dur <= 0) { applyVol(get, audio, to); if (onDone) onDone(); return; }
   const start = performance.now();
+  // Capturem l'id LOCALMENT: durant un crossfade es fa rampVol sobre la pista
+  // sortint I la nova quasi alhora; si el step de la sortint llegís audio._raf
+  // per referència podria cancel·lar l'interval de la NOVA (que hauria sobreescrit
+  // audio._raf), deixant-la sonar sense control de volum. Cada step neteja el seu.
+  let id;
   const step = () => {
     const t = Math.min(1, (performance.now() - start) / (dur * 1000));
     applyVol(get, audio, from + (to - from) * t);
-    if (t < 1) audio._raf = requestAnimationFrame(step);
-    else if (onDone) onDone();
+    if (t >= 1) {
+      clearInterval(id);
+      if (audio._raf === id) audio._raf = null;
+      if (onDone) onDone();
+    }
   };
+  id = audio._raf = setInterval(step, 40);
   step();
 }
 
 function destroy(audio) {
   if (!audio) return;
-  if (audio._raf) cancelAnimationFrame(audio._raf);
+  if (audio._raf) { clearInterval(audio._raf); audio._raf = null; }
   try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch { /* res */ }
 }
 
