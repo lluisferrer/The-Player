@@ -17,10 +17,33 @@ mod asio_stream;
 #[cfg(feature = "native")]
 mod native_output;
 
-// Llegeix els bytes d'un fitxer pel seu camí absolut (per carregar àudio
-// des de rutes guardades a la Library). Retorna els bytes en brut.
+// Extensions de mèdia que l'app accepta (coincideix amb MEDIA_EXT a src/App.jsx).
+// Qualsevol altra extensió és rebutjada per evitar que un XSS pugui llegir
+// fitxers arbitraris del sistema (secrets, configuració, etc.) via aquesta comanda.
+const ALLOWED_EXTENSIONS: &[&str] = &[
+    "mp3", "mpeg", "mpg", "m4a", "aac", "wav", "ogg", "flac",
+    "mp4", "webm", "m4v", "mov",
+    "jpg", "jpeg", "png", "webp", "gif", "bmp",
+];
+
+// Llegeix els bytes d'un fitxer de mèdia pel seu camí absolut (per carregar àudio
+// des de rutes guardades a la Library). Rebutja extensió no mèdia per seguretat.
 #[tauri::command]
 fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    // Extrau l'extensió en minúscules per comparar amb la llista permesa
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    if !ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(format!(
+            "Extensió «{}» no permesa: només s'accepten fitxers de mèdia.",
+            ext
+        ));
+    }
+
     std::fs::read(&path)
         .map(tauri::ipc::Response::new)
         .map_err(|e| format!("No s'ha pogut llegir {}: {}", path, e))
