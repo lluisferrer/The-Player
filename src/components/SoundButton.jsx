@@ -20,6 +20,8 @@ export function SoundButton({ slotId }) {
   const setLoop        = useSoundStore((s) => s.setLoop);
   const setEditingSlot = useSoundStore((s) => s.setEditingSlot);
   const setSelectedSlot = useSoundStore((s) => s.setSelectedSlot);
+  const applySlotConfig = useSoundStore((s) => s.applySlotConfig);
+  const setSlotMissing  = useSoundStore((s) => s.setSlotMissing);
   const previewSlot    = useSoundStore((s) => s.previewSlot);
   const stopPreview    = useSoundStore((s) => s.stopPreview);
   const previewDeviceId = useSoundStore((s) => s.previewDeviceId);
@@ -226,12 +228,29 @@ export function SoundButton({ slotId }) {
     stopPreview();
   };
 
-  const handleClick = (e) => {
+  const handleClick = async (e) => {
     // Ignora el click immediatament posterior a arrossegar el playhead
     if (suppressClickRef.current) return;
     // Ctrl+clic → preview (in-tile per a vídeo; bus de preview per a àudio)
     if (e.ctrlKey && hasAudio) { previewSlot(slotId); return; }
     setSelectedSlot(slotId);
+
+    // C2: slot marcat com a "missing" → reintenta carregar el fitxer des del disc.
+    // L'usuari haurà de tornar a clicar un cop el fitxer s'hagi carregat.
+    if (slot.missing && slot.filePath) {
+      const cfg = { ...slot };
+      try {
+        await loadFromPath(slotId, slot.filePath);
+        applySlotConfig(slotId, cfg);
+        // Si la recàrrega va bé, loadAudio ja posa missing:false internament,
+        // però ho fem explícit per seguretat
+        setSlotMissing(slotId, false);
+      } catch {
+        // Continua missing; l'usuari haurà de tornar a intentar-ho
+      }
+      return; // no reproduïm fins que el fitxer estigui carregat
+    }
+
     if (hasAudio) playSlot(slotId);
   };
 
@@ -299,6 +318,8 @@ export function SoundButton({ slotId }) {
   if (hasAudio) stateClass = 'slot-loaded';
   if (paused) stateClass = 'slot-paused';
   if (isPlaying) stateClass = 'slot-playing';
+  // C2: el fitxer tenia ruta però no s'ha pogut localitzar en arrencar
+  const isMissing = slot.missing && slot.filePath;
 
   // Nom mostrat: nom custom si n'hi ha, si no el nom del fitxer (sense extensió)
   const fileName = slot.filePath ? slot.filePath.split(/[\\/]/).pop() : '';
@@ -307,7 +328,7 @@ export function SoundButton({ slotId }) {
 
   return (
     <div
-      className={`sound-button ${stateClass} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''}`}
+      className={`sound-button ${stateClass} ${isMissing ? 'slot-missing' : ''} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''}`}
       data-slot-id={slotId}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
@@ -493,8 +514,10 @@ export function SoundButton({ slotId }) {
           </div>
         </>
       ) : (
-        <div className="slot-empty-hint">
-          {isDragOver ? 'Drop here' : (slot.label ? 'reassign' : '')}
+        <div className={`slot-empty-hint${isMissing ? ' slot-missing-hint' : ''}`}>
+          {isMissing
+            ? 'FILE MISSING · click to reload'
+            : isDragOver ? 'Drop here' : (slot.label ? 'reassign' : '')}
         </div>
       )}
     </div>

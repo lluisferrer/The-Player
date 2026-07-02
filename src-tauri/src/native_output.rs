@@ -210,13 +210,24 @@ fn native_tx_clone() -> Option<std::sync::mpsc::Sender<NativeCmd>> {
 // resultat al fil del motor amb `make_cmd` (RegisterDecoded per reproduir, o
 // CacheStore per pre-carregar). El fil del motor MAI queda bloquejat descodificant
 // (clau per a pistes llargues). Anàleg a `asio_spawn_decode`.
-fn native_spawn_decode<F>(file_path: String, rate: u32, make_cmd: F)
+//
+// `voice_id`: Some(id) al camí de PLAY (una veu concreta espera aquest PCM), None
+// al camí de PRELOAD (no hi ha cap tile esperant). Si el decode falla i era una
+// veu de play, s'emet `native-voice-failed` perquè el frontend no deixi el tile
+// blau ni la playlist duckejada per sempre.
+fn native_spawn_decode<F>(file_path: String, rate: u32, voice_id: Option<u64>, make_cmd: F)
 where
     F: FnOnce(Arc<Vec<Vec<f32>>>) -> NativeCmd + Send + 'static,
 {
     let tx = match native_tx_clone() {
         Some(t) => t,
-        None => return,
+        None => {
+            // El motor no està disponible: si algú esperava la veu, avisa'l.
+            if let Some(vid) = voice_id {
+                native_notify_failed(vid, "El motor natiu no està disponible.".into());
+            }
+            return;
+        }
     };
     std::thread::Builder::new()
         .name("native-decode".into())
@@ -224,7 +235,13 @@ where
             Ok(d) => {
                 let _ = tx.send(make_cmd(Arc::new(d.data)));
             }
-            Err(e) => eprintln!("[native-decode] '{}': {}", file_path, e),
+            Err(e) => {
+                eprintln!("[native-decode] '{}': {}", file_path, e);
+                // Descart silenciós si no avisem: notifica la fallada al frontend.
+                if let Some(vid) = voice_id {
+                    native_notify_failed(vid, format!("No s'ha pogut descodificar: {}", e));
+                }
+            }
         })
         .ok();
 }
@@ -244,6 +261,36 @@ static NATIVE_ENDED_TX: OnceLock<std::sync::mpsc::Sender<u64>> = OnceLock::new()
 fn native_notify_ended(voice_id: u64) {
     if let Some(tx) = NATIVE_ENDED_TX.get() {
         let _ = tx.send(voice_id);
+    }
+}
+
+// ── Notificació de FALLADA de veu (motor → fil notificador → event Tauri) ─────
+//
+// Quan una veu NO arriba a materialitzar-se (error de decode, fitxer sense
+// mostres, dispositiu inexistent...), el frontend ja ha marcat el tile com
+// "reproduint" i ha fet duck: sense aquest avís quedaria blau per sempre i la
+// playlist duckejada indefinidament (mai arriba `native-voice-ended` perquè la
+// veu no ha existit). Canal paral·lel al d'`ended` que porta l'id i un missatge
+// en català; un fil notificador emet `native-voice-failed` a la UI. Simètric a
+// `NATIVE_ENDED_TX`/`native_notify_ended`.
+static NATIVE_FAILED_TX: OnceLock<std::sync::mpsc::Sender<(u64, String)>> = OnceLock::new();
+
+// Payload serialitzable de l'event `native-voice-failed` (id de la veu que ha
+// fallat + missatge descriptiu en català). Compartit pel fil notificador.
+#[derive(serde::Serialize, Clone)]
+struct NativeVoiceFailed {
+    #[serde(rename = "voiceId")]
+    voice_id: u64,
+    message: String,
+}
+
+// Notifica (sense bloquejar) que una veu ha FALLAT en materialitzar-se. Si encara
+// no hi ha fil notificador, l'avís es descarta. NO es crida des del callback RT,
+// sinó des dels camins de construcció/decode al fil del motor (o als seus fils
+// de treball), on el `voice_id` és conegut.
+fn native_notify_failed(voice_id: u64, msg: String) {
+    if let Some(tx) = NATIVE_FAILED_TX.get() {
+        let _ = tx.send((voice_id, msg));
     }
 }
 
@@ -311,6 +358,26 @@ pub fn start_notifier(app: tauri::AppHandle) {
         .spawn(move || {
             while let Ok(voice_id) = rx.recv() {
                 let _ = app_ended.emit("native-voice-ended", voice_id);
+            }
+        })
+        .ok();
+
+    // Fil notificador de FALLADES de veu (event `native-voice-failed`). Idèntic
+    // patró que el d'`ended`, però amb payload { voiceId, message }. Reutilitza el
+    // canal FAILED; si ja estava arrencat, `set` hauria fallat abans i no hi
+    // arribaríem. Així el tile no queda blau ni la playlist duckejada si la veu no
+    // arriba a existir.
+    let (failed_tx, failed_rx) = std::sync::mpsc::channel::<(u64, String)>();
+    let _ = NATIVE_FAILED_TX.set(failed_tx);
+    let app_failed = app.clone();
+    std::thread::Builder::new()
+        .name("native-notifier-failed".into())
+        .spawn(move || {
+            while let Ok((voice_id, message)) = failed_rx.recv() {
+                let _ = app_failed.emit(
+                    "native-voice-failed",
+                    NativeVoiceFailed { voice_id, message },
+                );
             }
         })
         .ok();
@@ -761,6 +828,8 @@ fn native_build_and_push_voice(
     let total = data.iter().map(|c| c.len()).max().unwrap_or(0);
     if total == 0 {
         eprintln!("[native-voice] voice={} sense mostres → descartada", spec.voice_id);
+        // Avisa el frontend: sense això el tile quedaria blau i la playlist duckejada.
+        native_notify_failed(spec.voice_id, "El fitxer no té mostres.".into());
         return;
     }
     let src_channels = data.len().max(1);
@@ -810,7 +879,11 @@ fn native_build_and_push_voice(
                 vs.push(voice);
             }
         }
-        None => eprintln!("[native-voice] voice={} sense backend → descartada", spec.voice_id),
+        None => {
+            eprintln!("[native-voice] voice={} sense backend → descartada", spec.voice_id);
+            // El dispositiu destí s'ha tancat entre la petició i ara: avisa el frontend.
+            native_notify_failed(spec.voice_id, "Cap dispositiu de sortida disponible.".into());
+        }
     }
 }
 
@@ -887,6 +960,8 @@ fn native_build_and_push_stream_voice(
             // El device s'ha tancat entremig: atura el fil que acabem d'arrencar.
             sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
             eprintln!("[native-voice] stream voice={} sense backend → descartada", voice_id);
+            // Avisa el frontend perquè no deixi el tile blau ni la playlist duckejada.
+            native_notify_failed(voice_id, "Cap dispositiu de sortida disponible.".into());
         }
     }
 }
@@ -955,7 +1030,8 @@ fn native_play_cue_impl(
     // (RegisterDecoded). El fil del motor no es bloqueja descodificant.
     let dev = device_name.to_string();
     let path = file_path.to_string();
-    native_spawn_decode(path.clone(), sample_rate, move |data| NativeCmd::RegisterDecoded {
+    // Camí de PLAY: passem el voice_id perquè un decode fallit avisi el frontend.
+    native_spawn_decode(path.clone(), sample_rate, Some(voice_id), move |data| NativeCmd::RegisterDecoded {
         device_name: dev,
         rate: sample_rate,
         file_path: path,
@@ -980,7 +1056,8 @@ fn native_preload_impl(
         return Ok(()); // ja a la cau
     }
     let path = file_path.to_string();
-    native_spawn_decode(path.clone(), sample_rate, move |data| NativeCmd::CacheStore {
+    // Camí de PRELOAD: cap tile espera aquest PCM, per tant None (sense avís).
+    native_spawn_decode(path.clone(), sample_rate, None, move |data| NativeCmd::CacheStore {
         rate: sample_rate,
         file_path: path,
         data,

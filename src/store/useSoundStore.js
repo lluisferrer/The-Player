@@ -68,6 +68,9 @@ const createEmptySlot = (id) => ({
   // Seqüència estil QLab (mode GO)
   preWait: 0,          // retard (s) entre prémer GO i que el cue soni
   continueMode: 'none',// 'none' | 'auto' (auto-continue: dispara el següent tot seguit)
+  // Estat de sessió: fitxer persistit però no localitzat en arrencar.
+  // NO es desa a localStorage (es recalcula a cada boot).
+  missing: false,
 });
 
 // Versió de l'esquema de persistència dels slots. v2 introdueix el fade com a
@@ -1017,6 +1020,8 @@ export const useSoundStore = create((set, get) => ({
               // ...i les opcions de seqüència
               preWait: 0,
               continueMode: 'none',
+              // Fitxer carregat correctament: ja no és "missing"
+              missing: false,
             }
           : s
       ),
@@ -1516,7 +1521,12 @@ export const useSoundStore = create((set, get) => ({
   // amb GO, o automàtic a la Playlist; la botonera no avança sola).
   handleEnded: (slotId) => {
     const current = get().slots.find((s) => s.id === slotId);
-    if (!current || !current.isPlaying) return;
+    // R1: normalment només actuem si el cue sonava, però una FALLADA de veu nativa
+    // (C1) pot arribar en una cursa abans que `isPlaying` s'hagi assentat; en aquest
+    // cas els flags asioActive/nativeActive ja hi són i cal netejar igualment perquè
+    // el tile no quedi blau ni el ducking penjat.
+    if (!current) return;
+    if (!current.isPlaying && !current.asioActive && !current.nativeActive) return;
     // El cue ha acabat de forma natural: deixa de duckejar (si tocava)
     if (current.duck) duckRemove(get, slotId);
     if (current.asioActive || current.nativeActive) clearAsioTelemetry(slotId);
@@ -1767,6 +1777,13 @@ export const useSoundStore = create((set, get) => ({
       slots: state.slots.map((s) => (s.id === slotId ? { ...s, loading } : s)),
     })),
 
+  // Marca un slot com a "fitxer no trobat en arrencar" sense tocar cap altre camp
+  // ni persistir. És estat pur de sessió; es recalcula a cada boot.
+  setSlotMissing: (slotId, missing) =>
+    set((state) => ({
+      slots: state.slots.map((s) => (s.id === slotId ? { ...s, missing } : s)),
+    })),
+
   // Desa els pics de la forma d'ona d'un cue en streaming (generats en segon pla)
   setSlotPeaks: (slotId, peaks) =>
     set((state) => ({
@@ -1855,7 +1872,12 @@ export const useSoundStore = create((set, get) => ({
       }));
       return;
     }
-    if (isAsioTarget(resolveCueTargetStr(get(), slot)) && !slot.sourceNode) {
+    // C3: decidim per l'ESTAT de la veu (slot.asioActive), no pel routing vigent.
+    // Si es canvia el bus/color d'un cue mentre sona per ASIO, el routing passa a
+    // WASAPI però la veu segueix viva al motor: keying pel routing la deixaria
+    // impossible d'aturar (ni Stop All). El flag reflecteix per on sona DE DEBÒ.
+    // Mantenim la resolució per routing només com a fallback (slots sense flag).
+    if (slot.asioActive || (isAsioTarget(resolveCueTargetStr(get(), slot)) && !slot.sourceNode)) {
       // Calcula el fade-out: true → efectiu del cue; número → aquests segons.
       let fadeSec = 0;
       if (fade === true) fadeSec = Math.max(0, effFadeOut(slot, globalFadeOut));

@@ -670,14 +670,25 @@ fn asio_tx_clone() -> Option<std::sync::mpsc::Sender<AsioCmd>> {
 // Descodifica un fitxer en un FIL DE TREBALL i n'envia el resultat al motor amb
 // `make_cmd` (RegisterDecoded per reproduir, o CacheStore per pre-carregar). El
 // fil del motor no queda mai bloquejat descodificant (clau per a pistes llargues).
+//
+// `voice_id`: Some(id) al camí de PLAY (una veu concreta espera aquest PCM), None
+// al camí de PRELOAD. Si el decode falla i era una veu de play, s'emet
+// `asio-voice-failed` perquè el frontend no deixi el tile blau ni la playlist
+// duckejada per sempre. Simètric a `native_spawn_decode`.
 #[cfg(feature = "asio")]
-fn asio_spawn_decode<F>(file_path: String, rate: u32, make_cmd: F)
+fn asio_spawn_decode<F>(file_path: String, rate: u32, voice_id: Option<u64>, make_cmd: F)
 where
     F: FnOnce(std::sync::Arc<Vec<Vec<f32>>>) -> AsioCmd + Send + 'static,
 {
     let tx = match asio_tx_clone() {
         Some(t) => t,
-        None => return,
+        None => {
+            // El motor no està disponible: si algú esperava la veu, avisa'l.
+            if let Some(vid) = voice_id {
+                asio_notify_failed(vid, "El motor ASIO no està disponible.".into());
+            }
+            return;
+        }
     };
     std::thread::Builder::new()
         .name("asio-decode".into())
@@ -685,7 +696,13 @@ where
             Ok(d) => {
                 let _ = tx.send(make_cmd(std::sync::Arc::new(d.data)));
             }
-            Err(e) => eprintln!("[asio-decode] '{}': {}", file_path, e),
+            Err(e) => {
+                eprintln!("[asio-decode] '{}': {}", file_path, e);
+                // Descart silenciós si no avisem: notifica la fallada al frontend.
+                if let Some(vid) = voice_id {
+                    asio_notify_failed(vid, format!("No s'ha pogut descodificar: {}", e));
+                }
+            }
         })
         .ok();
 }
@@ -704,6 +721,9 @@ fn asio_build_and_push_voice(
         Some(m) => m,
         None => {
             eprintln!("[asio-voice] voice={} SENSE MIX → descartada", spec.voice_id);
+            // El mix s'ha desmuntat entre la petició i ara: avisa el frontend perquè
+            // no deixi el tile blau ni la playlist duckejada.
+            asio_notify_failed(spec.voice_id, "El motor ASIO no té cap mix actiu.".into());
             return;
         }
     };
@@ -859,6 +879,37 @@ fn asio_notify_ended(voice_id: u64) {
     }
 }
 
+// ── Notificació de FALLADA de veu (motor → fil notificador → event Tauri) ─────
+//
+// Simètric al camí natiu: quan una veu ASIO NO arriba a materialitzar-se (error de
+// decode, sense mix, etc.), el frontend ja ha marcat el tile "reproduint" i ha fet
+// duck. Sense aquest avís quedaria blau per sempre i la playlist duckejada (mai
+// arriba `asio-voice-ended` perquè la veu no ha existit). Canal paral·lel al
+// d'`ended` que porta l'id + un missatge en català; un fil notificador emet
+// `asio-voice-failed` a la UI.
+#[cfg(feature = "asio")]
+static ASIO_FAILED_TX: std::sync::OnceLock<std::sync::mpsc::Sender<(u64, String)>> =
+    std::sync::OnceLock::new();
+
+// Payload serialitzable de l'event `asio-voice-failed` (id de la veu + missatge).
+#[cfg(feature = "asio")]
+#[derive(Serialize, Clone)]
+struct AsioVoiceFailed {
+    #[serde(rename = "voiceId")]
+    voice_id: u64,
+    message: String,
+}
+
+// Notifica (sense bloquejar) que una veu ASIO ha FALLAT en materialitzar-se. Si
+// encara no hi ha fil notificador, l'avís es descarta. NO es crida des del callback
+// RT, sinó des dels camins de construcció/decode on el `voice_id` és conegut.
+#[cfg(feature = "asio")]
+fn asio_notify_failed(voice_id: u64, msg: String) {
+    if let Some(tx) = ASIO_FAILED_TX.get() {
+        let _ = tx.send((voice_id, msg));
+    }
+}
+
 // Un ítem de telemetria per veu activa: id del slot, posició dins el segment
 // (segons) i nivell (pic d'amplitud lineal 0..1). S'emet en bloc cada ~33 ms.
 #[cfg(feature = "asio")]
@@ -910,6 +961,24 @@ fn asio_start_notifier(app: tauri::AppHandle) {
         .spawn(move || {
             while let Ok(voice_id) = rx.recv() {
                 let _ = app_ended.emit("asio-voice-ended", voice_id);
+            }
+        })
+        .ok();
+
+    // Fil notificador de FALLADES de veu (event `asio-voice-failed`). Simètric al
+    // camí natiu: payload { voiceId, message }. Així el tile no queda blau ni la
+    // playlist duckejada si la veu no arriba a existir.
+    let (failed_tx, failed_rx) = std::sync::mpsc::channel::<(u64, String)>();
+    let _ = ASIO_FAILED_TX.set(failed_tx);
+    let app_failed = app.clone();
+    std::thread::Builder::new()
+        .name("asio-notifier-failed".into())
+        .spawn(move || {
+            while let Ok((voice_id, message)) = failed_rx.recv() {
+                let _ = app_failed.emit(
+                    "asio-voice-failed",
+                    AsioVoiceFailed { voice_id, message },
+                );
             }
         })
         .ok();
@@ -1479,6 +1548,13 @@ fn asio_play_voice_impl(
                 svs.retain(|x| x.voice_id != voice_id);
                 svs.push(sv);
             }
+        } else {
+            // El mix ha desaparegut entre la petició i ara: atura el fil que acabem
+            // d'arrencar i avisa el frontend perquè no deixi el tile blau ni la
+            // playlist duckejada (simètric al camí natiu de streaming).
+            sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("[asio-voice] stream voice={} SENSE MIX → descartada", voice_id);
+            asio_notify_failed(voice_id, "El motor ASIO no té cap mix actiu.".into());
         }
         return Ok(());
     }
@@ -1505,7 +1581,8 @@ fn asio_play_voice_impl(
     // (RegisterDecoded). El fil del motor no es bloqueja descodificant: un fitxer
     // llarg o problemàtic no penja la reproducció ni els cues.
     let path = file_path.to_string();
-    asio_spawn_decode(path.clone(), sample_rate, move |data| AsioCmd::RegisterDecoded {
+    // Camí de PLAY: passem el voice_id perquè un decode fallit avisi el frontend.
+    asio_spawn_decode(path.clone(), sample_rate, Some(voice_id), move |data| AsioCmd::RegisterDecoded {
         file_path: path,
         rate: sample_rate,
         data,
@@ -1532,7 +1609,8 @@ fn asio_preload_impl(
         return Ok(()); // ja a la cau
     }
     let path = file_path.to_string();
-    asio_spawn_decode(path.clone(), rate, move |data| AsioCmd::CacheStore {
+    // Camí de PRELOAD: cap tile espera aquest PCM, per tant None (sense avís).
+    asio_spawn_decode(path.clone(), rate, None, move |data| AsioCmd::CacheStore {
         file_path: path,
         rate,
         data,

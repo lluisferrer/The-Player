@@ -203,6 +203,32 @@ export default function App() {
     return () => { if (un) un(); };
   }, []);
 
+  // C1: el motor ASIO informa quan una veu NO arriba a materialitzar-se (error de
+  // decode, sense mix...). Sense això el tile quedaria blau "reproduint" per sempre
+  // i la playlist duckejada indefinidament (mai arriba `asio-voice-ended` perquè la
+  // veu no ha existit). Mateix reset que el final natural + avança/atura la playlist.
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('asio-voice-failed', (e) => {
+          const p = e.payload || {};
+          const id = p.voiceId;
+          if (id == null) return;
+          console.warn('[asio-voice-failed] voice', id, '-', p.message);
+          const st = useSoundStore.getState();
+          // Mateix ordre que `asio-voice-ended`: el preview (voice id rotatiu, no és
+          // un id de slot) es tanca a part i RETORNA, per no cridar handleEnded ni
+          // avançar la playlist amb un id que no li pertoca.
+          if (id === st.previewVoiceId) { st.previewEnded(); return; }
+          st.handleEnded(id); // reset del tile + duckRemove + clearAsioTelemetry
+          plaOnVoiceEnded(id); // la playlist avança/para si era una pista seva
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
   // Telemetria del motor ASIO (~30 Hz): playhead + nivell de cada veu activa.
   // Es desa en un Map de mòdul (fora de React) i el consulten el playhead i el
   // picòmetre cada frame, sense provocar re-renders del store.
@@ -236,6 +262,31 @@ export default function App() {
     return () => { if (un) un(); };
   }, []);
 
+  // C1: el motor natiu cpal informa quan una veu NO arriba a materialitzar-se
+  // (error de decode, fitxer sense mostres, sense dispositiu...). Simètric al camí
+  // ASIO: sense això el tile quedaria blau i la playlist duckejada per sempre.
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('native-voice-failed', (e) => {
+          const p = e.payload || {};
+          const id = p.voiceId;
+          if (id == null) return;
+          console.warn('[native-voice-failed] voice', id, '-', p.message);
+          const st = useSoundStore.getState();
+          // Mateix ordre que `native-voice-ended`: el preview (voice id rotatiu) es
+          // tanca a part i RETORNA, per no cridar handleEnded ni avançar la playlist
+          // amb un id que no li pertoca.
+          if (id === st.previewVoiceId) { st.previewEnded(); return; }
+          st.handleEnded(id); // reset del tile + duckRemove + clearAsioTelemetry
+          plnOnVoiceEnded(id); // la playlist nativa avança/para si era una pista seva
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
   // Increment 3: telemetria del motor natiu cpal (~30 Hz). Mateix format
   // { id, pos, level } que l'ASIO; es desa al MATEIX Map (applyAsioTelemetry) i el
   // consulten playhead i picòmetre dels slots nativeActive.
@@ -261,10 +312,15 @@ export default function App() {
             await loadFromPath(s.id, s.filePath);
             useSoundStore.getState().applySlotConfig(s.id, cfg);
           } catch {
-            useSoundStore.getState().clearSlot(s.id); // fitxer no trobat
+            // C2: NO esborrem ni persistim. Marquem el slot com a "missing" per
+            // indicar que el fitxer no s'ha pogut localitzar en arrencar (disc no
+            // connectat, USB desendollat, NAS fora de línia...). Tota la config
+            // del show (labels, volums, punts in/out, fades, colors, rutes) queda
+            // intacta a localStorage fins que l'usuari torni a connectar el disc.
+            useSoundStore.getState().setSlotMissing(s.id, true);
           }
         } else if (s.label && !s.filePath && !s.audioBuffer) {
-          useSoundStore.getState().clearSlot(s.id); // fantasma antic sense ruta
+          useSoundStore.getState().clearSlot(s.id); // fantasma antic sense ruta (residu buit legítim)
         }
       }
     })();

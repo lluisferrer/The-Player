@@ -877,6 +877,31 @@ body {
   50%       { box-shadow: 0 0 20px var(--accent-glow), inset 0 0 12px rgba(59,130,246,0.12); }
 }
 
+/* C2: slot amb fitxer persistit però no localitzat en arrencar (disc/USB/NAS fora de línia) */
+.sound-button.slot-missing {
+  border-color: var(--vu-yellow);
+  box-shadow: 0 0 8px rgba(234, 179, 8, 0.3);
+}
+
+.sound-button.slot-missing:hover {
+  border-color: var(--vu-yellow);
+  background: rgba(234, 179, 8, 0.07);
+}
+
+/* Text d'avís dins el tile missing */
+.slot-missing-hint {
+  color: var(--vu-yellow) !important;
+  font-size: 9px !important;
+  text-align: center;
+  letter-spacing: 0.04em;
+  animation: missing-blink 2s ease-in-out infinite;
+}
+
+@keyframes missing-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
 /* ─── CAPÇALERA DEL SLOT (nom + número) ─── */
 
 .slot-header {
