@@ -1,20 +1,23 @@
 import { create } from 'zustand';
 import {
-  plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume, plSetDevice, plSeek,
-  plPosition, plStartAt, plDetach,
+  plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume, plSeek,
+  plDetach,
   duckAdd, duckRemove, duckReset, duckRefresh,
 } from '../lib/playlistEngine';
+// plSetDevice / plPosition / plStartAt → moguts al slice de routing (P5)
 import {
   csPlay, csStop, csPause, csResume, csSeek, csSetVolume,
 } from '../lib/cueStreamEngine';
 import {
-  plaPlayPause, plaStop, plaNext, plaPrev, plaPlayIndex, plaSetVolume, plaSeek, plaSetDevice,
-  plaPosition, plaStartAt, plaDetach,
+  plaPlayPause, plaStop, plaNext, plaPrev, plaPlayIndex, plaSetVolume, plaSeek,
+  plaDetach,
 } from '../lib/playlistAsio';
+// plaSetDevice / plaPosition / plaStartAt → moguts al slice de routing (P5)
 import {
-  plnPlayPause, plnStop, plnNext, plnPrev, plnPlayIndex, plnSetVolume, plnSeek, plnSetDevice,
-  plnPosition, plnStartAt, plnDetach,
+  plnPlayPause, plnStop, plnNext, plnPrev, plnPlayIndex, plnSetVolume, plnSeek,
+  plnDetach,
 } from '../lib/playlistNative';
+// plnSetDevice / plnPosition / plnStartAt → moguts al slice de routing (P5)
 import { invoke } from '@tauri-apps/api/core';
 import { hasClip, isVideo, isImage, isVisual, effFadeIn, effFadeOut, slotDuration } from '../lib/slotAudio';
 import { dispatchCue } from '../lib/cueDispatch';
@@ -28,7 +31,8 @@ import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVide
 import { createPersistenceSlice } from './slices/persistence';
 import { createVideoSlice } from './slices/video';
 import { createPreviewSlice } from './slices/preview';
-import { AudioCtx } from './audioCtx';
+import { createRoutingSlice } from './slices/routing';
+// AudioCtx → mogut al slice de routing (P5); ja no cal aquí
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
 const NUM_PAGES = 4;         // pàgines de cues (4 × 32 = 128 cues)
@@ -130,7 +134,7 @@ const clearGoTimers = () => {
   goTimers.clear();
   goChain.clear();
 };
-const cueCtxRegistry = new Map(); // deviceId → AudioContext (busos de color dels cues)
+// cueCtxRegistry → mogut a src/store/slices/routing.js (P5)
 if (Array.isArray(savedPlaylist.tracks)) {
   for (const t of savedPlaylist.tracks) if (t.id >= plNextId) plNextId = t.id + 1;
 }
@@ -175,6 +179,11 @@ export const useSoundStore = create((set, get) => ({
   ...createVideoSlice(set, get),
   // P5: slice de preview — bus PFL (setPreviewArmed/previewSlot/stopPreview/previewEnded/ensurePreviewCtx).
   ...createPreviewSlice(set, get),
+  // P5: slice de routing — dispositius/busos/contextos/preload (initAudioContext/ctxForDevice/
+  // ensurePlaylistCtx/detectOutputChannels/setAudioDevices/setSelectedDevice/setPlaylistDevice/
+  // setPreviewDevice/setColorOutput/setNative*/setUseNativeCueEngine/closeUnusedNativeDevices/
+  // setAsioMasterGain/initAsioMaster/setAsioInfo/refreshAsioLoaded/toggleEnabledOutput/preload*).
+  ...createRoutingSlice(set, get),
   slots: initialSlots,
 
   // ── Notificacions efímeres (P1: contracte d'errors motor→UI) ──
@@ -279,193 +288,18 @@ export const useSoundStore = create((set, get) => ({
   playlistShuffle: savedPlaylist.shuffle ?? false,
   playlistVolume: savedPlaylist.volume ?? 0.8,
 
-  initAudioContext: () => {
-    const existing = get().audioContext;
-    if (existing && existing.state !== 'closed') return existing;
-    const ctx = new AudioCtx();
-    set({ audioContext: ctx });
-    return ctx;
-  },
+  // initAudioContext / ctxForDevice / ensurePlaylistCtx / detectOutputChannels /
+  // setAudioDevices / setSelectedDevice / setPlaylistDevice / setPreviewDevice /
+  // setColorOutput / setNativeCueDevice / setNativeCueChannels / setNativePlaylistDevice /
+  // setNativePlaylistChannels / setNativePreviewDevice / setNativePreviewChannels /
+  // setUseNativeCueEngine / closeUnusedNativeDevices / setAsioMasterGain / initAsioMaster /
+  // setAsioInfo / refreshAsioLoaded / toggleEnabledOutput / preloadAsioSlot /
+  // preloadAllAsioCues / preloadNativeSlot / preloadAllNativeCues → slice de routing (P5).
 
   // persistGlobals / persistSlots / persistPlaylist → slice de persistència (P5).
 
   // setVideoOutputOpen / setVideoMonitorName / setVideoIdlePattern / setSeparateVideoAudio
   // seekVideo / handleVideoEnded / clearVideoCues → slice de vídeo (P5).
-
-  // Increment 3 (experimental): activa/desactiva el motor natiu cpal per a cues
-  // de ruta WASAPI. Es desa als globals; default APAGAT.
-  //
-  // CORRECCIÓ A4 — migració en calent:
-  // Quan es commuta el flag amb àudio en curs, calen tres accions per evitar
-  // que elements <audio> (motor Web) o veus cpal quedin orfes sense control:
-  //
-  //   1. PLAYLIST: si sona i el dispositiu NO és ASIO (l'ASIO no canvia de
-  //      motor amb aquest flag), captura posició amb el motor ANTIC, l'atura,
-  //      canvia el flag i reprèn amb el motor NOU des de la mateixa posició.
-  //      Segueix exactament el patró de setPlaylistDevice (~L505-538).
-  //
-  //   2. CUES nativeActive: si s'apaga el motor natiu, els cues que sonaven per
-  //      cpal ja no tindran control (cap ruta Web Audio els pot aturar). Els
-  //      aturem de cop amb native_stop_voice i netegem l'estat.
-  //      En activar el motor, els cues Web Audio actuals segueixen pel seu camí
-  //      fins que acabin (no els tallem); el motor nou s'aplica als propers.
-  //
-  //   3. PREVIEW: aturem qualsevol preview en curs (pot usar el motor que deixa
-  //      de ser vigent) perquè no quedi orfe.
-  setUseNativeCueEngine: (on) => {
-    const st = get();
-    const wasNative = !!st.useNativeCueEngine;
-    if (wasNative === !!on) return; // cap canvi efectiu
-
-    // ── 3. Preview en curs: atura'l SEMPRE (pot usar el motor que canvia) ──
-    if (st.previewingSlot != null) st.stopPreview();
-
-    // ── 2. Cues nativeActive: si apaguem el motor natiu, atura'ls de cop ──
-    // (Si l'activem, els cues Web Audio actuals seguiran fins que acabin sol.)
-    if (!on) {
-      // get().slots (no l'snapshot st): stopSlot va mutant l'estat a cada iteració.
-      get().slots.forEach((s) => {
-        if (s.nativeActive && (s.isPlaying || s.pausedAt != null)) {
-          get().stopSlot(s.id); // stopSlot ja fa invoke('native_stop_voice') i neteja flags
-        }
-      });
-    }
-
-    // ── 1. Playlist: migra en calent si sona i el dispositiu NO és ASIO ──
-    // L'ASIO té el seu propi camí (plIsAsio) i no depèn del flag useNativeCueEngine.
-    // NOTA: només migrem la playlist SONANT. Si estava en PAUSA, el resume posterior
-    // arrencarà la pista des de l'inici (la posició de pausa vivia al motor antic,
-    // ja aturat); és una limitació acceptada d'aquest commutador poc freqüent.
-    const playlistAffected = st.playlistPlaying && !isAsioTarget(st.playlistDeviceId);
-    let resumeIndex = -1;
-    let resumePos = 0;
-    if (playlistAffected) {
-      // Captura posició amb el motor ANTIC (before flag change):
-      //   on=true  → ara és motor Web → plPosition()
-      //   on=false → ara és motor natiu → plnPosition()
-      const p = on ? plPosition() : plnPosition();
-      if (p && p.index >= 0) { resumeIndex = p.index; resumePos = Math.max(0, p.elapsed); }
-      // Atura amb el motor antic ABANS de canviar el flag
-      get().playlistStop();
-    }
-
-    // ── Canvi efectiu del flag ──
-    set({ useNativeCueEngine: !!on });
-    get().persistGlobals();
-
-    // ── 1 (cont.) Reprèn amb el motor NOU des de la mateixa posició ──
-    if (playlistAffected && resumeIndex >= 0) {
-      const cf = Math.max(0, get().crossfade || 0);
-      if (on) plnStartAt(get, set, resumeIndex, resumePos, cf);
-      else plStartAt(get, set, resumeIndex, resumePos, cf);
-    }
-
-    // En activar el motor natiu, pre-descodifica ja els cues que hi routejaran.
-    if (on) get().preloadAllNativeCues();
-    // En desactivar-lo, allibera tots els dispositius natius que no sonin.
-    else get().closeUnusedNativeDevices();
-  },
-
-  // Allibera els dispositius cpal oberts que ja no usa cap rol (cues/playlist/
-  // preview) i que no sonin, perquè en canviar de sortida el vell quedi lliure.
-  closeUnusedNativeDevices: () => {
-    const st = get();
-    const keep = st.useNativeCueEngine
-      ? [st.nativeCueDeviceName || '', st.nativePlaylistDeviceName || '', st.nativePreviewDeviceName || '']
-      : [];
-    invoke('native_close_unused', { keep }).catch(() => { /* sense motor natiu */ });
-  },
-
-  // Increment 4: dispositiu de sortida del motor natiu (NOM de cpal; buit = per
-  // defecte). En canviar de dispositiu, el routing de canals deixa de ser vàlid:
-  // el reiniciem a buit (els 2 primers canals) perquè no apunti a canals inexistents.
-  setNativeCueDevice: (name) => {
-    set({ nativeCueDeviceName: name || '', nativeCueChannels: [] });
-    get().persistGlobals();
-    // El dispositiu natiu (i, per tant, la seva freqüència) ha canviat: re-preload
-    // a la nova freqüència perquè la cau tingui el PCM al rate correcte.
-    get().preloadAllNativeCues();
-    get().closeUnusedNativeDevices(); // allibera el dispositiu anterior si ja no s'usa
-  },
-  // Increment 4: canals destí del motor natiu (array 0-based, p. ex. [2,3] = 3-4).
-  setNativeCueChannels: (channels) => {
-    set({ nativeCueChannels: Array.isArray(channels) ? channels : [] });
-    get().persistGlobals();
-    // Els canals no afecten el rate ni el PCM, però reprecarreguem per coherència
-    // (idempotent: si ja és a la cau, el motor no torna a descodificar).
-    get().preloadAllNativeCues();
-  },
-
-  // Dispositiu/canals cpal de la PLAYLIST nativa. Canviar-los atura la playlist
-  // nativa actual (no es pot migrar l'stream en calent entre dispositius cpal).
-  setNativePlaylistDevice: (name) => {
-    if (get().plIsNative()) plnSetDevice(get);
-    set({ nativePlaylistDeviceName: name || '', nativePlaylistChannels: [] });
-    get().persistGlobals();
-    get().closeUnusedNativeDevices();
-  },
-  setNativePlaylistChannels: (channels) => {
-    set({ nativePlaylistChannels: Array.isArray(channels) ? channels : [] });
-    get().persistGlobals();
-  },
-
-  // Dispositiu/canals cpal del bus de preview natiu. Canviar-los atura el preview
-  // en curs (no es pot migrar en calent entre dispositius cpal).
-  setNativePreviewDevice: (name) => {
-    if (get().previewingSlot != null) get().stopPreview();
-    set({ nativePreviewDeviceName: name || '', nativePreviewChannels: [] });
-    get().persistGlobals();
-    get().closeUnusedNativeDevices();
-  },
-  setNativePreviewChannels: (channels) => {
-    set({ nativePreviewChannels: Array.isArray(channels) ? channels : [] });
-    get().persistGlobals();
-  },
-
-  // Marca/desmarca un dispositiu WASAPI com a "Usar" (curació del pool de Routing).
-  // Llista buida = tots actius; en desmarcar el primer, materialitza la llista
-  // completa menys aquell (així el comportament per defecte no canvia).
-  toggleEnabledOutput: (deviceId) => {
-    set((s) => {
-      let cur = s.enabledOutputs || [];
-      if (cur.length === 0) cur = (s.audioDevices || []).map((d) => d.deviceId);
-      const enabledOutputs = cur.includes(deviceId)
-        ? cur.filter((d) => d !== deviceId)
-        : [...cur, deviceId];
-      return { enabledOutputs };
-    });
-    get().persistGlobals();
-  },
-
-  // Gain mestre del bus ASIO (0..1). S'aplica al motor natiu (abans del soft clip)
-  // i es desa. També es reaplica en arrencar (initAsioMaster).
-  setAsioMasterGain: (v) => {
-    const gain = Math.max(0, Math.min(1.5, v));
-    set({ asioMasterGain: gain });
-    // Un sol guany mestre per als dos motors natius (ASIO i cpal).
-    invoke('asio_set_master_gain', { gain }).catch(() => { /* sense ASIO */ });
-    invoke('native_set_master_gain', { gain }).catch(() => { /* sense motor natiu */ });
-    get().persistGlobals();
-  },
-  // Aplica el gain mestre desat als motors en arrencar.
-  initAsioMaster: () => {
-    const gain = get().asioMasterGain ?? 1;
-    invoke('asio_set_master_gain', { gain }).catch(() => { /* res */ });
-    invoke('native_set_master_gain', { gain }).catch(() => { /* res */ });
-  },
-
-  // Info dels drivers ASIO carregats ara (per a les opcions de routing). Es manté
-  // a la sessió perquè no es perdi en reobrir Settings.
-  setAsioInfo: (info) => set({ asioInfo: info || {} }),
-  // Pregunta al motor quin driver hi ha carregat ara (pel botó «Carregar» o per la
-  // reproducció) i actualitza asioInfo. Cobreix el cas de reobrir el modal.
-  refreshAsioLoaded: async () => {
-    try {
-      const li = await invoke('asio_loaded_info');
-      if (li && li.name) set({ asioInfo: { [li.name]: { outs: li.outs, sample_rate: li.sample_rate } } });
-      else set({ asioInfo: {} });
-    } catch { /* sense ASIO */ }
-  },
 
   // Stop Others global: en disparar qualsevol cue, atura la resta
   setCuesStopOthers: (on) => { set({ cuesStopOthers: !!on }); get().persistGlobals(); },
@@ -505,117 +339,12 @@ export const useSoundStore = create((set, get) => ({
     get().persistSlots();
   },
 
-  // Retorna (o crea) el context d'un dispositiu de sortida per als cues.
-  // El bus de Cues reutilitza l'audioContext principal.
-  ctxForDevice: (deviceId) => {
-    const st = get();
-    if (!deviceId || deviceId === st.selectedDeviceId) {
-      return st.audioContext || get().initAudioContext();
-    }
-    let ctx = cueCtxRegistry.get(deviceId);
-    if (!ctx || ctx.state === 'closed') {
-      ctx = new AudioCtx();
-      // setSinkId retorna una Promise; cal capturar el rebuig asíncron amb .catch,
-      // no amb try/catch síncron (que no captura errors de Promise).
-      if (ctx.setSinkId) {
-        ctx.setSinkId(deviceId).catch((e) =>
-          console.warn('[setSinkId] ctxForDevice: dispositiu no disponible:', deviceId, e)
-        );
-      }
-      cueCtxRegistry.set(deviceId, ctx);
-    }
-    if (ctx.state === 'suspended') ctx.resume();
-    return ctx;
-  },
-
-  // Assigna un color a un dispositiu de sortida (routing per grup)
-  setColorOutput: (color, deviceId) => {
-    set((state) => {
-      const colorOutputs = { ...state.colorOutputs };
-      if (!deviceId || deviceId === 'cues') delete colorOutputs[color];
-      else colorOutputs[color] = deviceId;
-      return { colorOutputs };
-    });
-    get().persistGlobals();
-    // El routing per color ha canviat: pre-descodifica els cues que ara són ASIO.
-    get().preloadAllAsioCues();
-    // ...i els que ara routegen a WASAPI pel motor natiu (si està actiu).
-    get().preloadAllNativeCues();
-  },
-
   setGlobalFades: (patch) => {
     set(patch);
     get().persistGlobals();
   },
 
-  // Crea/reutilitza el context d'un bus i li aplica el dispositiu de sortida
-  ensurePlaylistCtx: () => {
-    let ctx = get().playlistCtx;
-    if (!ctx || ctx.state === 'closed') {
-      ctx = new AudioCtx();
-      set({ playlistCtx: ctx });
-      const dev = get().playlistDeviceId;
-      // setSinkId és asíncron; el rebuig (dispositiu absent) es captura amb .catch.
-      if (ctx.setSinkId && dev) {
-        ctx.setSinkId(dev).catch((e) =>
-          console.warn('[setSinkId] ensurePlaylistCtx: dispositiu no disponible:', dev, e)
-        );
-      }
-    }
-    if (ctx.state === 'suspended') ctx.resume();
-    return ctx;
-  },
-
   // setPreviewArmed / previewSlot / stopPreview / previewEnded / ensurePreviewCtx → slice de preview (P5).
-
-  setPlaylistDevice: (deviceId) => {
-    const oldDev = get().playlistDeviceId;
-    if (oldDev === deviceId) return;
-    const wasAsio = isAsioTarget(oldDev);
-    const willAsio = isAsioTarget(deviceId);
-
-    // WASAPI → WASAPI: canvi de sink en calent, sense cap tall.
-    if (!wasAsio && !willAsio) {
-      set({ playlistDeviceId: deviceId });
-      plSetDevice(get);
-      get().persistGlobals();
-      return;
-    }
-
-    // Canvi que implica ASIO (o de tipus): captura la posició actual, fa fade-out
-    // a la sortida antiga i reprèn a la nova des de la mateixa posició (crossfade
-    // entre sortides). Si estava en pausa, simplement atura (no es reprèn).
-    const wasPlaying = get().playlistPlaying;
-    let resumeIndex = -1, resumePos = 0;
-    if (wasPlaying) {
-      // Motor antic: ASIO si ho era; si no, natiu cpal quan està actiu, o Web Audio.
-      const p = wasAsio ? plaPosition() : (get().useNativeCueEngine ? plnPosition() : plPosition());
-      if (p && p.index >= 0) { resumeIndex = p.index; resumePos = Math.max(0, p.elapsed); }
-    }
-    get().playlistStop(); // atura el motor antic (routeja amb el deviceId encara antic)
-    set({ playlistDeviceId: deviceId });
-    if (wasPlaying && resumeIndex >= 0) {
-      const cf = Math.max(0, get().crossfade || 0);
-      // Motor nou segons el dispositiu destí i si el motor natiu està actiu.
-      if (willAsio) plaStartAt(get, set, resumeIndex, resumePos, cf);
-      else if (get().useNativeCueEngine) plnStartAt(get, set, resumeIndex, resumePos, cf);
-      else plStartAt(get, set, resumeIndex, resumePos, cf);
-    }
-    get().persistGlobals();
-  },
-
-  setPreviewDevice: async (deviceId) => {
-    // En canviar de dispositiu, atura qualsevol preview en curs (no es pot
-    // migrar en calent entre WASAPI i ASIO).
-    if (get().previewingSlot != null) get().stopPreview();
-    set({ previewDeviceId: deviceId });
-    // ASIO no és un sinkId WASAPI vàlid: no toquem el setSinkId del context.
-    if (!isAsioTarget(deviceId)) {
-      const ctx = get().previewCtx;
-      if (ctx && ctx.setSinkId) { try { await ctx.setSinkId(deviceId); } catch (e) { console.warn(e); } }
-    }
-    get().persistGlobals();
-  },
 
   setViewMode: (viewMode) => set({ viewMode }),
 
@@ -788,96 +517,6 @@ export const useSoundStore = create((set, get) => ({
     get().preloadNativeSlot(slotId);
   },
 
-  // Actualitza els camps d'edició d'un slot (startPoint, stopPoint, fadeIn, fadeOut)
-  updateSlotEdit: (slotId, patch) =>
-    set((state) => ({
-      slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, ...patch } : s
-      ),
-    })),
-
-  setAudioDevices: (devices) => {
-    set({ audioDevices: devices });
-    // Tanca i elimina del registre els contextos de busos de color (cueCtxRegistry)
-    // els dispositius dels quals ja no existeixen a la nova llista. Els busos secundaris
-    // de cues no poden enviar so a un dispositiu desendollat; tancar-los és segur.
-    // No toquem el selectedDeviceId principal (té el seu propi context a audioContext).
-    const currentSelected = get().selectedDeviceId;
-    const availableIds = new Set(devices.map((d) => d.deviceId));
-    for (const [id, ctx] of cueCtxRegistry) {
-      if (!availableIds.has(id) && id !== currentSelected) {
-        ctx.close().catch(() => { /* ja tancat o sense permís */ });
-        cueCtxRegistry.delete(id);
-      }
-    }
-  },
-
-  // ── Pre-decode ASIO (dispar instantani) ───────────────────────────────────
-  // Demana a Rust que descodifiqui i deixi a la cau el PCM d'un cue que routeja
-  // a ASIO, perquè el seu GO no carregui la latència de descodificació (~2 s).
-  // No fa res per a cues WASAPI, sense fitxer o en streaming a un altre camí.
-  preloadAsioSlot: (slotId) => {
-    const slot = get().slots.find((s) => s.id === slotId);
-    if (!slot || !slot.filePath) return;
-    // Els cues visuals (vídeo/imatge) no van pel motor d'àudio ASIO (el seu so,
-    // si en tenen, és a la finestra de sortida); no els pre-descodifiquis.
-    if (isVisual(slot)) return;
-    // Cue llarg (streaming): NO té sentit fer-ne full-decode a la cau; el dispar ja
-    // va per decode-ahead (asio_play_voice amb streaming=true). Sense aquest guard,
-    // pre-descodificar un fitxer de dues hores intenta assignar GB de PCM f32 (un
-    // estèreo de ~105 min ≈ 2,4 GB) i pot fer OOM a l'arrencada. Simètric a
-    // preloadNativeSlot, que ja el salta.
-    if (slot.isStreaming) return;
-    const target = parseTarget(resolveCueTargetStr(get(), slot));
-    if (target.kind !== 'asio') return;
-    invoke('asio_preload', { driver: target.driver, filePath: slot.filePath })
-      .catch((e) => console.warn('[asio] preload:', e));
-  },
-
-  // Pre-descodifica tots els cues carregats que routegen a ASIO. S'hi crida en
-  // canviar el routing (bus de Cues o routing per color) a un driver ASIO.
-  preloadAllAsioCues: () => {
-    for (const s of get().slots) {
-      if (s.filePath) get().preloadAsioSlot(s.id);
-    }
-    // P7: toca el standby l'ÚLTIM perquè quedi el més recent a la cau LRU (si el
-    // pressupost s'ha superat amb tants cues, el que dispararà el proper GO no
-    // ha de ser el primer a desallotjar-se).
-    get().preloadStandby();
-  },
-
-  // ── Pre-decode motor NATIU cpal (dispar instantani) ───────────────────────
-  // Equivalent natiu de `preloadAsioSlot`: demana a Rust que descodifiqui i deixi
-  // a la cau del motor natiu el PCM d'un cue que hi routejarà, perquè el seu GO no
-  // carregui la latència de descodificació (~4 s). Només actua si el motor natiu
-  // està actiu i el cue surt per WASAPI (la mateixa condició que a `playSlot`).
-  preloadNativeSlot: (slotId) => {
-    if (!get().useNativeCueEngine) return;
-    const slot = get().slots.find((s) => s.id === slotId);
-    if (!slot || !slot.filePath || isVisual(slot)) return;
-    // Cue llarg (streaming): NO té sentit fer-ne full-decode a la cau; el dispar
-    // ja va per decode-ahead. Saltem la precàrrega nativa.
-    if (slot.isStreaming) return;
-    // Mateixa decisió de routing que al dispar: si va a ASIO, no és cosa del natiu.
-    const decision = dispatchCue(get(), slot, { kind: 'preload' });
-    if (decision.route !== 'wasapi') return;
-    invoke('native_preload', {
-      deviceName: get().nativeCueDeviceName || '',
-      filePath: slot.filePath,
-    }).catch((e) => console.warn('[native] preload:', e));
-  },
-
-  // Pre-descodifica al motor natiu tots els cues carregats que hi routejaran.
-  // S'hi crida en activar el motor natiu o en canviar-ne el dispositiu/canals.
-  preloadAllNativeCues: () => {
-    if (!get().useNativeCueEngine) return;
-    for (const s of get().slots) {
-      if (s.filePath) get().preloadNativeSlot(s.id);
-    }
-    // P7: toca el standby l'últim (protecció LRU; vegeu preloadAllAsioCues).
-    get().preloadStandby();
-  },
-
   // P7 — Preload predictiu del standby. Manté descodificats a la cau del motor el
   // cue en standby (el que dispararà el proper GO) i els dos cues carregats
   // següents, perquè el GO no pateixi la latència de descodificar encara que un
@@ -898,41 +537,13 @@ export const useSoundStore = create((set, get) => ({
     }
   },
 
-  setSelectedDevice: async (deviceId) => {
-    const { audioContext } = get();
-    set({ selectedDeviceId: deviceId });
-    // Si el bus de Cues s'assigna a un target ASIO (string "asio:…"), NO és un
-    // sinkId WASAPI vàlid: no toquem el setSinkId del context Web Audio (el
-    // render ASIO és el pas següent). Guardem el valor igualment (routing).
-    if (!isAsioTarget(deviceId) && audioContext && audioContext.setSinkId) {
-      try {
-        await audioContext.setSinkId(deviceId);
-      } catch (e) {
-        console.warn('setSinkId no suportat:', e);
-      }
-    }
-    if (!isAsioTarget(deviceId)) get().detectOutputChannels();
-    get().persistGlobals();
-    // El bus de Cues ha canviat: pre-descodifica els cues que ara routegen a ASIO.
-    get().preloadAllAsioCues();
-    // ...i els que ara routegen a WASAPI pel motor natiu (si està actiu).
-    get().preloadAllNativeCues();
-  },
-
-  // Detecta quants canals de sortida exposa el dispositiu seleccionat.
-  // maxChannelCount > 2 vol dir que podem fer routing multicanal / cue
-  // via Web Audio (ChannelMergerNode). Si és 2, només estèreo.
-  detectOutputChannels: async () => {
-    const ctx = get().audioContext || get().initAudioContext();
-    const dev = get().selectedDeviceId;
-    // Si el bus de Cues apunta a ASIO, no és un sinkId WASAPI: no el toquem.
-    if (ctx.setSinkId && dev && dev !== 'default' && !isAsioTarget(dev)) {
-      try { await ctx.setSinkId(dev); } catch { /* res */ }
-    }
-    const max = ctx.destination.maxChannelCount;
-    set({ outputChannels: max });
-    return max;
-  },
+  // Actualitza els camps d'edició d'un slot (startPoint, stopPoint, fadeIn, fadeOut)
+  updateSlotEdit: (slotId, patch) =>
+    set((state) => ({
+      slots: state.slots.map((s) =>
+        s.id === slotId ? { ...s, ...patch } : s
+      ),
+    })),
 
   loadAudio: (slotId, file, audioBuffer, audioUrl, filePath = null, opts = {}) => {
     // Els nodes (gain/fade/analyser) es construeixen al Play, al context del
