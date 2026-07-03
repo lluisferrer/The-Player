@@ -11,6 +11,7 @@ import { SlotEditor } from './components/SlotEditor';
 import { Library } from './components/Library';
 import { PlaylistSave } from './components/PlaylistSave';
 import { SettingsModal } from './components/SettingsModal';
+import { Toast } from './components/Toast';
 import { slotForKey } from './lib/keyMap';
 import { hasClip } from './lib/slotAudio';
 import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow } from './lib/videoOutput';
@@ -217,6 +218,8 @@ export default function App() {
           if (id == null) return;
           console.warn('[asio-voice-failed] voice', id, '-', p.message);
           const st = useSoundStore.getState();
+          // P1: fa l'error visible a l'operador (ningú mira la consola en un show)
+          st.pushNotification({ type: 'error', message: p.message || 'Audio engine error (ASIO)' });
           // Mateix ordre que `asio-voice-ended`: el preview (voice id rotatiu, no és
           // un id de slot) es tanca a part i RETORNA, per no cridar handleEnded ni
           // avançar la playlist amb un id que no li pertoca.
@@ -275,6 +278,8 @@ export default function App() {
           if (id == null) return;
           console.warn('[native-voice-failed] voice', id, '-', p.message);
           const st = useSoundStore.getState();
+          // P1: fa l'error visible a l'operador (ningú mira la consola en un show)
+          st.pushNotification({ type: 'error', message: p.message || 'Audio engine error (native)' });
           // Mateix ordre que `native-voice-ended`: el preview (voice id rotatiu) es
           // tanca a part i RETORNA, per no cridar handleEnded ni avançar la playlist
           // amb un id que no li pertoca.
@@ -512,6 +517,7 @@ export default function App() {
           : <Library onClose={() => setShowSave(false)} />
       )}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      <Toast />
     </div>
   );
 }

@@ -2108,3 +2108,86 @@ body {
   font-size: 10px;
   color: var(--text-secondary);
 }
+
+/* ─── TOAST (P1: notificacions efímeres motor→UI) ─── */
+
+/* Contenidor fix: apila els toasts des de la cantonada inferior dreta cap amunt */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column-reverse; /* el més nou a baix, els antics pugen */
+  gap: 8px;
+  z-index: 9000;
+  /* Cap pointer-events al contenidor buit — no bloqueja clics sota */
+  pointer-events: none;
+}
+
+/* Targeta individual de toast */
+.toast-item {
+  pointer-events: all;
+  min-width: 260px;
+  max-width: 360px;
+  background: var(--bg-button);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--toast-accent, var(--accent));
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+  /* Animació d'entrada: entra lliscant des de la dreta amb fade */
+  animation: toast-slide-in 0.2s ease-out both;
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Capçalera: etiqueta de tipus + botó de tancar */
+.toast-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+/* Etiqueta del tipus (Error / Warning / Info) en el color d'accent */
+.toast-type {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--toast-accent, var(--accent));
+}
+
+/* Botó de tancar (✕) */
+.toast-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+}
+.toast-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-button-hover);
+}
+
+/* Cos del missatge */
+.toast-message {
+  font-size: 11px;
+  color: var(--text-primary);
+  line-height: 1.45;
+  word-break: break-word;
+}

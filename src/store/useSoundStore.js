@@ -156,8 +156,34 @@ const initialSlots = Array.from({ length: NUM_SLOTS }, (_, i) => {
   return base;
 });
 
+// Comptador de mòdul per a IDs únics de notificació (evita col·lisions de Date.now)
+let _notifSeq = 0;
+
+// Màxim de notificacions simultànies al tauler (les més antigues es descarten)
+const MAX_NOTIFICATIONS = 5;
+
 export const useSoundStore = create((set, get) => ({
   slots: initialSlots,
+
+  // ── Notificacions efímeres (P1: contracte d'errors motor→UI) ──
+  // Estat de sessió: NO es persisteix a localStorage.
+  // Cada entrada: { id: number, type: 'error'|'warning'|'info', message: string, at: number }
+  notifications: [],
+
+  // Afegeix una notificació nova. Descarta les més antigues si la llista supera MAX_NOTIFICATIONS.
+  pushNotification: ({ type = 'error', message }) => {
+    const id = ++_notifSeq;
+    set((state) => {
+      const next = [...state.notifications, { id, type, message, at: Date.now() }];
+      // Descarta les entrades més antigues (primeres) si superem el límit
+      return { notifications: next.length > MAX_NOTIFICATIONS ? next.slice(next.length - MAX_NOTIFICATIONS) : next };
+    });
+  },
+
+  // Treu una notificació pel seu id (cridat pel botó de tancar o per l'auto-descart)
+  dismissNotification: (id) => {
+    set((state) => ({ notifications: state.notifications.filter((n) => n.id !== id) }));
+  },
   globalFadeIn: savedGlobals.globalFadeIn ?? 0,   // fades per defecte de tots els cues
   globalFadeOut: savedGlobals.globalFadeOut ?? 0,
   cuesStopOthers: savedGlobals.cuesStopOthers ?? false, // Stop Others global per a tots els cues
