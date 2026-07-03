@@ -21,8 +21,17 @@ function basename(path) {
   return path.split(/[\\/]/).pop() || path;
 }
 
-// Llegeix només les metadades per saber la durada, sense descodificar res
-function probeDuration(src) {
+// Llegeix només les metadades per saber la durada, sense descodificar res.
+// Si es coneix la ruta de disc (`path`), prova primer symphonia a Rust
+// (probe_duration), que no depèn que el WebView suporti el còdec (B5). Si falla
+// o retorna 0, cau al mètode <audio>. Només àudio: el vídeo usa probeVideoDuration.
+async function probeDuration(src, path) {
+  if (path) {
+    try {
+      const d = await invoke('probe_duration', { path });
+      if (isFinite(d) && d > 0) return d;
+    } catch { /* cau al mètode <audio> */ }
+  }
   return new Promise((resolve) => {
     const a = new Audio();
     a.preload = 'metadata';
@@ -73,12 +82,33 @@ export function useAudioEngine() {
     return slot && slot.isStreaming;
   };
 
+  // Nombre de columnes (buckets) de la forma d'ona: ha de coincidir amb el
+  // valor per defecte de computePeaks() (parells min/max → buckets*2 valors).
+  const PEAK_BUCKETS = 8000;
+
   const buildPeaksBackground = async (slotId, { path, url, duration, bytes }) => {
     // Cau per fitxer (com els overviews dels DAWs)
     if (path) {
       const cached = getCachedPeaks(path, duration);
       if (cached) { if (stillStreaming(slotId)) setSlotPeaks(slotId, cached); return; }
     }
+    // Camí preferent per a cues amb ruta de disc: càlcul de pics a Rust
+    // (symphonia, STREAMING). Evita descodificar GB de PCM al WebView (A5).
+    // Retorna parells [min, max] intercalats, [-1, 1]: mateix format que
+    // computePeaks(). Un Vec<f32> arriba com a array JS → Float32Array.
+    if (path) {
+      try {
+        const arr = await invoke('compute_peaks', { path, buckets: PEAK_BUCKETS });
+        if (arr && arr.length) {
+          const peaks = new Float32Array(arr);
+          putCachedPeaks(path, duration, peaks);
+          if (stillStreaming(slotId)) setSlotPeaks(slotId, peaks);
+          return;
+        }
+      } catch { /* cau al camí JS de sota */ }
+    }
+    // Fallback JS (decodeAudioData): drag&drop web sense ruta, o si la comanda
+    // Rust falla. Descodifica tot el buffer → només apte per fitxers no gegants.
     try {
       const ctx = initAudioContext();
       let arrayBuffer = bytes;
@@ -156,7 +186,7 @@ export function useAudioEngine() {
         return;
       }
       const src = convertFileSrc(path);
-      const dur = await probeDuration(src);
+      const dur = await probeDuration(src, path);
       if (isFinite(dur) && dur > STREAM_THRESHOLD) {
         // Streaming: llegeix els bytes (ràpid) i en fa un Blob de mateix origen
         // perquè Web Audio el pugui analitzar (picòmetre). NO es descodifica.

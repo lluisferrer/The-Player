@@ -860,6 +860,7 @@ fn native_build_and_push_voice(
         src_channels,
         out_channels: spec.out_channels,
         pos: start_frame,
+        played_total: 0, // fade-in "només a l'inici" (no es reinicia en loop)
         start_frame,
         stop_frame,
         gain: spec.gain.max(0.0),

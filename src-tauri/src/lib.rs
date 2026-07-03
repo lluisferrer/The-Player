@@ -12,6 +12,12 @@ mod asio_decode;
 #[cfg(feature = "native")]
 mod asio_stream;
 
+// Càlcul de forma d'ona (pics) i durada via symphonia, en STREAMING (memòria
+// O(buckets), no O(durada)). Evita descodificar cues llargs al WebView (A5/B5).
+// Disponible amb `native`.
+#[cfg(feature = "native")]
+mod waveform;
+
 // Backend de sortida natiu basat en cpal (host per defecte: WASAPI a Windows,
 // CoreAudio a Mac). Reutilitza el nucli de veus (`Voice` + `asio_mix_voice`).
 #[cfg(feature = "native")]
@@ -345,6 +351,11 @@ struct Voice {
     //     si hi ha més canals font que destí; normalment 2→2).
     out_channels: Vec<usize>,
     pos: usize,            // posició de lectura (frames), relativa a start_frame..stop_frame
+    // Frames TOTALS reproduïts des de l'inici de la veu; NO es reinicia mai en
+    // loop (a diferència de `seg_pos`, que es plega cada volta). S'usa per al
+    // fade-in "només a l'inici" (estàndard QLab): un cop passats `fade_in_len`
+    // frames, el fade no es torna a aplicar encara que el loop reiniciï `pos`.
+    played_total: usize,
     start_frame: usize,    // primer frame del segment
     stop_frame: usize,     // últim frame (exclusiu) del segment
     gain: f32,
@@ -770,6 +781,7 @@ fn asio_build_and_push_voice(
         src_channels,
         out_channels: spec.out_channels,
         pos: start_frame,
+        played_total: 0, // fade-in "només a l'inici" (no es reinicia en loop)
         start_frame,
         stop_frame,
         gain: spec.gain.max(0.0),
@@ -1457,8 +1469,12 @@ fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
 
         // Envolupant de fade (multiplicador 0..1).
         let mut env = 1.0f32;
-        if voice.fade_in_len > 0 && seg_pos < voice.fade_in_len {
-            env *= seg_pos as f32 / voice.fade_in_len as f32;
+        // Fade-in NOMÉS a l'inici de la veu: es compta sobre `played_total`
+        // (frames totals reproduïts, que NO es reinicien en loop), no sobre
+        // `seg_pos` (que es plega cada volta). Així el cue no "respira" cada
+        // volta; el fade-in queda alineat amb els camins streaming i Web Audio.
+        if voice.fade_in_len > 0 && voice.played_total < voice.fade_in_len {
+            env *= voice.played_total as f32 / voice.fade_in_len as f32;
         }
         if !voice.loop_on && voice.fade_out_len > 0 {
             let from = seg_len.saturating_sub(voice.fade_out_len);
@@ -1503,6 +1519,9 @@ fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
         }
 
         voice.pos += 1;
+        // Comptador de frames totals (per al fade-in "només a l'inici"): no es
+        // reinicia mai en loop, a diferència de `pos`/`seg_pos`.
+        voice.played_total += 1;
     }
 
     voice.meter = peak;
@@ -1829,6 +1848,7 @@ fn asio_do_tone(
         src_channels: 1,
         out_channels: vec![target],
         pos: 0,
+        played_total: 0, // fade-in "només a l'inici" (irrellevant aquí: fade_in_len=0)
         start_frame: 0,
         stop_frame: frames,
         gain: 1.0,
@@ -2376,6 +2396,38 @@ fn native_stop() -> Result<(), String> {
     }
 }
 
+// Calcula els pics de la forma d'ona d'un fitxer en STREAMING (symphonia), sense
+// carregar tot el PCM a RAM. Retorna parells [min, max] intercalats (buckets*2
+// valors, [-1, 1]): mateix format que computePeaks() al frontend. Evita l'OOM de
+// descodificar cues llargs al WebView (A5).
+#[tauri::command]
+fn compute_peaks(path: String, buckets: u32) -> Result<Vec<f32>, String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = (path, buckets);
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        waveform::compute_peaks(&path, buckets)
+    }
+}
+
+// Llegeix la durada (segons) d'un fitxer d'àudio de les metadades del format amb
+// symphonia, SENSE descodificar-lo. Fallback del frontend a <audio> si falla (B5).
+#[tauri::command]
+fn probe_duration(path: String) -> Result<f64, String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = path;
+        Err("Aquesta build no inclou el motor natiu (cal la feature `native`).".into())
+    }
+    #[cfg(feature = "native")]
+    {
+        waveform::probe_duration(&path)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Panic hook amb log a fitxer. Un panic en un fil de treball (decode, motor,
@@ -2457,7 +2509,9 @@ pub fn run() {
             native_close_unused,
             native_seek,
             native_set_paused,
-            native_stop
+            native_stop,
+            compute_peaks,
+            probe_duration
         ])
         // Tancament fiable: en tancar la finestra PRINCIPAL, aturem el motor natiu
         // net (drop dels streams cpal al seu fil → WASAPI/CoreAudio no penja) i

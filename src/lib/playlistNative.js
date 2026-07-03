@@ -74,8 +74,8 @@ function schedElapsed() {
 // Es llegeix de les metadades amb un <audio> efímer (sense reproduir-lo) i es
 // cau per fitxer. No surt cap so d'aquí: només serveix per saber la llargada.
 const durCache = new Map();
-function resolveDuration(filePath) {
-  if (durCache.has(filePath)) return Promise.resolve(durCache.get(filePath));
+// Fallback: durada via <audio> efímer (depèn del suport de còdec del WebView).
+function resolveDurationMedia(filePath) {
   return new Promise((resolve) => {
     try {
       const a = new Audio(convertFileSrc(filePath));
@@ -89,6 +89,16 @@ function resolveDuration(filePath) {
       a.addEventListener('error', () => done(0), { once: true });
     } catch { durCache.set(filePath, 0); resolve(0); }
   });
+}
+async function resolveDuration(filePath) {
+  if (durCache.has(filePath)) return durCache.get(filePath);
+  // Prova primer symphonia a Rust: no depèn del suport de còdec del WebView, per
+  // això la durada surt encara que <audio> no reprodueixi el format (B5).
+  try {
+    const d = await invoke('probe_duration', { path: filePath });
+    if (isFinite(d) && d > 0) { durCache.set(filePath, d); return d; }
+  } catch { /* cau al <audio> */ }
+  return resolveDurationMedia(filePath);
 }
 
 function startTrackN(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
