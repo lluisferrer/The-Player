@@ -2453,6 +2453,58 @@ fn native_stop() -> Result<(), String> {
     }
 }
 
+// ── Fitxers de sessió (.ezyshow / .json) ─────────────────────────────────────
+//
+// `read_file_bytes` és restringit a extensions de MÈDIA (A3), de manera que no
+// es pot usar per a fitxers JSON. Aquestes dues comandes noves cobreixen
+// exclusivament les extensions .ezyshow i .json (fitxers de sessió exportats per
+// l'app). Qualsevol altra extensió és rebutjada per seguretat.
+
+// Extensions permeses per a fitxers de sessió (text JSON)
+const SESSION_EXTENSIONS: &[&str] = &["ezyshow", "json"];
+
+// Escriu un fitxer de text (contingut JSON) a la ruta absoluta indicada.
+// Retorna error si l'extensió no és .ezyshow o .json, o si l'escriptura falla.
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    if !SESSION_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(format!(
+            "Extensió «{}» no permesa: només s'accepten .ezyshow o .json.",
+            ext
+        ));
+    }
+
+    std::fs::write(&path, contents.as_bytes())
+        .map_err(|e| format!("No s'ha pogut escriure {}: {}", path, e))
+}
+
+// Llegeix un fitxer de text (contingut JSON) des de la ruta absoluta indicada.
+// Retorna error si l'extensió no és .ezyshow o .json, o si la lectura falla.
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    if !SESSION_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(format!(
+            "Extensió «{}» no permesa: només s'accepten .ezyshow o .json.",
+            ext
+        ));
+    }
+
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("No s'ha pogut llegir {}: {}", path, e))
+}
+
 // Calcula els pics de la forma d'ona d'un fitxer en STREAMING (symphonia), sense
 // carregar tot el PCM a RAM. Retorna parells [min, max] intercalats (buckets*2
 // valors, [-1, 1]): mateix format que computePeaks() al frontend. Evita l'OOM de
@@ -2568,7 +2620,9 @@ pub fn run() {
             native_set_paused,
             native_stop,
             compute_peaks,
-            probe_duration
+            probe_duration,
+            write_text_file,
+            read_text_file
         ])
         // Tancament fiable: en tancar la finestra PRINCIPAL, aturem el motor natiu
         // net (drop dels streams cpal al seu fil → WASAPI/CoreAudio no penja) i

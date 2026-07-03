@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { useLibrary } from '../hooks/useLibrary';
+import { useShowFile } from '../hooks/useShowFile';
 
-// Modal de la Set Library: desar/carregar/eliminar soundboards
+// Modal de la Set Library: desar/carregar/eliminar soundboards + exportació/importació
+// de la sessió sencera a fitxer .ezyshow (P2 — Show file).
 export function Library({ onClose }) {
   const { sets, saveSet, loadSet, deleteSet } = useLibrary();
+  const { exportShow, importShow } = useShowFile();
   const [name, setName] = useState('');
 
   const names = Object.keys(sets).sort();
@@ -64,6 +67,29 @@ export function Library({ onClose }) {
               </div>
             ))
           )}
+        </div>
+
+        {/* Secció P2 — exportació/importació de la sessió sencera a fitxer de disc */}
+        <div className="library-section-title">Show file (full session)</div>
+        <div className="library-showfile">
+          <p className="library-showfile-desc">
+            Export or import the entire session (cues, playlist &amp; globals) as a <code>.ezyshow</code> file.
+            Useful for backup and moving shows between machines.
+          </p>
+          <div className="library-showfile-actions">
+            <button
+              className="editor-btn primary"
+              onClick={() => exportShow()}
+            >
+              Export show…
+            </button>
+            <button
+              className="editor-btn"
+              onClick={() => importShow(onClose)}
+            >
+              Import show…
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -2109,6 +2109,47 @@ body {
   color: var(--text-secondary);
 }
 
+/* ─── Secció Show file (P2) ─── */
+
+/* Separador de secció dins el panell de Library */
+.library-section-title {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+/* Cos de la secció Show file */
+.library-showfile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+/* Descripció breu de la funcionalitat */
+.library-showfile-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.library-showfile-desc code {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--accent);
+}
+
+/* Fila de botons Export/Import */
+.library-showfile-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* ─── TOAST (P1: notificacions efímeres motor→UI) ─── */
 
 /* Contenidor fix: apila els toasts des de la cantonada inferior dreta cap amunt */
