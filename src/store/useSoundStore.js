@@ -1012,6 +1012,12 @@ export const useSoundStore = create((set, get) => ({
     // Els cues visuals (vídeo/imatge) no van pel motor d'àudio ASIO (el seu so,
     // si en tenen, és a la finestra de sortida); no els pre-descodifiquis.
     if (isVisual(slot)) return;
+    // Cue llarg (streaming): NO té sentit fer-ne full-decode a la cau; el dispar ja
+    // va per decode-ahead (asio_play_voice amb streaming=true). Sense aquest guard,
+    // pre-descodificar un fitxer de dues hores intenta assignar GB de PCM f32 (un
+    // estèreo de ~105 min ≈ 2,4 GB) i pot fer OOM a l'arrencada. Simètric a
+    // preloadNativeSlot, que ja el salta.
+    if (slot.isStreaming) return;
     const target = parseTarget(resolveCueTargetStr(get(), slot));
     if (target.kind !== 'asio') return;
     invoke('asio_preload', { driver: target.driver, filePath: slot.filePath })
