@@ -28,12 +28,7 @@ import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVide
 // crear el store).
 import { createPersistenceSlice } from './slices/persistence';
 import { createVideoSlice } from './slices/video';
-
-// Constructor d'AudioContext amb fallback amb prefix: el WKWebView de macOS Mojave
-// (Safari 12) NOMÉS exposa webkitAudioContext; el nom sense prefix no va arribar
-// fins a Safari 14.1. Sense això, `new AudioCtx()` peta amb "Can't find
-// variable: AudioContext" i el frontend no arrenca al Mac.
-const AudioCtx = (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) || null;
+import { AudioCtx } from './audioCtx';
 
 const SLOTS_PER_PAGE = 32;   // 8 columnes × 4 files
 const NUM_PAGES = 4;         // pàgines de cues (4 × 32 = 128 cues)
