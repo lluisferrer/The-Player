@@ -40,8 +40,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::{
-    asio_decode, asio_mix_stream_voice, asio_mix_voice, asio_soft_clip, asio_stream, PcmCache,
-    PcmKey, StreamVoice, Voice, VoiceSpec,
+    asio_decode, asio_mix_stream_voice, asio_mix_voice, asio_soft_clip, asio_stream, pcm_key,
+    PcmCache, PcmKey, StreamVoice, Voice, VoiceSpec,
 };
 
 // Estat persistent d'UN dispositiu cpal obert: l'stream de sortida i la llista de
@@ -162,6 +162,15 @@ enum NativeCmd {
         keep: Vec<String>,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
+    // Re-avaluació d'inactivitat: torna a executar la lògica de tancament de
+    // `CloseUnused` contra l'ÚLTIM `keep` rebut, tancant els dispositius que ara han
+    // quedat BUITS (sense veus ni streams) i no són a `keep`. La dispara el fil
+    // notificador quan una veu acaba de forma natural: sense això, un dispositiu que
+    // `CloseUnused` va mantenir obert perquè encara sonava quedaria obert per sempre
+    // (escrivint silenci i reservant el dispositiu) un cop les seves veus acaben,
+    // perquè ningú tornava a cridar el tancament. Fire-and-forget (sense reply): és
+    // una neteja oportunista, no crítica per a la correcció de la reproducció.
+    ReapIdle,
     // Tancament de l'app: atura els fils descodificadors i fa DROP de TOTS els
     // streams cpal en aquest fil (el propietari) perquè WASAPI/CoreAudio els
     // alliberin net i el procés pugui sortir sense penjar-se.
@@ -182,7 +191,9 @@ fn native_master_gain() -> f32 {
 
 // Fixa el guany mestre del bus natiu (es llegeix al callback de tots els devices).
 pub fn set_master_gain(gain: f32) {
-    NATIVE_MASTER_GAIN.store(gain.max(0.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+    // Clamp a [0, 1.5]: harmonitza amb el límit de la UI (setAsioMasterGain). Sense
+    // el màxim, una crida directa o un valor corrupte podria rebentar el bus.
+    NATIVE_MASTER_GAIN.store(gain.max(0.0).min(1.5).to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
 // Sender únic cap al fil natiu. S'inicialitza mandrós el primer cop que cal.
@@ -358,6 +369,13 @@ pub fn start_notifier(app: tauri::AppHandle) {
         .spawn(move || {
             while let Ok(voice_id) = rx.recv() {
                 let _ = app_ended.emit("native-voice-ended", voice_id);
+                // Una veu ha acabat: demana al fil del motor que re-avaluï si algun
+                // dispositiu ha quedat ociós i s'ha de tancar (M5). Fire-and-forget:
+                // si el motor no hi és, s'ignora. No es fa al callback RT (aquí som al
+                // fil notificador, no-RT), i el tancament real passa al fil del motor.
+                if let Some(tx) = native_tx_clone() {
+                    let _ = tx.send(NativeCmd::ReapIdle);
+                }
             }
         })
         .ok();
@@ -436,6 +454,31 @@ pub fn start_notifier(app: tauri::AppHandle) {
 // Bucle del fil natiu: rep ordres i les atén una a una, mantenint el backend
 // (stream + veus) viu entre cues. Aïllem cada ordre amb `catch_unwind` perquè un
 // error d'un device dolent no mati el fil ni deixi el dispositiu en mal estat.
+// Tanca (allibera) els dispositius oberts que NO siguin a `keep` i que no tinguin
+// cap veu (ni en memòria ni en streaming) sonant. Eliminar-los del mapa fa drop de
+// la `cpal::Stream` EN AQUEST fil (el propietari) → s'allibera el dispositiu físic.
+// Els que encara sonen es mantenen. Es crida des de `CloseUnused` (canvi de
+// dispositiu) i des de `ReapIdle` (una veu ha acabat i cal re-avaluar). Idempotent:
+// si no hi ha res a tancar, no fa res (ni republica telemetria). Sempre al fil del
+// motor (no-RT), mai des del callback.
+fn native_close_idle(backends: &mut NativeBackends, keep: &[String]) {
+    let before = backends.len();
+    backends.retain(|name, b| {
+        if keep.iter().any(|k| k == name) {
+            return true;
+        }
+        // `unwrap_or(true)` (lock enverinat) = el considerem ocupat i NO el tanquem:
+        // prioritzem no trencar la reproducció davant d'un estat dubtós.
+        let busy_voices = b.voices.lock().map(|v| !v.is_empty()).unwrap_or(true);
+        let busy_streams = b.stream_voices.lock().map(|s| !s.is_empty()).unwrap_or(true);
+        busy_voices || busy_streams
+    });
+    // Només republiquem la telemetria si de fet hem tancat algun dispositiu.
+    if backends.len() != before {
+        native_publish_meter(backends);
+    }
+}
+
 fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
     // Mapa de dispositius oberts: buit fins al primer cue, després es mantenen
     // oberts (un stream cpal viu per device usat).
@@ -444,6 +487,16 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
     // (ruta, rate del DISPOSITIU destí). El decode passa en fils de treball i el PCM
     // arriba per RegisterDecoded/CacheStore; el callback RT mai la toca.
     let mut cache = PcmCache::new();
+    // Últim conjunt de dispositius a MANTENIR rebut per `CloseUnused`. El desem per
+    // poder re-avaluar la inactivitat (`ReapIdle`) quan una veu acaba: un dispositiu
+    // que es va mantenir obert perquè encara sonava s'ha de poder tancar després.
+    // `Option` per distingir DOS estats: None = el store encara NO ha dit què
+    // mantenir → ReapIdle NO tanca res (deixem els dispositius oberts entre cue i
+    // cue perquè el GO següent sigui instantani, que és tota la raó de mantenir els
+    // backends vius). Some(keep) = el store ha cridat CloseUnused explícitament (p.
+    // ex. canvi de dispositiu, o motor natiu apagat amb keep=[]) → aleshores sí que
+    // reapem els dispositius ociosos fora de `keep`.
+    let mut last_keep: Option<Vec<String>> = None;
     while let Ok(cmd) = rx.recv() {
         match cmd {
             NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, loop_on, start_point, stop_point, streaming, reply } => {
@@ -463,14 +516,17 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
             NativeCmd::RegisterDecoded { device_name, rate, file_path, data, spec } => {
                 // Un fil de decode ha acabat: desa a la cau i registra la veu.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    cache.insert((file_path, rate), data.clone());
+                    // Clau amb mtime+mida (via `pcm_key`, mateix helper que la
+                    // consulta) perquè un fitxer reemplaçat no serveixi el PCM vell.
+                    cache.insert(pcm_key(&file_path, rate), data.clone());
                     native_build_and_push_voice(&backends, &device_name, data, rate, spec);
                 }));
             }
             NativeCmd::CacheStore { rate, file_path, data } => {
                 // Pre-càrrega acabada en un fil: només desa el PCM a la cau.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    cache.insert((file_path, rate), data);
+                    // Clau amb mtime+mida (via `pcm_key`), coherent amb la consulta.
+                    cache.insert(pcm_key(&file_path, rate), data);
                 }));
             }
             NativeCmd::StopVoice { voice_id, fade_out, reply } => {
@@ -524,25 +580,26 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
                 let _ = reply.send(res);
             }
             NativeCmd::CloseUnused { keep, reply } => {
+                // Recorda l'últim `keep` per poder re-avaluar la inactivitat més tard
+                // (ReapIdle) quan les veus d'un dispositiu mantingut acabin.
+                last_keep = Some(keep.clone());
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // Tanca els dispositius que no estan a `keep` i que no tenen cap
-                    // veu (ni en memòria ni en streaming) sonant. Eliminar-los del
-                    // mapa fa drop de la cpal::Stream al fil propietari → s'allibera el
-                    // dispositiu. Els que encara sonen es mantenen fins que acabin.
-                    backends.retain(|name, b| {
-                        if keep.iter().any(|k| k == name) {
-                            return true;
-                        }
-                        let busy_voices = b.voices.lock().map(|v| !v.is_empty()).unwrap_or(true);
-                        let busy_streams = b.stream_voices.lock().map(|s| !s.is_empty()).unwrap_or(true);
-                        busy_voices || busy_streams
-                    });
-                    // Republica la taula de telemetria sense els dispositius tancats.
-                    native_publish_meter(&backends);
+                    native_close_idle(&mut backends, &keep);
                     Ok(())
                 }))
                 .unwrap_or_else(|_| Err("Pànic tancant dispositius natius.".into()));
                 let _ = reply.send(res);
+            }
+            NativeCmd::ReapIdle => {
+                // Una veu ha acabat: re-avalua contra l'últim `keep`, PERÒ només si el
+                // store ja ha dit què mantenir (Some). Si encara és None, no tanquem
+                // res: així el bus de cues no es tanca entre cue i cue i el GO següent
+                // és instantani. Sense reply (neteja oportunista); aïllat per prudència.
+                if let Some(keep) = last_keep.clone() {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        native_close_idle(&mut backends, &keep);
+                    }));
+                }
             }
             NativeCmd::Shutdown { reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1029,8 +1086,9 @@ fn native_play_cue_impl(
         stop_point,
     };
 
-    // HIT de cau (p. ex. pre-carregat): registra la veu A L'INSTANT.
-    let key: PcmKey = (file_path.to_string(), sample_rate);
+    // HIT de cau (p. ex. pre-carregat): registra la veu A L'INSTANT. La clau inclou
+    // mtime+mida (via `pcm_key`): un fitxer reemplaçat a disc fa MISS i re-descodifica.
+    let key: PcmKey = pcm_key(file_path, sample_rate);
     if let Some(data) = cache.get(&key) {
         native_build_and_push_voice(backends, device_name, data, sample_rate, spec);
         return Ok(());
@@ -1061,7 +1119,7 @@ fn native_preload_impl(
     file_path: &str,
 ) -> Result<(), String> {
     let (sample_rate, _dev_channels) = native_ensure_backend(backends, device_name)?;
-    let key: PcmKey = (file_path.to_string(), sample_rate);
+    let key: PcmKey = pcm_key(file_path, sample_rate);
     if cache.get(&key).is_some() {
         return Ok(()); // ja a la cau
     }

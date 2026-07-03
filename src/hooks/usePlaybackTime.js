@@ -1,12 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSoundStore } from '../store/useSoundStore';
 import { slotDuration } from '../lib/slotAudio';
 import { csPosition } from '../lib/cueStreamEngine';
 import { asioPosition } from '../lib/asioTelemetry';
 
+// Interval mínim entre actualitzacions de l'estat React (ms).
+// ~16 Hz és imperceptible per a un cronòmetre o barra de progrés i redueix
+// molt el cost de re-render quan hi ha 8-10 cues sonant alhora.
+const THROTTLE_MS = 62; // ≈ 16 Hz
+
 // Retorna el temps de reproducció d'un slot en temps real:
 //   { elapsed, duration, progress }  (progress = 0..1)
-// Mentre el slot sona, s'actualitza cada frame amb requestAnimationFrame.
+// Mentre el slot sona, s'actualitza cada frame amb requestAnimationFrame,
+// però l'estat React es propaga com a màxim cada THROTTLE_MS mil·lisegons.
 // En mode continu (loop) el temps es plega amb el mòdul de la durada.
 export function usePlaybackTime(slot) {
   const audioContext = useSoundStore((s) => s.audioContext);
@@ -26,6 +32,13 @@ export function usePlaybackTime(slot) {
   const pausedAt = slot && slot.pausedAt != null ? slot.pausedAt : null;
   const [state, setState] = useState({ elapsed: 0, duration, progress: 0 });
 
+  // Ref per guardar el timestamp de l'última actualització de l'estat React.
+  // Compartida pels tres efectes però cada un en té la seva pròpia (no shared).
+  // (Les refs es declaren abans dels efectes per respectar les regles dels hooks.)
+  const lastUpdateAsio = useRef(0);
+  const lastUpdateStream = useRef(0);
+  const lastUpdateBuf = useRef(0);
+
   // ASIO: la posició ve de la telemetria del motor natiu (asioPosition)
   useEffect(() => {
     if (!isAsio) return undefined;
@@ -37,13 +50,21 @@ export function usePlaybackTime(slot) {
       } else {
         setState({ elapsed: 0, duration, progress: 0 });
       }
+      lastUpdateAsio.current = 0; // reinicia el throttle per al pròxim play
       return undefined;
     }
+    // Primer tick: força actualització immediata (lastUpdate = 0)
+    lastUpdateAsio.current = 0;
     let raf;
     const tick = () => {
+      const now = performance.now();
       const pos = asioPosition(slotId);
       const e = pos != null ? Math.min(pos, duration) : 0;
-      setState({ elapsed: e, duration, progress: duration ? e / duration : 0 });
+      // Throttle: propaga l'estat React només si han passat prou ms
+      if (now - lastUpdateAsio.current >= THROTTLE_MS) {
+        lastUpdateAsio.current = now;
+        setState({ elapsed: e, duration, progress: duration ? e / duration : 0 });
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -61,19 +82,28 @@ export function usePlaybackTime(slot) {
       } else {
         setState({ elapsed: 0, duration, progress: 0 });
       }
+      lastUpdateStream.current = 0; // reinicia el throttle per al pròxim play
       return undefined;
     }
+    // Primer tick: força actualització immediata (lastUpdate = 0)
+    lastUpdateStream.current = 0;
     let raf;
     const tick = () => {
+      const now = performance.now();
       const pos = csPosition(slotId);
       const e = pos != null ? Math.min(pos, duration) : 0;
-      setState({ elapsed: e, duration, progress: duration ? e / duration : 0 });
+      // Throttle: propaga l'estat React només si han passat prou ms
+      if (now - lastUpdateStream.current >= THROTTLE_MS) {
+        lastUpdateStream.current = now;
+        setState({ elapsed: e, duration, progress: duration ? e / duration : 0 });
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [isStreaming, isPlaying, duration, pausedAt, slotId]);
 
+  // Buffer/Web Audio: la posició es calcula a partir de audioContext.currentTime
   useEffect(() => {
     if (isAsio) return undefined;
     if (isStreaming) return undefined;
@@ -85,15 +115,22 @@ export function usePlaybackTime(slot) {
       } else {
         setState({ elapsed: 0, duration, progress: 0 });
       }
+      lastUpdateBuf.current = 0; // reinicia el throttle per al pròxim play
       return;
     }
-
+    // Primer tick: força actualització immediata (lastUpdate = 0)
+    lastUpdateBuf.current = 0;
     let raf;
     const tick = () => {
+      const now = performance.now();
       let elapsed = audioContext.currentTime - startedAt;
       if (elapsed < 0) elapsed = 0;
       const e = elapsed % duration;              // plega en loop
-      setState({ elapsed: e, duration, progress: e / duration });
+      // Throttle: propaga l'estat React només si han passat prou ms
+      if (now - lastUpdateBuf.current >= THROTTLE_MS) {
+        lastUpdateBuf.current = now;
+        setState({ elapsed: e, duration, progress: e / duration });
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

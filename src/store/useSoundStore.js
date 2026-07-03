@@ -513,7 +513,13 @@ export const useSoundStore = create((set, get) => ({
     let ctx = cueCtxRegistry.get(deviceId);
     if (!ctx || ctx.state === 'closed') {
       ctx = new AudioCtx();
-      if (ctx.setSinkId) { try { ctx.setSinkId(deviceId); } catch { /* res */ } }
+      // setSinkId retorna una Promise; cal capturar el rebuig asíncron amb .catch,
+      // no amb try/catch síncron (que no captura errors de Promise).
+      if (ctx.setSinkId) {
+        ctx.setSinkId(deviceId).catch((e) =>
+          console.warn('[setSinkId] ctxForDevice: dispositiu no disponible:', deviceId, e)
+        );
+      }
       cueCtxRegistry.set(deviceId, ctx);
     }
     if (ctx.state === 'suspended') ctx.resume();
@@ -547,7 +553,12 @@ export const useSoundStore = create((set, get) => ({
       ctx = new AudioCtx();
       set({ playlistCtx: ctx });
       const dev = get().playlistDeviceId;
-      if (ctx.setSinkId && dev) { try { ctx.setSinkId(dev); } catch { /* res */ } }
+      // setSinkId és asíncron; el rebuig (dispositiu absent) es captura amb .catch.
+      if (ctx.setSinkId && dev) {
+        ctx.setSinkId(dev).catch((e) =>
+          console.warn('[setSinkId] ensurePlaylistCtx: dispositiu no disponible:', dev, e)
+        );
+      }
     }
     if (ctx.state === 'suspended') ctx.resume();
     return ctx;
@@ -559,7 +570,12 @@ export const useSoundStore = create((set, get) => ({
       ctx = new AudioCtx();
       set({ previewCtx: ctx });
       const dev = get().previewDeviceId;
-      if (ctx.setSinkId && dev) { try { ctx.setSinkId(dev); } catch { /* res */ } }
+      // setSinkId és asíncron; el rebuig (dispositiu absent) es captura amb .catch.
+      if (ctx.setSinkId && dev) {
+        ctx.setSinkId(dev).catch((e) =>
+          console.warn('[setSinkId] ensurePreviewCtx: dispositiu no disponible:', dev, e)
+        );
+      }
     }
     if (ctx.state === 'suspended') ctx.resume();
     return ctx;
@@ -944,7 +960,21 @@ export const useSoundStore = create((set, get) => ({
       ),
     })),
 
-  setAudioDevices: (devices) => set({ audioDevices: devices }),
+  setAudioDevices: (devices) => {
+    set({ audioDevices: devices });
+    // Tanca i elimina del registre els contextos de busos de color (cueCtxRegistry)
+    // els dispositius dels quals ja no existeixen a la nova llista. Els busos secundaris
+    // de cues no poden enviar so a un dispositiu desendollat; tancar-los és segur.
+    // No toquem el selectedDeviceId principal (té el seu propi context a audioContext).
+    const currentSelected = get().selectedDeviceId;
+    const availableIds = new Set(devices.map((d) => d.deviceId));
+    for (const [id, ctx] of cueCtxRegistry) {
+      if (!availableIds.has(id) && id !== currentSelected) {
+        ctx.close().catch(() => { /* ja tancat o sense permís */ });
+        cueCtxRegistry.delete(id);
+      }
+    }
+  },
 
   // ── Pre-decode ASIO (dispar instantani) ───────────────────────────────────
   // Demana a Rust que descodifiqui i deixi a la cau el PCM d'un cue que routeja
@@ -1571,6 +1601,9 @@ export const useSoundStore = create((set, get) => ({
       if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id, true);
     });
     get().stopPreview();
+    // Botó de pànic: atura també la música de fons (Playlist), perquè l'operador
+    // espera silenci total quan prem Stop All en directe.
+    get().playlistStop();
     // Negre a la sortida de vídeo (pànic: assegura pantalla negra encara que
     // cap cue de vídeo constés com a actiu)
     emitVideoBlack();

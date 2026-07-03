@@ -591,8 +591,34 @@ fn asio_mix_stream_voice(v: &mut StreamVoice, acc: &mut [Vec<f32>], buffer_size:
 //
 // NUCLI reutilitzable (feature `native`): la fa servir el motor ASIO; el backend
 // cpal encara descodifica directe (la cau de pre-decode hi arriba en l'increment 2).
+// Clau de la cau de PCM. Inclou la IDENTITAT DEL CONTINGUT del fitxer (mtime en
+// segons + mida en bytes) a més de la ruta i el rate del dispositiu. Motiu: si
+// l'usuari reemplaça el fitxer a disc (versió nova del tema, mateix nom/ruta), la
+// clau canvia i el GO descodifica la versió nova en lloc de servir el PCM VELL de
+// la cau fins que surti per LRU o es reiniciï l'app. Si el `stat` falla (fitxer
+// mogut, permisos), s'usa (0, 0) perquè segueixi funcionant (com abans, per ruta+rate).
 #[cfg(feature = "native")]
-type PcmKey = (String, u32);
+type PcmKey = (String, u32, u64, u64);
+
+// Construeix la clau de la cau fent `stat` del fitxer per capturar-ne mtime i mida.
+// S'ha d'usar EL MATEIX helper tant per inserir com per consultar, o mai hi hauria
+// HIT. Si el stat falla, (mtime, mida) = (0, 0): la cau segueix indexant per ruta+rate.
+#[cfg(feature = "native")]
+fn pcm_key(path: &str, rate: u32) -> PcmKey {
+    let (mtime, size) = match std::fs::metadata(path) {
+        Ok(m) => {
+            let mtime = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            (mtime, m.len())
+        }
+        Err(_) => (0, 0),
+    };
+    (path.to_string(), rate, mtime, size)
+}
 
 // Pressupost de memòria de la cau (~1,5 GB de PCM f32). En una màquina d'àudio
 // pro és assumible; acota cues molt llargs i evita créixer sense límit.
@@ -1622,7 +1648,9 @@ fn asio_play_voice_impl(
     };
 
     // Si el PCM ja és a la cau (p. ex. pre-carregat), registra la veu A L'INSTANT.
-    let key: PcmKey = (file_path.to_string(), sample_rate);
+    // La clau inclou mtime+mida (via `pcm_key`), així un fitxer reemplaçat a disc
+    // no serveix el PCM vell (fa MISS i re-descodifica la versió nova).
+    let key: PcmKey = pcm_key(file_path, sample_rate);
     if let Some(data) = cache.get(&key) {
         asio_build_and_push_voice(loaded, data, sample_rate, spec);
         return Ok(());
@@ -1655,7 +1683,7 @@ fn asio_preload_impl(
     // Necessitem la freqüència del driver per descodificar al rate definitiu.
     let info = asio_do_info(loaded, driver_name)?;
     let rate = info.sample_rate;
-    let key: PcmKey = (file_path.to_string(), rate);
+    let key: PcmKey = pcm_key(file_path, rate);
     if cache.get(&key).is_some() {
         return Ok(()); // ja a la cau
     }
@@ -1907,16 +1935,19 @@ fn asio_thread_main(rx: std::sync::mpsc::Receiver<AsioCmd>) {
                 let _ = reply.send(res);
             }
             AsioCmd::RegisterDecoded { file_path, rate, data, spec } => {
-                // Un fil de decode ha acabat: desa a la cau i registra la veu.
+                // Un fil de decode ha acabat: desa a la cau i registra la veu. La
+                // clau es construeix amb `pcm_key` (mateix helper que la consulta) per
+                // capturar mtime+mida i que un HIT posterior sigui coherent.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    cache.insert((file_path, rate), data.clone());
+                    cache.insert(pcm_key(&file_path, rate), data.clone());
                     asio_build_and_push_voice(&mut loaded, data, rate, spec);
                 }));
             }
             AsioCmd::CacheStore { file_path, rate, data } => {
-                // Pre-càrrega acabada en un fil: només desa el PCM a la cau.
+                // Pre-càrrega acabada en un fil: només desa el PCM a la cau (clau amb
+                // mtime+mida via `pcm_key`, coherent amb la consulta del GO posterior).
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    cache.insert((file_path, rate), data);
+                    cache.insert(pcm_key(&file_path, rate), data);
                 }));
             }
             AsioCmd::StopVoice { voice_id, fade_out, reply } => {
@@ -2129,7 +2160,9 @@ fn asio_set_master_gain(gain: f32) -> Result<(), String> {
     }
     #[cfg(feature = "asio")]
     {
-        ASIO_MASTER_GAIN.store(gain.max(0.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+        // Clamp a [0, 1.5]: harmonitza amb el límit de la UI (setAsioMasterGain).
+        // Sense el màxim, una crida directa o un valor corrupte rebentaria el bus.
+        ASIO_MASTER_GAIN.store(gain.max(0.0).min(1.5).to_bits(), std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 }
@@ -2221,6 +2254,30 @@ fn asio_loaded_info() -> Result<Option<AsioLoadedInfo>, String> {
             Err(_) => Err("Temps esgotat consultant el driver carregat.".into()),
         }
     }
+}
+
+// Alliberament d'ASIO en TANCAR l'app: envia `AsioCmd::Release` (que fa ASIOExit
+// via `asio_release_loaded`) al fil `asio-engine` amb una espera ACOTADA i CURTA
+// (2 s, com el shutdown natiu). NO usa la comanda pública `asio_release()`, que
+// espera 10 s (massa per a un tancament). Amb drivers USB ASIO delicats (MixPre),
+// sortir sense ASIOExit pot deixar el dispositiu segrestat o penjar el teardown.
+// Si el fil ASIO no s'ha arrencat mai (mai carregat cap driver), és un no-op: no
+// volem arrencar-lo just per tancar-lo. El timeout garanteix que no bloqueja el
+// tancament més enllà de 2 s encara que el driver es pengi.
+#[cfg(feature = "asio")]
+fn asio_release_on_close() {
+    // Només si el motor ASIO ja existeix; si no, res a alliberar.
+    let tx = match ASIO_TX.get() {
+        Some(t) => t,
+        None => return,
+    };
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    if tx.send(AsioCmd::Release { reply: reply_tx }).is_err() {
+        return; // el fil ja no hi és
+    }
+    // Espera acotada a 2 s: si el driver es pengia alliberant, el procés sortirà
+    // igualment (l'exit(0) posterior no depèn d'aquesta resposta).
+    let _ = reply_rx.recv_timeout(std::time::Duration::from_secs(2));
 }
 
 #[tauri::command]
@@ -2521,6 +2578,11 @@ pub fn run() {
             use tauri::Manager;
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if window.label() == "main" {
+                    // Allibera també el driver ASIO (ASIOExit) abans de sortir: amb
+                    // drivers USB delicats, sortir sense alliberar pot deixar el
+                    // dispositiu segrestat o penjar el teardown. Espera acotada a 2 s.
+                    #[cfg(feature = "asio")]
+                    asio_release_on_close();
                     #[cfg(feature = "native")]
                     let _ = native_output::shutdown();
                     window.app_handle().exit(0);
