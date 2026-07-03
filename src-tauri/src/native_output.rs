@@ -1145,36 +1145,37 @@ fn native_stop_voice_impl(
 ) -> Result<(), String> {
     for b in backends.values() {
         let sr = b.sample_rate as f32;
-        let rel = (fade_out.max(0.0) * sr) as usize;
+        // Declick: un stop "sec" (fade_out=0) aplica una rampa de release mínima
+        // (DECLICK_MS) en lloc de treure la veu a mitja mostra (clic). El nucli del
+        // mix marca `finished` i atura el fil de decode en completar la rampa.
+        let declick = (crate::DECLICK_MS / 1000.0 * sr) as usize;
+        let rel = ((fade_out.max(0.0) * sr) as usize).max(declick).max(1);
         if let Ok(mut vs) = b.voices.lock() {
-            if fade_out > 0.0 {
-                for v in vs.iter_mut() {
-                    if v.voice_id == voice_id && v.release_from.is_none() {
-                        v.release_from = Some(v.seg_pos());
-                        v.release_len = rel.max(1);
-                        v.loop_on = false; // un release acaba la veu encara que fes loop
-                    }
+            for v in vs.iter_mut() {
+                if v.voice_id == voice_id && v.release_from.is_none() && !v.paused {
+                    v.release_from = Some(v.seg_pos());
+                    v.release_len = rel;
+                    v.loop_on = false; // un release acaba la veu encara que fes loop
                 }
-            } else {
-                vs.retain(|v| v.voice_id != voice_id);
             }
+            // Una veu PAUSADA no avança al mix: no se li pot aplicar la rampa. Treu-la
+            // de cop, com abans (el frontend ja l'ha marcada aturada).
+            vs.retain(|v| !(v.voice_id == voice_id && v.paused));
         }
-        // Veus en streaming: release amb fade (sobre played_out, frames de sortida),
-        // o atura el fil i elimina si fade 0. Mateix patró que el camí ASIO.
+        // Veus en streaming: release amb fade (o rampa mínima de declick si stop sec).
+        // No aturem el fil aquí: el mix ho farà en completar la rampa.
         if let Ok(mut svs) = b.stream_voices.lock() {
-            if fade_out > 0.0 {
-                for sv in svs.iter_mut() {
-                    if sv.voice_id == voice_id && sv.release_from.is_none() {
-                        sv.release_from = Some(sv.played_out);
-                        sv.release_len = rel.max(1);
-                    }
+            for sv in svs.iter_mut() {
+                if sv.voice_id == voice_id && sv.release_from.is_none() && !sv.paused {
+                    sv.release_from = Some(sv.played_out);
+                    sv.release_len = rel;
                 }
-            } else {
-                for sv in svs.iter().filter(|x| x.voice_id == voice_id) {
-                    sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                svs.retain(|sv| sv.voice_id != voice_id);
             }
+            // Pausada: atura el fil descodificador i treu-la de cop (no pot fer rampa).
+            for sv in svs.iter().filter(|x| x.voice_id == voice_id && x.paused) {
+                sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            svs.retain(|sv| !(sv.voice_id == voice_id && sv.paused));
         }
     }
     Ok(())

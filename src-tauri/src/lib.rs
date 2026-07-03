@@ -332,6 +332,13 @@ fn play_test_tone(
 // Punts d'inici/stop i fades es porten en MOSTRES (frames) a la freqüència del
 // driver, perquè el callback no hagi de fer cap conversió de temps.
 //
+// Declick global del motor natiu (P3): fins i tot un stop "sec" (fade_out=0)
+// aplica una rampa de release d'aquesta durada mínima per evitar un tall a mitja
+// mostra (clic) — igual que el declick per defecte de QLab. ~5 ms és inaudible en
+// timing però suficient per eliminar la discontinuïtat. El comparteixen el camí
+// ASIO (lib.rs) i el backend cpal (native_output.rs) via `crate::DECLICK_MS`.
+pub(crate) const DECLICK_MS: f32 = 5.0;
+
 // NUCLI reutilitzable (feature `native`): tant el callback ASIO com el backend
 // cpal mesclen aquestes veus amb `asio_mix_voice`. Els camps i la semàntica són
 // independents del backend de sortida (els "out_channels" són índexs de canal de
@@ -1714,35 +1721,38 @@ fn asio_stop_voice_impl(
         None => return Ok(()),
     };
     let sr = mix.sample_rate as f32;
-    let rel = (fade_out.max(0.0) * sr) as usize;
+    // Declick: fins i tot un stop "sec" (fade_out=0) aplica una rampa de release
+    // mínima (DECLICK_MS) en lloc de treure la veu a mitja mostra (clic). El nucli
+    // del mix marca `finished` i atura el fil de decode en completar la rampa.
+    let declick = (crate::DECLICK_MS / 1000.0 * sr) as usize;
+    let rel = ((fade_out.max(0.0) * sr) as usize).max(declick).max(1);
     if let Ok(mut voices) = mix.voices.lock() {
-        if fade_out > 0.0 {
-            for v in voices.iter_mut() {
-                if v.voice_id == voice_id && v.release_from.is_none() {
-                    v.release_from = Some(v.seg_pos());
-                    v.release_len = rel.max(1);
-                    v.loop_on = false; // un release acaba la veu encara que fes loop
-                }
+        for v in voices.iter_mut() {
+            if v.voice_id == voice_id && v.release_from.is_none() && !v.paused {
+                v.release_from = Some(v.seg_pos());
+                v.release_len = rel;
+                v.loop_on = false; // un release acaba la veu encara que fes loop
             }
-        } else {
-            voices.retain(|v| v.voice_id != voice_id);
         }
+        // Una veu PAUSADA no avança al mix: no se li pot aplicar la rampa (quedaria
+        // encallada). Treu-la de cop, com abans (el frontend ja l'ha marcada aturada).
+        voices.retain(|v| !(v.voice_id == voice_id && v.paused));
     }
-    // Veus en streaming: release amb fade, o atura el fil i elimina si fade 0.
+    // Veus en streaming: release amb fade (o rampa mínima de declick si stop sec).
+    // No aturem el fil aquí: el mix ho farà en completar la rampa (té prou mostres
+    // al ring per als ~5 ms de release).
     if let Ok(mut svs) = mix.stream_voices.lock() {
-        if fade_out > 0.0 {
-            for sv in svs.iter_mut() {
-                if sv.voice_id == voice_id && sv.release_from.is_none() {
-                    sv.release_from = Some(sv.played_out);
-                    sv.release_len = rel.max(1);
-                }
+        for sv in svs.iter_mut() {
+            if sv.voice_id == voice_id && sv.release_from.is_none() && !sv.paused {
+                sv.release_from = Some(sv.played_out);
+                sv.release_len = rel;
             }
-        } else {
-            for sv in svs.iter().filter(|x| x.voice_id == voice_id) {
-                sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            svs.retain(|sv| sv.voice_id != voice_id);
         }
+        // Pausada: atura el fil descodificador i treu-la de cop (no pot fer rampa).
+        for sv in svs.iter().filter(|x| x.voice_id == voice_id && x.paused) {
+            sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        svs.retain(|sv| !(sv.voice_id == voice_id && sv.paused));
     }
     Ok(())
 }
