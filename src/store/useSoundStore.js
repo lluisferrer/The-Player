@@ -23,6 +23,10 @@ import { isAsioTarget, resolveCueTargetStr, parseTarget } from '../lib/outputTar
 import { clearAsioTelemetry, asioPosition } from '../lib/asioTelemetry';
 import { PREVIEW_VOICE_ID } from '../lib/asioIds';
 import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVideoSeek, emitVideoIdlePattern, startVideoResync, stopVideoResync } from '../lib/videoOutput';
+// P5: la persistència a localStorage viu en un slice a part (primer pas de la
+// divisió del store). El loader inicial es queda aquí sota (s'executa abans de
+// crear el store).
+import { createPersistenceSlice } from './slices/persistence';
 
 // Constructor d'AudioContext amb fallback amb prefix: el WKWebView de macOS Mojave
 // (Safari 12) NOMÉS exposa webkitAudioContext; el nom sense prefix no va arribar
@@ -73,10 +77,10 @@ const createEmptySlot = (id) => ({
   missing: false,
 });
 
-// Versió de l'esquema de persistència dels slots. v2 introdueix el fade com a
-// override nullable (null = segueix el global; 0 = tall sec explícit). Abans, 0
-// volia dir "segueix el global", per això migrem els 0 antics a null.
-const SLOTS_SCHEMA = 2;
+// Esquema v2 dels slots persistits: el fade és un override nullable (null =
+// segueix el global; 0 = tall sec explícit). Abans, 0 volia dir "segueix el
+// global", per això migrem els 0 antics a null. (El número de versió que s'escriu
+// viu ara al slice de persistència, SLOTS_SCHEMA.)
 const loadPersistedSlots = () => {
   try {
     const saved = localStorage.getItem('the-player-slots');
@@ -171,6 +175,8 @@ let _notifSeq = 0;
 const MAX_NOTIFICATIONS = 5;
 
 export const useSoundStore = create((set, get) => ({
+  // P5: slice de persistència (persistGlobals/persistSlots/persistPlaylist).
+  ...createPersistenceSlice(get),
   slots: initialSlots,
 
   // ── Notificacions efímeres (P1: contracte d'errors motor→UI) ──
@@ -283,22 +289,7 @@ export const useSoundStore = create((set, get) => ({
     return ctx;
   },
 
-  persistGlobals: () => {
-    const {
-      globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
-      useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
-      nativePreviewDeviceName, nativePreviewChannels, separateVideoAudio,
-    } = get();
-    localStorage.setItem('the-player-globals', JSON.stringify({
-      globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist,
-      cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
-      colorOutputs,
-      duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
-      useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
-      nativePreviewDeviceName, nativePreviewChannels, separateVideoAudio,
-    }));
-  },
+  // persistGlobals / persistSlots / persistPlaylist → slice de persistència (P5).
 
   // Recorda si la sortida de vídeo està oberta (persistència de sessió).
   setVideoOutputOpen: (open) => {
@@ -796,13 +787,6 @@ export const useSoundStore = create((set, get) => ({
   setViewMode: (viewMode) => set({ viewMode }),
 
   // ── Accions de la Playlist ──
-  persistPlaylist: () => {
-    const { playlist, crossfade, playlistRepeatMode, playlistShuffle, playlistVolume } = get();
-    localStorage.setItem('the-player-playlist', JSON.stringify({
-      tracks: playlist, crossfade, repeatMode: playlistRepeatMode, shuffle: playlistShuffle, volume: playlistVolume,
-    }));
-  },
-
   addPlaylistTracks: (items) => {
     set((state) => ({
       playlist: [
@@ -2134,30 +2118,6 @@ export const useSoundStore = create((set, get) => ({
       ),
     }));
     get().persistSlots();
-  },
-
-  persistSlots: () => {
-    const { slots } = get();
-    const data = slots.map((s) => ({
-      label: s.label,
-      filePath: s.filePath,
-      mediaType: s.mediaType,
-      isStreaming: s.isStreaming,
-      streamDuration: s.streamDuration,
-      volume: s.volume,
-      loop: s.loop,
-      color: s.color,
-      stopOthers: s.stopOthers,
-      duck: s.duck,
-      stopPlaylist: s.stopPlaylist,
-      startPoint: s.startPoint,
-      stopPoint: s.stopPoint,
-      fadeIn: s.fadeIn,
-      fadeOut: s.fadeOut,
-      preWait: s.preWait,
-      continueMode: s.continueMode,
-    }));
-    localStorage.setItem('the-player-slots', JSON.stringify({ v: SLOTS_SCHEMA, slots: data }));
   },
 
   // ── Exportació / importació de sessió completa (P2 — Show file) ─────────────
