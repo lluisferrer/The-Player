@@ -112,6 +112,14 @@ const savedPlaylist = loadPlaylist();
 let plNextId = 1;
 let previewSource = null; // font activa del bus de preview (a nivell de mòdul)
 let previewSeq = 0;       // comptador per a un voice id ASIO nou a cada preview
+// P7: debounce del preload predictiu del standby (evita disparar decodes en cada
+// pas de fletxa quan es navega ràpid pel grid). Programa una escalfada del standby
+// ~250 ms després de l'últim moviment de selecció.
+let preloadStandbyTimer = null;
+const scheduleStandbyPreload = (get) => {
+  if (preloadStandbyTimer) clearTimeout(preloadStandbyTimer);
+  preloadStandbyTimer = setTimeout(() => { preloadStandbyTimer = null; get().preloadStandby(); }, 250);
+};
 // Timers pendents de la seqüència GO (pre-wait i encadenament auto-continue).
 // A nivell de mòdul perquè els puguem cancel·lar des de stopAll o d'un GO nou.
 const goTimers = new Set();
@@ -1030,6 +1038,10 @@ export const useSoundStore = create((set, get) => ({
     for (const s of get().slots) {
       if (s.filePath) get().preloadAsioSlot(s.id);
     }
+    // P7: toca el standby l'ÚLTIM perquè quedi el més recent a la cau LRU (si el
+    // pressupost s'ha superat amb tants cues, el que dispararà el proper GO no
+    // ha de ser el primer a desallotjar-se).
+    get().preloadStandby();
   },
 
   // ── Pre-decode motor NATIU cpal (dispar instantani) ───────────────────────
@@ -1059,6 +1071,28 @@ export const useSoundStore = create((set, get) => ({
     if (!get().useNativeCueEngine) return;
     for (const s of get().slots) {
       if (s.filePath) get().preloadNativeSlot(s.id);
+    }
+    // P7: toca el standby l'últim (protecció LRU; vegeu preloadAllAsioCues).
+    get().preloadStandby();
+  },
+
+  // P7 — Preload predictiu del standby. Manté descodificats a la cau del motor el
+  // cue en standby (el que dispararà el proper GO) i els dos cues carregats
+  // següents, perquè el GO no pateixi la latència de descodificar encara que un
+  // show gran hagi desallotjat entrades per LRU. Idempotent i barat: si el PCM ja
+  // és a la cau, el motor no torna a descodificar (només toca l'LRU). Cobreix els
+  // dos motors natius (ASIO i cpal); preloadAsioSlot/preloadNativeSlot ja filtren
+  // per routing, streaming i tipus de mèdia, així que és segur cridar-los tots dos.
+  preloadStandby: () => {
+    const { slots, selectedSlot } = get();
+    const ids = [];
+    for (let id = selectedSlot || 1; id <= slots.length && ids.length < 3; id++) {
+      const s = slots.find((x) => x.id === id);
+      if (s && hasClip(s) && s.filePath) ids.push(id);
+    }
+    for (const sid of ids) {
+      get().preloadAsioSlot(sid);
+      get().preloadNativeSlot(sid);
     }
   },
 
@@ -1571,7 +1605,10 @@ export const useSoundStore = create((set, get) => ({
     }));
   },
 
-  setSelectedSlot: (slotId) => set({ selectedSlot: slotId }),
+  setSelectedSlot: (slotId) => {
+    set({ selectedSlot: slotId });
+    scheduleStandbyPreload(get); // P7: escalfa el standby (debounce)
+  },
 
   // Canvia de pàgina (conserva la posició del cursor dins la graella)
   setPage: (n) => {
@@ -1589,6 +1626,7 @@ export const useSoundStore = create((set, get) => ({
       let id = (selectedSlot || 1) + (dir === 'right' ? 1 : -1);
       id = Math.max(1, Math.min(NUM_SLOTS, id));
       set({ selectedSlot: id, currentPage: Math.floor((id - 1) / SLOTS_PER_PAGE) });
+      scheduleStandbyPreload(get); // P7
       return;
     }
     const base = currentPage * SLOTS_PER_PAGE;
@@ -1597,6 +1635,7 @@ export const useSoundStore = create((set, get) => ({
     if (dir === 'up' && row > 0) local -= 8;
     if (dir === 'down' && row < 3) local += 8;
     set({ selectedSlot: base + local + 1 });
+    scheduleStandbyPreload(get); // P7
   },
 
   // Mou la selecció al cue carregat anterior/següent, dins la pàgina activa
@@ -1606,7 +1645,7 @@ export const useSoundStore = create((set, get) => ({
     let id = (selectedSlot || 1) + delta;
     while (id >= base + 1 && id <= base + SLOTS_PER_PAGE) {
       const s = slots.find((x) => x.id === id);
-      if (s && hasClip(s)) { set({ selectedSlot: id }); return; }
+      if (s && hasClip(s)) { set({ selectedSlot: id }); scheduleStandbyPreload(get); return; }
       id += delta;
     }
   },
@@ -1724,6 +1763,9 @@ export const useSoundStore = create((set, get) => ({
     if (!next) return null;
     const page = Math.floor((next.id - 1) / SLOTS_PER_PAGE);
     set({ selectedSlot: next.id, currentPage: page });
+    // P7: el standby ha avançat (flux de GO) → escalfa el nou standby i veïns ara
+    // mateix, que és el que és MÉS probable que soni tot seguit.
+    get().preloadStandby();
     return next.id;
   },
 
