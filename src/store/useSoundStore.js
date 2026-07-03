@@ -27,6 +27,7 @@ import { emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume, emitVide
 // divisió del store). El loader inicial es queda aquí sota (s'executa abans de
 // crear el store).
 import { createPersistenceSlice } from './slices/persistence';
+import { createVideoSlice } from './slices/video';
 
 // Constructor d'AudioContext amb fallback amb prefix: el WKWebView de macOS Mojave
 // (Safari 12) NOMÉS exposa webkitAudioContext; el nom sense prefix no va arribar
@@ -177,6 +178,8 @@ const MAX_NOTIFICATIONS = 5;
 export const useSoundStore = create((set, get) => ({
   // P5: slice de persistència (persistGlobals/persistSlots/persistPlaylist).
   ...createPersistenceSlice(get),
+  // P5: slice de vídeo (setVideoOutputOpen/setVideoMonitorName/setVideoIdlePattern/setSeparateVideoAudio/seekVideo/handleVideoEnded/clearVideoCues).
+  ...createVideoSlice(set, get),
   slots: initialSlots,
 
   // ── Notificacions efímeres (P1: contracte d'errors motor→UI) ──
@@ -291,11 +294,8 @@ export const useSoundStore = create((set, get) => ({
 
   // persistGlobals / persistSlots / persistPlaylist → slice de persistència (P5).
 
-  // Recorda si la sortida de vídeo està oberta (persistència de sessió).
-  setVideoOutputOpen: (open) => {
-    set({ videoOutputOpen: !!open });
-    get().persistGlobals();
-  },
+  // setVideoOutputOpen / setVideoMonitorName / setVideoIdlePattern / setSeparateVideoAudio
+  // seekVideo / handleVideoEnded / clearVideoCues → slice de vídeo (P5).
 
   // Increment 3 (experimental): activa/desactiva el motor natiu cpal per a cues
   // de ruta WASAPI. Es desa als globals; default APAGAT.
@@ -426,24 +426,6 @@ export const useSoundStore = create((set, get) => ({
     set({ nativePreviewChannels: Array.isArray(channels) ? channels : [] });
     get().persistGlobals();
   },
-
-  // Monitor predeterminat de la finestra de sortida de vídeo (per nom; null = auto).
-  // Es desa als globals i s'aplica la pròxima vegada que s'obri la finestra.
-  setVideoMonitorName: (name) => {
-    set({ videoMonitorName: name || null });
-    get().persistGlobals();
-  },
-
-  // Patró de la pantalla de blackout ('black' | 'bars' | 'testcard'). Es desa i
-  // s'emet a la finestra de sortida perquè el canvi s'apliqui en calent.
-  setVideoIdlePattern: (pattern) => {
-    const p = ['black', 'bars', 'testcard'].includes(pattern) ? pattern : 'black';
-    set({ videoIdlePattern: p });
-    get().persistGlobals();
-    emitVideoIdlePattern(p);
-  },
-
-  setSeparateVideoAudio: (on) => { set({ separateVideoAudio: !!on }); get().persistGlobals(); },
 
   // Marca/desmarca un dispositiu WASAPI com a "Usar" (curació del pool de Routing).
   // Llista buida = tots actius; en desmarcar el primer, materialitza la llista
@@ -913,21 +895,6 @@ export const useSoundStore = create((set, get) => ({
   },
   // Salta a una fracció (0..1) de la pista que sona ara
   playlistSeek: (fraction) => (get().plIsAsio() ? plaSeek(get, fraction) : get().plIsNative() ? plnSeek(get, fraction) : plSeek(get, fraction)),
-
-  // Salta un cue de vídeo en reproducció a "elapsed" segons dins el segment.
-  // Emet el seek a la sortida i ajusta startedAt perquè el playhead del tile hi quadri.
-  seekVideo: (slotId, elapsed) => {
-    const slot = get().slots.find((s) => s.id === slotId);
-    if (!slot || !isVideo(slot) || !slot.isPlaying) return;
-    const segDur = Math.max(0, (slot.stopPoint != null ? slot.stopPoint : (slot.streamDuration || 0)) - (slot.startPoint || 0));
-    const e = Math.max(0, segDur > 0 ? Math.min(elapsed, segDur) : elapsed);
-    emitVideoSeek((slot.startPoint || 0) + e);
-    set((state) => ({
-      slots: state.slots.map((s) =>
-        s.id === slotId ? { ...s, startedAt: performance.now() / 1000 - e } : s
-      ),
-    }));
-  },
 
   setEditingSlot: (slotId) => set({ editingSlot: slotId }),
 
@@ -1693,49 +1660,6 @@ export const useSoundStore = create((set, get) => ({
       ),
       activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
     }));
-  },
-
-  // La finestra de sortida informa que un cue de vídeo ha acabat sol: reseteja
-  // el seu estat perquè el tile/transport deixin de marcar-lo com a actiu.
-  handleVideoEnded: (slotId) => {
-    // El cue de vídeo ha acabat (final natural, stopPoint o stop): deixa de
-    // duckejar (idempotent) abans de resetejar el seu estat.
-    const cur = get().slots.find((s) => s.id === slotId);
-    if (cur && cur.mediaType === 'video' && cur.duck) duckRemove(get, slotId);
-    // 4c separat: si la imatge ha acabat, atura també l'àudio del motor i el resync.
-    if (cur && cur.videoSeparated) {
-      invoke('native_stop_voice', { voiceId: slotId, fadeOut: 0 }).catch(() => {});
-      stopVideoResync();
-      clearAsioTelemetry(slotId);
-    }
-    set((state) => ({
-      slots: state.slots.map((s) =>
-        s.id === slotId && s.mediaType === 'video' ? { ...s, isPlaying: false, pausedAt: null, videoSeparated: false } : s
-      ),
-      activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
-    }));
-  },
-
-  // Reseteja l'estat de tots els cues de vídeo (p. ex. en tancar la finestra de
-  // sortida amb la X o pel botó): evita que quedin marcats com a reproduint.
-  clearVideoCues: () => {
-    // Deixa de duckejar qualsevol cue de vídeo actiu (idempotent)
-    get().slots.forEach((s) => {
-      if (s.mediaType === 'video' && (s.isPlaying || s.pausedAt != null) && s.duck) {
-        duckRemove(get, s.id);
-      }
-    });
-    set((state) => {
-      let activeSlot = state.activeSlot;
-      const slots = state.slots.map((s) => {
-        if (s.mediaType === 'video' && (s.isPlaying || s.pausedAt != null)) {
-          if (activeSlot === s.id) activeSlot = null;
-          return { ...s, isPlaying: false, pausedAt: null };
-        }
-        return s;
-      });
-      return { slots, activeSlot };
-    });
   },
 
   // Avança el standby al següent cue carregat (per id), travessant pàgines.
