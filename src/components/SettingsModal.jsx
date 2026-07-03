@@ -68,10 +68,11 @@ function OutputSelect({ id, value, onChange, audioDevices, asioOptions, defaultV
 // que, per algun motiu, no es pintaven en aquest context del modal).
 const DIAG_LIST_STYLE = { display: 'flex', flexDirection: 'column', gap: 6 };
 
-// Una fila del diagnòstic d'àudio (un dispositiu WASAPI o un driver ASIO).
-// Per ASIO, `info` (si està carregat = ACTIU) porta {outs, sample_rate}; `onLoad`
-// el carrega ("Usar") i `onRelease` l'allibera ("Deixar d'usar").
-function DiagRow({ o, onTone, info, onLoad, onRelease }) {
+// Una fila del diagnòstic d'àudio (un dispositiu WASAPI o el driver ASIO connectat).
+// Per ASIO, `info` (present = driver connectat) porta {outs, sample_rate} i mostra
+// els botons de test tone per canal, igual que WASAPI/CoreAudio. La connexió/
+// desconnexió es fa des del desplegable de driver, no des d'aquí.
+function DiagRow({ o, onTone, info }) {
   const isAsio = o.host === 'ASIO';
   return (
     <div style={{
@@ -103,21 +104,13 @@ function DiagRow({ o, onTone, info, onLoad, onRelease }) {
         info ? (
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5 }}>
             <span style={{ fontSize: 10, color: 'var(--vu-green)', fontWeight: 600, marginRight: 4 }}>
-              ✓ IN USE · {info.outs} ch · {info.sample_rate} Hz · tone:
+              ✓ Connected · {info.outs} ch · {info.sample_rate} Hz · tone:
             </span>
             {Array.from({ length: info.outs }, (_, c) => (
               <button key={c} className="diag-tone-btn" onClick={() => onTone(o.host, o.name, c)}>{c + 1}</button>
             ))}
-            {onRelease && (
-              <button className="diag-detect-btn" style={{ margin: '0 0 0 6px' }} onClick={onRelease}>Release</button>
-            )}
           </div>
-        ) : (
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-            <button className="diag-detect-btn" style={{ margin: 0 }} onClick={() => onLoad(o.name)}>Use</button>
-            <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>loads the driver (exclusive: one ASIO at a time)</span>
-          </div>
-        )
+        ) : null
       ) : o.max_channels > 0 ? (
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5 }}>
           <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginRight: 4 }}>Test tone:</span>
@@ -292,6 +285,17 @@ export function SettingsModal({ onClose }) {
     }
   };
 
+  // Driver ASIO carregat ARA MATEIX (com a molt un, per l'exclusivitat del host).
+  // El selector únic el fa servir com a valor; buit = cap driver connectat.
+  const loadedAsioName = Object.keys(asioInfo)[0] || '';
+  // Selecció d'un sol driver ASIO des del desplegable: triar-ne un carrega el nou
+  // (asio_load ja allibera l'anterior); "None" (buit) els desconnecta tots. Així no
+  // calen botons Use/Release separats.
+  const selectAsioDriver = (name) => {
+    if (name === loadedAsioName) return; // cap canvi
+    if (!name) releaseAsio(); else loadAsio(name);
+  };
+
   // En obrir la pestanya Dispositius, detecta els ASIO automàticament (llegeix els
   // noms del registre, sense carregar cap driver: ràpid i segur).
   useEffect(() => {
@@ -356,18 +360,47 @@ export function SettingsModal({ onClose }) {
                 {audioDevices.length === 0 && <div className="library-empty">No WASAPI devices.</div>}
               </div>
 
-              <div className="settings-subtitle">ASIO drivers (low latency)</div>
+              <div className="settings-subtitle">ASIO driver (low latency)</div>
+              <div className="settings-note">
+                Only <b>one</b> ASIO driver can be active at a time (exclusive access).
+                Pick one to connect it — switching disconnects the previous one; choose
+                <b> None</b> to disconnect.
+              </div>
               {asioMsg && <div className="diag-error">⚠ {asioMsg}</div>}
-              {asioOut === null && <div className="library-empty">Detecting ASIO devices…</div>}
-              <div style={DIAG_LIST_STYLE}>
-                {asioOut && asioOut.map((o, i) => (
-                  <DiagRow key={`asio-${i}`} o={o} onTone={tone} info={asioInfo[o.name]} onLoad={loadAsio} onRelease={releaseAsio} />
-                ))}
-                {asioOut && asioOut.length === 0 && <div className="library-empty">No ASIO drivers.</div>}
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
-                <button className="diag-detect-btn" onClick={detectAsio}>Detect again</button>
-              </div>
+              {asioOut === null ? (
+                <div className="library-empty">Detecting ASIO devices…</div>
+              ) : asioOut.length === 0 ? (
+                <div className="library-empty">No ASIO drivers found.</div>
+              ) : (
+                <div className="settings-row">
+                  <label htmlFor="asio-driver">Driver</label>
+                  <select
+                    id="asio-driver"
+                    value={loadedAsioName}
+                    onChange={(e) => selectAsioDriver(e.target.value)}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="">None (disconnected)</option>
+                    {asioOut.map((o) => (
+                      <option key={o.name} value={o.name}>{o.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {loadedAsioName && asioInfo[loadedAsioName] && (
+                <div style={{ ...DIAG_LIST_STYLE, marginTop: 6 }}>
+                  <DiagRow
+                    o={{
+                      host: 'ASIO',
+                      name: loadedAsioName,
+                      max_channels: asioInfo[loadedAsioName].outs,
+                      default_sample_rate: asioInfo[loadedAsioName].sample_rate,
+                    }}
+                    onTone={tone}
+                    info={asioInfo[loadedAsioName]}
+                  />
+                </div>
+              )}
 
               <div className="settings-subtitle">ASIO master volume</div>
               <div className="settings-row">
