@@ -1633,9 +1633,9 @@ export const useSoundStore = create((set, get) => ({
       if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id, true);
     });
     get().stopPreview();
-    // Botó de pànic: atura també la música de fons (Playlist), perquè l'operador
-    // espera silenci total quan prem Stop All en directe.
-    get().playlistStop();
+    // NOTA: el Stop All dels cues (Esc a la vista de cues) NO atura la Playlist:
+    // la música de fons no forma part del pànic dels cues. La Playlist té el seu
+    // propi Stop (Esc a la vista de Playlist). [Revertit M7 a petició de l'usuari.]
     // Negre a la sortida de vídeo (pànic: assegura pantalla negra encara que
     // cap cue de vídeo constés com a actiu)
     emitVideoBlack();
