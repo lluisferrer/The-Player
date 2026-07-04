@@ -1441,7 +1441,7 @@ body {
 .editor-panel {
   width: 100%;
   max-width: 760px;
-  background: var(--bg-button); /* mateix gris que els cues (i s'adapta al tema Dia) */
+  background: var(--bg-primary); /* mateix fons que la superfície on seuen els tiles (s'adapta al tema) */
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 18px;
