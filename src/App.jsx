@@ -13,7 +13,7 @@ import { PlaylistSave } from './components/PlaylistSave';
 import { SettingsModal } from './components/SettingsModal';
 import { Toast } from './components/Toast';
 import { slotForKey } from './lib/keyMap';
-import { hasClip } from './lib/slotAudio';
+import { hasClip, isVideo } from './lib/slotAudio';
 import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow } from './lib/videoOutput';
 import { listen } from '@tauri-apps/api/event';
 import { applyAsioTelemetry } from './lib/asioTelemetry';
@@ -218,6 +218,13 @@ export default function App() {
           if (id == null) return;
           console.warn('[asio-voice-failed] voice', id, '-', p.message);
           const st = useSoundStore.getState();
+          // Vídeo sense pista d'àudio (o àudio no descodificable): el motor és
+          // best-effort; la imatge es reprodueix pel seu camí (finestra de sortida /
+          // <video> del tile). No és un error per a l'operador i NO s'ha de desmuntar
+          // la reproducció ni el preview.
+          const targetId = id === st.previewVoiceId ? st.previewingSlot : id;
+          const failedSlot = st.slots.find((s) => s.id === targetId);
+          if (failedSlot && isVideo(failedSlot)) return;
           // P1: fa l'error visible a l'operador (ningú mira la consola en un show)
           st.pushNotification({ type: 'error', message: p.message || 'Audio engine error (ASIO)' });
           // Mateix ordre que `asio-voice-ended`: el preview (voice id rotatiu, no és
@@ -278,6 +285,12 @@ export default function App() {
           if (id == null) return;
           console.warn('[native-voice-failed] voice', id, '-', p.message);
           const st = useSoundStore.getState();
+          // Vídeo sense pista d'àudio (o àudio no descodificable): benigne (vegeu el
+          // handler asio-voice-failed). La imatge es reprodueix igualment; ni toast ni
+          // desmuntatge de la reproducció / preview.
+          const targetId = id === st.previewVoiceId ? st.previewingSlot : id;
+          const failedSlot = st.slots.find((s) => s.id === targetId);
+          if (failedSlot && isVideo(failedSlot)) return;
           // P1: fa l'error visible a l'operador (ningú mira la consola en un show)
           st.pushNotification({ type: 'error', message: p.message || 'Audio engine error (native)' });
           // Mateix ordre que `native-voice-ended`: el preview (voice id rotatiu) es
