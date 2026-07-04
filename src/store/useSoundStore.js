@@ -167,6 +167,12 @@ export const useSoundStore = create((set, get) => ({
   duckRelease: savedGlobals.duckRelease ?? 0.8,     // temps (s) de recuperació quan no queda cap cue de duck
   duckHold: savedGlobals.duckHold ?? 0,             // espera (s) abans de recuperar (0 = immediat)
   viewMode: 'grid',        // 'grid' (botonera 8×4) | 'list' (llista de files)
+  // Mode global EDIT/LIVE (com el Show Mode de QLab). En LIVE es bloqueja tota
+  // mutació d'estructura/config (editar/moure/esborrar tiles, carregar fitxers,
+  // editar la playlist, seek, canvis a Settings) i es mantenen les accions de
+  // control (disparar, Stop/panic, pausa, volum, preview). NO es persisteix:
+  // l'app arrenca SEMPRE en 'edit' (primer muntes, després passes a Live).
+  appMode: 'edit',         // 'edit' | 'live'
   editingSlot: null,       // id del slot obert a l'editor (o null)
   dragOverSlot: null,      // id del slot sota un drag&drop natiu de FITXERS (o null)
   draggingSlot: null,      // id del tile que s'està reorganitzant (pointer drag intern)
@@ -248,6 +254,7 @@ export const useSoundStore = create((set, get) => ({
   // setPreviewArmed / previewSlot / stopPreview / previewEnded / ensurePreviewCtx → slice de preview (P5).
 
   setViewMode: (viewMode) => set({ viewMode }),
+  setAppMode: (appMode) => set({ appMode: appMode === 'live' ? 'live' : 'edit' }),
 
   // addPlaylistTracks / removePlaylistTrack / movePlaylistTrack / clearPlaylist /
   // loadPlaylistKeepPlaying / plIsAsio / plIsNative / setCrossfade / cyclePlaylistRepeat /

@@ -59,6 +59,18 @@ body {
   min-width: 900px;
 }
 
+/* Mode LIVE (Show Mode, tipus QLab): fil de vora vermella a tota l'app + badge
+   vermell a la capçalera. Recorda a l'operador que l'edició està bloquejada. */
+.app.live-mode {
+  box-shadow: inset 0 0 0 2px var(--vu-red);
+}
+.mode-lock-btn.live {
+  background: var(--vu-red);
+  border-color: var(--vu-red);
+  color: #fff;
+  font-weight: 700;
+}
+
 /* ─── HEADER ─── */
 
 .app-header {

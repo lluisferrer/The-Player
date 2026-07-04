@@ -38,6 +38,7 @@ export function SoundButton({ slotId }) {
   const endTileDrag    = useSoundStore((s) => s.endTileDrag);
   const reorderSlots   = useSoundStore((s) => s.reorderSlots);
   const insertSlotContent = useSoundStore((s) => s.insertSlotContent);
+  const isLive         = useSoundStore((s) => s.appMode === 'live'); // LIVE: edició bloquejada
   const { loadFromPath } = useAudioEngine();
 
   const [showHover, setShowHover]   = useState(false);
@@ -173,6 +174,7 @@ export function SoundButton({ slotId }) {
   const handleVideoPlayheadDown = (e) => {
     e.stopPropagation();
     e.preventDefault();
+    if (isLive) return; // LIVE: seek bloquejat
     suppressClickRef.current = true; // evita que el click post-drag aturi el cue
     setVidSeeking(true);
   };
@@ -274,6 +276,7 @@ export function SoundButton({ slotId }) {
   // Clic dret: obre el selector natiu de fitxers (retorna la ruta)
   const handleContextMenu = async (e) => {
     e.preventDefault();
+    if (isLive) return; // LIVE: carregar fitxers és una mutació
     try {
       const path = await open({
         multiple: false,
@@ -299,11 +302,13 @@ export function SoundButton({ slotId }) {
 
   const handleEdit = (e) => {
     e.stopPropagation();
+    if (isLive) return;
     setEditingSlot(slotId);
   };
 
   const handleDelete = (e) => {
     e.stopPropagation();
+    if (isLive) return;
     clearSlot(slotId);
   };
 
@@ -315,6 +320,7 @@ export function SoundButton({ slotId }) {
   const handlePlayheadDown = (e) => {
     e.stopPropagation();
     e.preventDefault();
+    if (isLive) return; // LIVE: no es reposiciona la reproducció (seek bloquejat)
     suppressClickRef.current = true;
     scrubRef.current = progress;
     setScrub(progress);
@@ -327,6 +333,7 @@ export function SoundButton({ slotId }) {
   // un clic net segueix disparant el cue. L'outline blanc (origen/destí) el pinta el
   // CSS via les classes tile-dragging / tile-drop-target.
   const handleTilePointerDown = (e) => {
+    if (isLive) return; // LIVE: no es reorganitzen tiles
     if (e.button !== 0 || !(hasAudio || slot.label)) return;
     if (e.target.closest('input, button, .slot-playhead')) return;
     tileDragRef.current = { x: e.clientX, y: e.clientY, pid: e.pointerId, active: false };
@@ -444,7 +451,7 @@ export function SoundButton({ slotId }) {
       {/* Capçalera: nom (esq) + loop + eliminar + tecla (dre) */}
       <div className="slot-header">
         <span className="slot-name">{truncatedLabel}</span>
-        {hasAudio && (
+        {hasAudio && !isLive && (
           <button
             className={`slot-loop-btn ${slot.loop ? 'active' : ''}`}
             onClick={handleLoopToggle}
@@ -453,7 +460,7 @@ export function SoundButton({ slotId }) {
             ⟳
           </button>
         )}
-        {occupied && (
+        {occupied && !isLive && (
           <button
             className={`slot-del-btn ${showHover ? 'visible' : ''}`}
             onClick={handleDelete}
@@ -503,13 +510,15 @@ export function SoundButton({ slotId }) {
                 title="Drag to move position"
               />
             )}
-            <button
-              className={`slot-edit-btn ${showHover ? 'visible' : ''}`}
-              onClick={handleEdit}
-              title="Edit cue (in/out, fades)"
-            >
-              ✎
-            </button>
+            {!isLive && (
+              <button
+                className={`slot-edit-btn ${showHover ? 'visible' : ''}`}
+                onClick={handleEdit}
+                title="Edit cue (in/out, fades)"
+              >
+                ✎
+              </button>
+            )}
           </div>
           {/* Slider de volum: només vídeo (les imatges no tenen so) */}
           {isVideoCue && (

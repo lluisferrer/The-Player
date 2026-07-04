@@ -18,6 +18,7 @@ export function Playlist() {
   const volume        = useSoundStore((s) => s.playlistVolume);
   const repeatMode    = useSoundStore((s) => s.playlistRepeatMode);
   const shuffle       = useSoundStore((s) => s.playlistShuffle);
+  const isLive        = useSoundStore((s) => s.appMode === 'live'); // LIVE: edició bloquejada
 
   const {
     addPlaylistTracks, removePlaylistTrack, movePlaylistTrack, clearPlaylist,
@@ -39,6 +40,7 @@ export function Playlist() {
   const [seekDragging, setSeekDragging] = useState(false);
   const onBarPointerDown = (e) => {
     e.preventDefault();
+    if (isLive) return; // LIVE: seek bloquejat
     seekToClientX(e.clientX);
     setSeekDragging(true);
   };
@@ -69,6 +71,7 @@ export function Playlist() {
   }, []);
 
   const handleAdd = async () => {
+    if (isLive) return; // LIVE: afegir pistes és una mutació
     try {
       const sel = await open({
         multiple: true,
@@ -124,8 +127,8 @@ export function Playlist() {
         </label>
 
         <span className="pl-spacer" />
-        <button className="pl-btn" onClick={handleAdd}>+ Add tracks</button>
-        <button className="pl-btn" onClick={clearPlaylist} disabled={playlist.length === 0}>Clear</button>
+        {!isLive && <button className="pl-btn" onClick={handleAdd}>+ Add tracks</button>}
+        {!isLive && <button className="pl-btn" onClick={clearPlaylist} disabled={playlist.length === 0}>Clear</button>}
       </div>
 
       {/* Now playing */}
@@ -158,10 +161,10 @@ export function Playlist() {
               <span className="pl-num">{i === playlistIndex && (playing || paused) ? '▶' : i + 1}</span>
               <span className="pl-name" title={t.filePath}>{t.label}</span>
               <div className="pl-item-actions">
-                <button onClick={() => movePlaylistTrack(i, i - 1)} disabled={i === 0} title="Move up">↑</button>
-                <button onClick={() => movePlaylistTrack(i, i + 1)} disabled={i === playlist.length - 1} title="Move down">↓</button>
+                {!isLive && <button onClick={() => movePlaylistTrack(i, i - 1)} disabled={i === 0} title="Move up">↑</button>}
+                {!isLive && <button onClick={() => movePlaylistTrack(i, i + 1)} disabled={i === playlist.length - 1} title="Move down">↓</button>}
                 <button onClick={() => playlistPlayIndex(i)} title="Play">▶</button>
-                <button onClick={() => removePlaylistTrack(t.id)} title="Remove">✕</button>
+                {!isLive && <button onClick={() => removePlaylistTrack(t.id)} title="Remove">✕</button>}
               </div>
             </div>
           ))

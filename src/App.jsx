@@ -38,6 +38,9 @@ function slotAtPosition(position) {
 export default function App() {
   const viewMode        = useSoundStore((s) => s.viewMode);
   const setViewMode     = useSoundStore((s) => s.setViewMode);
+  const appMode         = useSoundStore((s) => s.appMode);
+  const setAppMode      = useSoundStore((s) => s.setAppMode);
+  const isLive          = appMode === 'live';
   const setAudioDevices = useSoundStore((s) => s.setAudioDevices);
   const setDragOverSlot = useSoundStore((s) => s.setDragOverSlot);
   const { loadFromPath } = useAudioEngine();
@@ -47,6 +50,15 @@ export default function App() {
   const [theme, setTheme] = useState(getInitialTheme);
   const toggleTheme = () => setTheme(applyTheme(theme === 'dark' ? 'light' : 'dark'));
   const [showSave, setShowSave] = useState(false);
+  // EDIT ↔ LIVE. Entrar a Live és directe; SORTIR de Live demana confirmació
+  // (evita desbloquejar el mode segur sense voler en ple xou).
+  const toggleAppMode = () => {
+    if (isLive) {
+      if (window.confirm('Exit LIVE mode? Editing will be unlocked.')) setAppMode('edit');
+    } else {
+      setAppMode('live');
+    }
+  };
   const [outputOpen, setOutputOpen] = useState(false); // estat de la finestra de sortida
   const [isFullscreen, setIsFullscreen] = useState(false); // pantalla completa de la finestra principal
   // Flag: l'app s'està tancant. Mentre val true, no persistim videoOutputOpen=false
@@ -447,6 +459,8 @@ export default function App() {
       try {
         unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
           const p = event.payload;
+          // LIVE: carregar fitxers és una mutació → ignora el drop natiu (i el marcador).
+          if (useSoundStore.getState().appMode === 'live') { setDragOverSlot(null); return; }
           if (p.type === 'over') {
             setDragOverSlot(slotAtPosition(p.position));
           } else if (p.type === 'drop') {
@@ -471,7 +485,7 @@ export default function App() {
   }, [setDragOverSlot, loadFromPath]);
 
   return (
-    <div className="app">
+    <div className={`app ${isLive ? 'live-mode' : ''}`}>
       <header className="app-header">
         {/* Brand logo: (e^P) monogram + wordmark, idèntic a ezyRider */}
         <h1 className="app-brand">
@@ -496,6 +510,15 @@ export default function App() {
         </div>
 
         <div className="header-controls">
+          {/* EDIT ↔ LIVE (Show Mode). En LIVE, badge vermell i edició bloquejada. */}
+          <button
+            className={`library-btn mode-lock-btn ${isLive ? 'live' : ''}`}
+            onClick={toggleAppMode}
+            title={isLive ? 'LIVE — click to unlock editing' : 'Lock into LIVE mode (playback only)'}
+          >
+            {isLive ? '● LIVE' : 'EDIT'}
+          </button>
+
           <button
             className={`library-btn ${outputOpen ? 'active' : ''}`}
             onClick={handleToggleOutput}
@@ -504,7 +527,7 @@ export default function App() {
             VIDEO
           </button>
 
-          <button className="library-btn" onClick={() => setShowSave(true)}>FILES</button>
+          <button className="library-btn" onClick={() => setShowSave(true)} disabled={isLive} title={isLive ? 'Locked in LIVE' : 'Files'}>FILES</button>
           <button className="library-btn" onClick={() => setShowSettings(true)}>SETTINGS</button>
           <button
             className="library-btn icon-btn"
@@ -540,7 +563,7 @@ export default function App() {
           ? <PlaylistSave onClose={() => setShowSave(false)} />
           : <Library onClose={() => setShowSave(false)} />
       )}
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} readOnly={isLive} />}
       <Toast />
     </div>
   );

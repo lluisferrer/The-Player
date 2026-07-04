@@ -160,7 +160,7 @@ function DiagRow({ o, onTone, info }) {
 }
 
 // Modal global de configuració amb tres pestanyes: Audio, Cues, Playlist
-export function SettingsModal({ onClose }) {
+export function SettingsModal({ onClose, readOnly = false }) {
   const [tab, setTab] = useState('dispositius');
 
   const audioDevices     = useSoundStore((s) => s.audioDevices);
@@ -343,7 +343,7 @@ export function SettingsModal({ onClose }) {
     <div className="editor-overlay" onClick={onClose}>
       <div className="editor-panel settings-panel" onClick={(e) => e.stopPropagation()}>
         <div className="editor-header">
-          <span className="editor-title">Settings</span>
+          <span className="editor-title">Settings{readOnly ? ' · read-only (LIVE)' : ''}</span>
           <button className="editor-close" onClick={onClose}>✕</button>
         </div>
 
@@ -356,6 +356,10 @@ export function SettingsModal({ onClose }) {
         </div>
 
         <div className="settings-content">
+          {/* LIVE: només-lectura. Un fieldset[disabled] deshabilita tots els controls
+              interns (inputs/selects/botons) sense afectar el layout (display:contents),
+              deixant navegar per les pestanyes i llegir els valors. */}
+          <fieldset disabled={readOnly} style={{ display: 'contents', border: 'none', margin: 0, padding: 0 }}>
           {tab === 'dispositius' && (
             <>
               <div className="settings-note">
@@ -700,6 +704,7 @@ export function SettingsModal({ onClose }) {
               <div className="settings-note">Enable ducking per cue in its editor (✎). The playlist drops to the set volume while any ducking cue plays and recovers once none remain.</div>
             </>
           )}
+          </fieldset>
         </div>
       </div>
     </div>
