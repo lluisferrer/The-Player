@@ -31,16 +31,19 @@ export function dispatchCue(state, slot, ctx = {}) {
   const targetStr = resolveCueTargetStr(state, slot);
   const target = parseTarget(targetStr);
 
-  if (target.kind !== 'asio') {
-    // Camí normal: Web Audio / WASAPI. (Inclou el bus de Cues per defecte i
-    // qualsevol routing per color cap a un deviceId WASAPI.)
-    return { route: 'wasapi', target };
-  }
-
   // ── Camí ASIO ─────────────────────────────────────────────────────────────
   // El render natiu JA existeix: el cridador (playSlot/cueStreamEngine) fa
   // invoke('asio_play_voice', …) cap al fil `asio-engine`, que registra una VEU
   // (en memòria o streaming) i la mescla al callback. Aquí només decidim el camí
   // i garantim que el cue NO surt també per WASAPI (regla anti-duplicació).
-  return { route: 'asio', target };
+  if (target.kind === 'asio') return { route: 'asio', target };
+
+  // ── Camí NATIU cpal (P3) ───────────────────────────────────────────────────
+  // El bus routeja a un dispositiu del motor natiu (WASAPI/CoreAudio via cpal).
+  // El cridador fa invoke('native_play_cue', …) cap al dispositiu i canals del
+  // target. Igual que l'ASIO, NO surt també per Web Audio (anti-duplicació).
+  if (target.kind === 'native') return { route: 'native', target };
+
+  // Camí normal: Web Audio / WASAPI (bus de Cues per defecte o color → deviceId).
+  return { route: 'wasapi', target };
 }

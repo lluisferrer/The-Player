@@ -25,6 +25,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { asioPosition } from './asioTelemetry';
 import { nextIndex, prevIndex } from './playlistSeq';
 import { currentDuckGain, setNativeDuckListener } from './playlistEngine';
+import { parseTarget } from './outputTarget';
 
 // Ids de veu reservats per a la playlist (no col·lideixen amb els cues 1..128 ni
 // amb el to de prova). Comptador creixent: cada pista nova en pren un de nou,
@@ -58,8 +59,12 @@ function killOrphanN() {
   }
 }
 
-// Dispositiu cpal efectiu de la playlist (nom + canals destí).
+// Dispositiu cpal efectiu de la playlist (nom + canals destí), llegit del target
+// "native:…" del bus de la playlist. (Fallback als camps antics per compatibilitat
+// amb sessions anteriors a la unificació del routing.)
 function target(get) {
+  const t = parseTarget(get().playlistDeviceId);
+  if (t.kind === 'native') return { deviceName: t.device || '', channels: t.channels || [] };
   const st = get();
   return { deviceName: st.nativePlaylistDeviceName || '', channels: st.nativePlaylistChannels || [] };
 }

@@ -13,7 +13,7 @@
 //   - consumePlNextId: funció exportada per a useSoundStore.js (importSessionPlaylist
 //     es queda al store i necessita generar IDs nous).
 
-import { isAsioTarget } from '../../lib/outputTarget';
+import { isAsioTarget, isNativeTarget } from '../../lib/outputTarget';
 import {
   plPlayPause, plStop, plNext, plPrev, plPlayIndex, plSetVolume, plSeek,
   plDetach,
@@ -139,10 +139,10 @@ export function createPlaylistSlice(set, get) {
 
     // Cert si la playlist routeja a un dispositiu ASIO (→ motor natiu de veus).
     plIsAsio: () => isAsioTarget(get().playlistDeviceId),
-    // La playlist va pel motor natiu cpal quan aquest està actiu i el dispositiu NO
-    // és ASIO (l'ASIO té el seu propi camí). Cobreix WASAPI a Windows i CoreAudio a
-    // Mac amb routing multicanal real (que el WebView no pot fer a Mac).
-    plIsNative: () => get().useNativeCueEngine && !isAsioTarget(get().playlistDeviceId),
+    // La playlist va pel motor natiu cpal quan el seu bus routeja a un target
+    // "native:…" (device+canals cpal). Cobreix WASAPI a Windows i CoreAudio a Mac
+    // amb routing multicanal real (que el WebView no pot fer a Mac).
+    plIsNative: () => isNativeTarget(get().playlistDeviceId),
 
     // Assigna el temps de crossfade entre pistes (en segons; mínim 0).
     setCrossfade: (sec) => { set({ crossfade: Math.max(0, sec) }); get().persistPlaylist(); },

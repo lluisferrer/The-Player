@@ -10,7 +10,7 @@
 import { AudioCtx } from '../audioCtx';
 import { invoke } from '@tauri-apps/api/core';
 import { csPreviewStart, csPreviewStop } from '../../lib/cueStreamEngine';
-import { isAsioTarget, parseTarget } from '../../lib/outputTarget';
+import { isAsioTarget, isNativeTarget, parseTarget } from '../../lib/outputTarget';
 import { PREVIEW_VOICE_ID } from '../../lib/asioIds';
 import { clearAsioTelemetry } from '../../lib/asioTelemetry';
 import { hasClip, isImage, isVideo, slotDuration } from '../../lib/slotAudio';
@@ -81,20 +81,21 @@ export function createPreviewSlice(set, get) {
         return;
       }
 
-      // Preview pel motor natiu cpal: si el motor natiu està actiu i el dispositiu de
-      // preview NO és ASIO, toca el cue pel bus natiu cap als canals de preview. Dona
+      // Preview pel motor natiu cpal: si el bus de preview routeja a un target
+      // "native:…", toca el cue pel motor cap al dispositiu/canals del target. Dona
       // pre-escolta multicanal real també a Mac (curt i streaming).
-      if (get().useNativeCueEngine && !isAsioTarget(get().previewDeviceId)) {
+      if (isNativeTarget(get().previewDeviceId)) {
         get().stopPreview();
+        const ptgt = parseTarget(get().previewDeviceId);
         const voiceId = PREVIEW_VOICE_ID + (previewSeq = (previewSeq + 1) % 100000);
         const total = slotDuration(slot);
         const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || 0));
         const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
         invoke('native_play_cue', {
           voiceId,
-          deviceName: get().nativePreviewDeviceName || '',
+          deviceName: ptgt.device || '',
           filePath: slot.filePath,
-          channels: get().nativePreviewChannels || [],
+          channels: ptgt.channels || [],
           gain: slot.volume ?? 0.8,
           fadeIn: 0,
           fadeOut: 0,
@@ -150,7 +151,7 @@ export function createPreviewSlice(set, get) {
       const pvid = get().previewVoiceId;
       if (isAsioTarget(get().previewDeviceId)) {
         invoke('asio_stop_voice', { voiceId: pvid, fadeOut: 0 }).catch(() => {});
-      } else if (get().useNativeCueEngine) {
+      } else if (isNativeTarget(get().previewDeviceId)) {
         invoke('native_stop_voice', { voiceId: pvid, fadeOut: 0 }).catch(() => {});
       }
       clearAsioTelemetry(pvid);

@@ -17,7 +17,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { hasClip, isVideo, isImage, isVisual, effFadeIn, effFadeOut, slotDuration } from '../../lib/slotAudio';
 import { dispatchCue } from '../../lib/cueDispatch';
-import { isAsioTarget, resolveCueTargetStr, parseTarget } from '../../lib/outputTarget';
+import { isAsioTarget, resolveCueTargetStr, parseTarget, isHardwareEngineTarget } from '../../lib/outputTarget';
 import { clearAsioTelemetry, asioPosition } from '../../lib/asioTelemetry';
 import {
   emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume,
@@ -321,16 +321,22 @@ export function createCuesSlice(set, get) {
         // Els cues de VÍDEO surten per la finestra de sortida amb <video>.setSinkId,
         // que només entén deviceIds WASAPI. Si el color apunta a un target ASIO,
         // no és servible per vídeo → caiem al bus de Cues WASAPI per defecte.
+        // La imatge del vídeo surt per <video>.setSinkId, que només entén deviceIds
+        // WASAPI: si el target (color o bus de Cues) és d'un motor de maquinari
+        // (ASIO o natiu), no és servible per a la imatge → caiem a un WASAPI vàlid.
         const colorOut = slot.color ? colorOutputs[slot.color] : null;
-        const outDev = (colorOut && !isAsioTarget(colorOut)) ? colorOut : get().selectedDeviceId;
+        const cueTarget = parseTarget(resolveCueTargetStr(get(), slot));
+        const outDev = (colorOut && !isHardwareEngineTarget(colorOut)) ? colorOut
+          : (!isHardwareEngineTarget(get().selectedDeviceId) ? get().selectedDeviceId : 'default');
         // Fades efectius: el propi del cue si és >0, si no el global; el fade-in
         // respecta la terra del crossfade entre cues (igual que els camins d'àudio).
         const effIn = Math.max(0, xFadeIn(slot));
         const effOut = Math.max(0, effFadeOut(slot, globalFadeOut));
-        // 4c (opt-in): separar l'àudio del vídeo. Amb el motor natiu actiu i un cue de
-        // VÍDEO (no imatge), l'àudio surt pel motor (routing/fades/ducking/multicanal,
-        // també a Mac) i la imatge va silenciada a la sortida, sincronitzada per resync.
-        const separated = get().separateVideoAudio && get().useNativeCueEngine && isVideo(slot);
+        // 4c (opt-in): separar l'àudio del vídeo. Si el bus del cue routeja al motor
+        // NATIU (target native:…) i és un cue de VÍDEO (no imatge), l'àudio surt pel
+        // motor (routing/fades/ducking/multicanal, també a Mac) i la imatge va
+        // silenciada a la sortida, sincronitzada per resync.
+        const separated = get().separateVideoAudio && cueTarget.kind === 'native' && isVideo(slot);
         emitVideoPlay(slot.filePath, slot.startPoint || 0, slot.stopPoint || 0, slotId, {
           volume: slot.volume,
           fadeIn: effIn,
@@ -347,12 +353,12 @@ export function createCuesSlice(set, get) {
           const segDur = Math.max(0.02, (stopPoint > 0 ? stopPoint : total) - startPoint);
           invoke('native_play_cue', {
             voiceId: slot.id,
-            deviceName: get().nativeCueDeviceName || '',
+            deviceName: cueTarget.device || '',
             filePath: slot.filePath,
             gain: slot.volume ?? 0.8,
             fadeIn: Math.max(0, Math.min(effIn, segDur)),
             fadeOut: Math.max(0, Math.min(effOut, segDur)),
-            channels: get().nativeCueChannels || [],
+            channels: cueTarget.channels || [],
             loopOn: !!slot.loop,
             startPoint,
             stopPoint,
@@ -381,11 +387,10 @@ export function createCuesSlice(set, get) {
       // Stop Playlist: si aquest cue atura del tot la playlist, atura-la ara
       if (slot.stopPlaylist) get().playlistStop();
 
-      // ── DISPATCH de routing: WASAPI (Web Audio) vs ASIO (natiu) ──────────────
-      // Regla anti-duplicació: si el target del cue és ASIO, NO l'enviem també per
-      // Web Audio (sonaria dos cops al mateix dispositiu físic). El render ASIO
-      // real és el pas següent; de moment el camí ASIO és un STUB que NO treu so
-      // però marca el cue com a "reproduint" perquè la UI/transport ho reflecteixin.
+      // ── DISPATCH de routing: WASAPI (Web Audio) · ASIO · natiu cpal ──────────
+      // Segons el target del bus del cue (resolveCueTargetStr). Regla anti-duplicació:
+      // ASIO i natiu tenen render propi i NO passen també per Web Audio (sonaria dos
+      // cops al mateix dispositiu físic). L'ordre és: ASIO → natiu → Web Audio.
       const decision = dispatchCue(get(), slot, { kind: 'play' });
       if (decision.route === 'asio') {
         // Render natiu: descodifica i mescla el cue pel motor ASIO (fil
@@ -426,7 +431,7 @@ export function createCuesSlice(set, get) {
       // Si l'interruptor està actiu i el cue és WASAPI (decision.route === 'wasapi')
       // amb fitxer a disc i NO és visual, enruta'l pel motor natiu cpal en lloc de
       // Web Audio. Marca nativeActive i NO segueix el camí Web Audio (anti-duplicació).
-      if (get().useNativeCueEngine && decision.route === 'wasapi' && slot.filePath && !isVisual(slot)) {
+      if (decision.route === 'native' && slot.filePath && !isVisual(slot)) {
         const total = slotDuration(slot);
         const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || Infinity));
         const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
@@ -435,12 +440,12 @@ export function createCuesSlice(set, get) {
         const effOut = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
         invoke('native_play_cue', {
           voiceId: slot.id,
-          deviceName: get().nativeCueDeviceName || '',
+          deviceName: decision.target.device || '',
           filePath: slot.filePath,
           gain: slot.volume ?? 0.8,
           fadeIn: effIn,
           fadeOut: effOut,
-          channels: get().nativeCueChannels || [],
+          channels: decision.target.channels || [],
           loopOn: !!slot.loop,
           startPoint,
           stopPoint,

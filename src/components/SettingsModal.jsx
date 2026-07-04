@@ -4,7 +4,7 @@ import { availableMonitors } from '@tauri-apps/api/window';
 import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
-import { makeAsioTargetStr, isAsioTarget, targetLabel } from '../lib/outputTarget';
+import { makeAsioTargetStr, makeNativeTargetStr, isAsioTarget, isNativeTarget, targetLabel } from '../lib/outputTarget';
 
 // A partir de la info dels drivers ASIO carregats ({ [name]: {outs, sample_rate} }),
 // construeix opcions de routing en PARELLS de canals estèreo (1-2, 3-4, …).
@@ -30,26 +30,62 @@ function asioStereoOptions(asioInfo) {
   return opts;
 }
 
+// Opcions de routing del motor NATIU cpal (P3), en parells de canals estèreo per
+// dispositiu. `nativeOutputs` = list_audio_outputs [{ name, max_channels }].
+// value = target serialitzat "native:<dev>|<ch0>,<ch1>".
+function nativeStereoOptions(nativeOutputs) {
+  const opts = [];
+  for (const d of nativeOutputs || []) {
+    const name = d.name || '';
+    const label = d.name || 'System default';
+    const outs = d.max_channels || 2;
+    for (let c = 0; c + 1 < outs; c += 2) {
+      opts.push({ value: makeNativeTargetStr(name, [c, c + 1]), label: `${label} · ch ${c + 1}-${c + 2}` });
+    }
+    if (outs % 2 === 1) {
+      opts.push({ value: makeNativeTargetStr(name, [outs - 1]), label: `${label} · ch ${outs} (mono)` });
+    }
+    if (outs < 2) {
+      opts.push({ value: makeNativeTargetStr(name, [0]), label: `${label} · ch 1 (mono)` });
+    }
+  }
+  return opts;
+}
+
 // Selector de sortida reutilitzable: dispositius WASAPI + (opcional) targets ASIO.
 // `extraDefault` és l'opció de capçalera (p. ex. "Bus Cues (per defecte)").
-function OutputSelect({ id, value, onChange, audioDevices, asioOptions, defaultValue, defaultLabel }) {
-  // Si el valor desat és un target ASIO que no surt a les opcions (driver no
-  // carregat en aquesta sessió), l'afegim com a opció "fantasma" perquè el
-  // select el mostri i no es perdi en re-renderitzar (React deixaria el select
-  // sense selecció si el value no casa amb cap option).
+function OutputSelect({ id, value, onChange, audioDevices, asioOptions, nativeOptions = [], defaultValue, defaultLabel }) {
+  // Si el valor desat és un target ASIO/natiu que no surt a les opcions (driver no
+  // carregat o dispositiu absent en aquesta sessió), l'afegim com a opció "fantasma"
+  // perquè el select el mostri i no es perdi en re-renderitzar (React deixaria el
+  // select sense selecció si el value no casa amb cap option).
   const orphanAsio =
     isAsioTarget(value) && !asioOptions.some((o) => o.value === value)
       ? { value, label: `${targetLabel(value)} (driver not loaded)` }
+      : null;
+  const orphanNative =
+    isNativeTarget(value) && !nativeOptions.some((o) => o.value === value)
+      ? { value, label: `${targetLabel(value)} (device not found)` }
       : null;
 
   return (
     <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
       <option value={defaultValue}>{defaultLabel}</option>
-      <optgroup label="WASAPI (Web Audio)">
+      <optgroup label="WASAPI (Web Audio · stereo)">
         {audioDevices.map((d) => (
           <option key={d.deviceId} value={d.deviceId}>{d.label || `Device ${d.deviceId.slice(0, 8)}`}</option>
         ))}
       </optgroup>
+      {(nativeOptions.length > 0 || orphanNative) && (
+        <optgroup label="Native (multichannel)">
+          {nativeOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+          {orphanNative && (
+            <option key={orphanNative.value} value={orphanNative.value}>{orphanNative.label}</option>
+          )}
+        </optgroup>
+      )}
       {(asioOptions.length > 0 || orphanAsio) && (
         <optgroup label="ASIO (native)">
           {asioOptions.map((o) => (
@@ -152,24 +188,8 @@ export function SettingsModal({ onClose }) {
   const cuesStopPlaylist = useSoundStore((s) => s.cuesStopPlaylist);
   const setCuesPlaylistAction = useSoundStore((s) => s.setCuesPlaylistAction);
   const setCuesStopOthers = useSoundStore((s) => s.setCuesStopOthers);
-  // Increment 3 (experimental): motor natiu cpal per a cues WASAPI
-  const useNativeCueEngine = useSoundStore((s) => s.useNativeCueEngine);
-  const setUseNativeCueEngine = useSoundStore((s) => s.setUseNativeCueEngine);
-  // Increment 4: routing del motor natiu (dispositiu + canals). SEPARAT del
-  // routing WASAPI/ASIO: usa els NOMS de cpal de list_audio_outputs.
-  const nativeCueDeviceName = useSoundStore((s) => s.nativeCueDeviceName);
-  const setNativeCueDevice = useSoundStore((s) => s.setNativeCueDevice);
-  const nativeCueChannels = useSoundStore((s) => s.nativeCueChannels);
-  const setNativeCueChannels = useSoundStore((s) => s.setNativeCueChannels);
-  // Dispositiu/canals natius de la PLAYLIST (mateix espai de noms cpal que els cues).
-  const nativePlaylistDeviceName = useSoundStore((s) => s.nativePlaylistDeviceName);
-  const setNativePlaylistDevice = useSoundStore((s) => s.setNativePlaylistDevice);
-  const nativePlaylistChannels = useSoundStore((s) => s.nativePlaylistChannels);
-  const setNativePlaylistChannels = useSoundStore((s) => s.setNativePlaylistChannels);
-  const nativePreviewDeviceName = useSoundStore((s) => s.nativePreviewDeviceName);
-  const setNativePreviewDevice = useSoundStore((s) => s.setNativePreviewDevice);
-  const nativePreviewChannels = useSoundStore((s) => s.nativePreviewChannels);
-  const setNativePreviewChannels = useSoundStore((s) => s.setNativePreviewChannels);
+  // P3: el motor de cada bus (WASAPI/ASIO/natiu) es codifica al seu propi target;
+  // ja no hi ha un flag global ni selectors "native" separats.
 
   const crossfade = useSoundStore((s) => s.crossfade);
   const setCrossfade = useSoundStore((s) => s.setCrossfade);
@@ -203,6 +223,8 @@ export function SettingsModal({ onClose }) {
 
   // Opcions de routing ASIO (parells de canals) dels drivers ASIO carregats.
   const asioOptions = asioStereoOptions(asioInfo);
+  // Opcions de routing del motor natiu cpal (parells de canals per dispositiu).
+  const nativeOptions = nativeStereoOptions(nativeOutputs);
 
   // En obrir el modal, refresca quin driver ASIO hi ha carregat ara.
   useEffect(() => { refreshAsioLoaded(); }, [refreshAsioLoaded]);
@@ -224,15 +246,15 @@ export function SettingsModal({ onClose }) {
     })();
   }, [tab, outputs]);
 
-  // Increment 4: carrega els dispositius natius (noms de cpal) quan ets a Cues amb
-  // el motor natiu actiu, per poblar el selector de dispositiu i canals de sortida.
+  // P3: carrega els dispositius natius (noms de cpal) en obrir la pestanya Routing,
+  // per poblar les opcions natives (multicanal) dels selectors únics de cada bus.
   useEffect(() => {
-    if ((tab !== 'cues' && tab !== 'playlist' && tab !== 'routing') || !useNativeCueEngine || nativeOutputs) return;
+    if (tab !== 'routing' || nativeOutputs) return;
     (async () => {
       try { setNativeOutputs(await invoke('list_audio_outputs')); }
       catch { setNativeOutputs([]); }
     })();
-  }, [tab, useNativeCueEngine, nativeOutputs]);
+  }, [tab, nativeOutputs]);
 
   // Detecció ASIO sota demanda (carregar drivers ASIO és lent i pot bloquejar-se)
   const detectAsio = async () => {
@@ -437,7 +459,9 @@ export function SettingsModal({ onClose }) {
             <>
               <div className="settings-subtitle">Outputs per bus</div>
               <div className="settings-note">
-                Only devices enabled in <b>Devices</b> and the active ASIO driver are shown.
+                One output per bus. <b>WASAPI</b> is stereo via Web Audio; <b>Native</b>
+                and <b>ASIO</b> give real multichannel routing. Native/ASIO devices come
+                from <b>Devices</b> (connect an ASIO driver there to see its channels).
               </div>
 
               <div className="settings-row">
@@ -448,6 +472,7 @@ export function SettingsModal({ onClose }) {
                   onChange={setSelectedDevice}
                   audioDevices={devicesFor(cuesDeviceId)}
                   asioOptions={asioOptions}
+                  nativeOptions={nativeOptions}
                   defaultValue="default"
                   defaultLabel="Default"
                 />
@@ -461,6 +486,7 @@ export function SettingsModal({ onClose }) {
                   onChange={setPlaylistDevice}
                   audioDevices={devicesFor(playlistDeviceId)}
                   asioOptions={asioOptions}
+                  nativeOptions={nativeOptions}
                   defaultValue="default"
                   defaultLabel="Default"
                 />
@@ -474,57 +500,11 @@ export function SettingsModal({ onClose }) {
                   onChange={setPreviewDevice}
                   audioDevices={devicesFor(previewDeviceId)}
                   asioOptions={asioOptions}
+                  nativeOptions={nativeOptions}
                   defaultValue="default"
                   defaultLabel="Default"
                 />
               </div>
-
-              {useNativeCueEngine && (() => {
-                // Dispositiu/canals del bus de preview pel motor natiu cpal (els
-                // selectors WASAPI/ASIO de dalt no enruten quan el motor natiu és on).
-                const devs = nativeOutputs || [];
-                const sel = devs.find((d) => d.name === nativePreviewDeviceName);
-                const maxCh = sel ? sel.max_channels : (devs.find((d) => d.is_default)?.max_channels || 2);
-                const pairs = [];
-                for (let c = 0; c + 1 < maxCh; c += 2) pairs.push([c, c + 1]);
-                if (pairs.length === 0) pairs.push([0, 1]);
-                const curPair = (nativePreviewChannels && nativePreviewChannels.length === 2)
-                  ? `${nativePreviewChannels[0]},${nativePreviewChannels[1]}` : '';
-                return (
-                  <>
-                    <div className="settings-row">
-                      <label htmlFor="dev-preview-native">Preview (native)</label>
-                      <select
-                        id="dev-preview-native"
-                        value={nativePreviewDeviceName}
-                        onChange={(e) => setNativePreviewDevice(e.target.value)}
-                      >
-                        <option value="">System default</option>
-                        {devs.map((d) => (
-                          <option key={d.name} value={d.name}>{d.name} ({d.max_channels}ch)</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="settings-row">
-                      <label htmlFor="ch-preview-native">Preview channels</label>
-                      <select
-                        id="ch-preview-native"
-                        value={curPair}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          if (!v) { setNativePreviewChannels([]); return; }
-                          setNativePreviewChannels(v.split(',').map((n) => parseInt(n, 10)));
-                        }}
-                      >
-                        <option value="">Default (1-2)</option>
-                        {pairs.map(([a, b]) => (
-                          <option key={`${a},${b}`} value={`${a},${b}`}>{a + 1}-{b + 1}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </>
-                );
-              })()}
 
               <div className="settings-subtitle">Per-color routing (cues)</div>
               <div className="settings-note">
@@ -541,6 +521,7 @@ export function SettingsModal({ onClose }) {
                     onChange={(v) => setColorOutput(c.value, v)}
                     audioDevices={devicesFor(colorOutputs[c.value])}
                     asioOptions={asioOptions}
+                    nativeOptions={nativeOptions}
                     defaultValue="cues"
                     defaultLabel="Cues bus (default)"
                   />
@@ -602,7 +583,6 @@ export function SettingsModal({ onClose }) {
                     type="checkbox"
                     checked={separateVideoAudio}
                     onChange={(e) => setSeparateVideoAudio(e.target.checked)}
-                    disabled={!useNativeCueEngine}
                   />
                   Route video audio through the native engine
                 </label>
@@ -610,7 +590,7 @@ export function SettingsModal({ onClose }) {
               <div className="settings-note">
                 Plays the video’s sound through the native engine (routing, fades, ducking,
                 multichannel — also on macOS) while the output shows muted video, kept in sync.
-                Requires the native engine (Cues tab). Off by default.
+                Takes effect when the cue’s bus routes to a <b>Native</b> output. Off by default.
               </div>
             </>
           )}
@@ -660,78 +640,6 @@ export function SettingsModal({ onClose }) {
                 </span>
               </label>
               <div className="settings-note">When a cue with “stop others” fires, outgoing cues fade out over this time while the new one fades in. 0 = hard cut.</div>
-
-              <div className="settings-subtitle">Audio engine</div>
-              <div className="editor-options">
-                <label className="editor-check">
-                  <input
-                    type="checkbox"
-                    checked={useNativeCueEngine}
-                    onChange={(e) => setUseNativeCueEngine(e.target.checked)}
-                  />
-                  Native engine (cpal) for cues — experimental
-                </label>
-              </div>
-              <div className="settings-note">
-                Routes WASAPI cues through the native engine instead of Web Audio. ASIO cues are unaffected. Off by default.
-              </div>
-
-              {useNativeCueEngine && (() => {
-                // Dispositiu natiu seleccionat (per NOM de cpal) i els seus canals.
-                const devs = nativeOutputs || [];
-                const sel = devs.find((d) => d.name === nativeCueDeviceName);
-                // max_channels del dispositiu triat (o per defecte si no n'hi ha).
-                const maxCh = sel ? sel.max_channels : (devs.find((d) => d.is_default)?.max_channels || 2);
-                // Parells de canals disponibles: 1-2, 3-4, … fins a max_channels.
-                const pairs = [];
-                for (let c = 0; c + 1 < maxCh; c += 2) pairs.push([c, c + 1]);
-                if (pairs.length === 0) pairs.push([0, 1]);
-                const curPair = (nativeCueChannels && nativeCueChannels.length === 2)
-                  ? `${nativeCueChannels[0]},${nativeCueChannels[1]}` : '';
-                return (
-                  <>
-                    <label className="ps-row">
-                      <span>Native output device</span>
-                      <span className="ps-cf">
-                        <select
-                          value={nativeCueDeviceName}
-                          onChange={(e) => setNativeCueDevice(e.target.value)}
-                        >
-                          <option value="">System default</option>
-                          {devs.map((d) => (
-                            <option key={d.name} value={d.name}>
-                              {d.name} ({d.max_channels}ch)
-                            </option>
-                          ))}
-                        </select>
-                      </span>
-                    </label>
-                    <label className="ps-row">
-                      <span>Output channels</span>
-                      <span className="ps-cf">
-                        <select
-                          value={curPair}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            if (!v) { setNativeCueChannels([]); return; }
-                            setNativeCueChannels(v.split(',').map((n) => parseInt(n, 10)));
-                          }}
-                        >
-                          <option value="">Default (1-2)</option>
-                          {pairs.map(([a, b]) => (
-                            <option key={`${a},${b}`} value={`${a},${b}`}>
-                              {a + 1}-{b + 1}
-                            </option>
-                          ))}
-                        </select>
-                      </span>
-                    </label>
-                    <div className="settings-note">
-                      Native routing uses cpal device names (separate from WASAPI/ASIO routing). Pick a device opened with all its channels, then a channel pair.
-                    </div>
-                  </>
-                );
-              })()}
             </>
           )}
 
@@ -744,63 +652,6 @@ export function SettingsModal({ onClose }) {
                     onChange={(e) => setCrossfade(parseFloat(e.target.value) || 0)} /> s
                 </span>
               </label>
-
-              {useNativeCueEngine && (() => {
-                // Dispositiu/canals natius de la playlist (visible només amb el motor
-                // natiu actiu; el routing WASAPI/ASIO de la playlist és a part).
-                const devs = nativeOutputs || [];
-                const sel = devs.find((d) => d.name === nativePlaylistDeviceName);
-                const maxCh = sel ? sel.max_channels : (devs.find((d) => d.is_default)?.max_channels || 2);
-                const pairs = [];
-                for (let c = 0; c + 1 < maxCh; c += 2) pairs.push([c, c + 1]);
-                if (pairs.length === 0) pairs.push([0, 1]);
-                const curPair = (nativePlaylistChannels && nativePlaylistChannels.length === 2)
-                  ? `${nativePlaylistChannels[0]},${nativePlaylistChannels[1]}` : '';
-                return (
-                  <>
-                    <div className="settings-subtitle">Native engine output (cpal)</div>
-                    <label className="ps-row">
-                      <span>Native output device</span>
-                      <span className="ps-cf">
-                        <select
-                          value={nativePlaylistDeviceName}
-                          onChange={(e) => setNativePlaylistDevice(e.target.value)}
-                        >
-                          <option value="">System default</option>
-                          {devs.map((d) => (
-                            <option key={d.name} value={d.name}>
-                              {d.name} ({d.max_channels}ch)
-                            </option>
-                          ))}
-                        </select>
-                      </span>
-                    </label>
-                    <label className="ps-row">
-                      <span>Output channels</span>
-                      <span className="ps-cf">
-                        <select
-                          value={curPair}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            if (!v) { setNativePlaylistChannels([]); return; }
-                            setNativePlaylistChannels(v.split(',').map((n) => parseInt(n, 10)));
-                          }}
-                        >
-                          <option value="">Default (1-2)</option>
-                          {pairs.map(([a, b]) => (
-                            <option key={`${a},${b}`} value={`${a},${b}`}>
-                              {a + 1}-{b + 1}
-                            </option>
-                          ))}
-                        </select>
-                      </span>
-                    </label>
-                    <div className="settings-note">
-                      With the native engine on, the playlist plays through cpal (WASAPI/CoreAudio) for real multichannel routing — including on macOS, where the WebView can't pick an output. Routes here, not by the WASAPI/ASIO device above.
-                    </div>
-                  </>
-                );
-              })()}
 
               <div className="settings-subtitle">Ducking (lower the playlist under cues)</div>
               <div className="editor-options">

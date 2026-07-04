@@ -16,6 +16,7 @@ import { createCuesSlice, createEmptySlot, NUM_PAGES, NUM_SLOTS } from './slices
 // clearAsioTelemetry / asioPosition → moguts al slice de cues (P5)
 // emitVideoPlay / emitVideoStop / emitVideoBlack / emitVideoVolume / startVideoResync / stopVideoResync → moguts al slice de cues (P5)
 import { PREVIEW_VOICE_ID } from '../lib/asioIds';
+import { makeNativeTargetStr, isAsioTarget, isNativeTarget } from '../lib/outputTarget';
 // emitVideoSeek / emitVideoIdlePattern → moguts al slice de vídeo (P5); emitVideoBlack/emitVideoPlay/etc. → slice de cues (P5)
 
 // SLOTS_PER_PAGE / NUM_PAGES / NUM_SLOTS / createEmptySlot → moguts al slice de cues (P5)
@@ -49,7 +50,26 @@ const loadGlobals = () => {
   try { return JSON.parse(localStorage.getItem('the-player-globals')) || {}; }
   catch { return {}; }
 };
-const savedGlobals = loadGlobals();
+
+// Migració P3 (unificació del routing): fins ara el motor natiu era un flag GLOBAL
+// (useNativeCueEngine) amb dispositiu/canals en camps a part (nativeCue*, native
+// Playlist*, nativePreview*). Ara el motor de cada bus es codifica al seu propi
+// target ("native:<dev>|<canals>"). Si una sessió antiga tenia el motor natiu
+// ACTIU, convertim els busos no-ASIO al target natiu equivalent perquè segueixin
+// sonant pel motor natiu. Si estava apagat (cas per defecte), no toquem res.
+const migrateGlobals = (g) => {
+  if (!g || !g.useNativeCueEngine) return g;
+  const toNative = (devId, name, channels) =>
+    (isAsioTarget(devId) || isNativeTarget(devId)) ? devId
+      : makeNativeTargetStr(name || '', Array.isArray(channels) ? channels : []);
+  return {
+    ...g,
+    cuesDeviceId: toNative(g.cuesDeviceId, g.nativeCueDeviceName, g.nativeCueChannels),
+    playlistDeviceId: toNative(g.playlistDeviceId, g.nativePlaylistDeviceName, g.nativePlaylistChannels),
+    previewDeviceId: toNative(g.previewDeviceId, g.nativePreviewDeviceName, g.nativePreviewChannels),
+  };
+};
+const savedGlobals = migrateGlobals(loadGlobals());
 
 // loadPlaylist / savedPlaylist / plNextId → moguts al slice de playlist (P5)
 // preloadStandbyTimer / scheduleStandbyPreload / goTimers / goChain / clearGoTimers → moguts al slice de cues (P5)
@@ -333,17 +353,20 @@ export const useSoundStore = create((set, get) => ({
   // camps que no existeixin al fitxer (compatibilitat amb versions anteriors).
   importSessionGlobals: (globals) => {
     if (!globals || typeof globals !== 'object') return;
+    // Migra el routing d'un motor natiu global (format antic) a targets "native:…"
+    // per bus, igual que a l'arrencada (vegeu migrateGlobals).
+    const g = migrateGlobals(globals);
     // Apliquem només els camps coneguts; cap camp desconegut no entra a l'estat
     set({
-      globalFadeIn: globals.globalFadeIn ?? 0,
-      globalFadeOut: globals.globalFadeOut ?? 0,
-      cuesStopOthers: globals.cuesStopOthers ?? false,
-      cuesCrossfade: globals.cuesCrossfade ?? 0,
-      cuesDuck: globals.cuesDuck ?? false,
-      cuesStopPlaylist: globals.cuesStopPlaylist ?? false,
-      selectedDeviceId: globals.cuesDeviceId ?? '',
-      playlistDeviceId: globals.playlistDeviceId ?? '',
-      previewDeviceId: globals.previewDeviceId ?? '',
+      globalFadeIn: g.globalFadeIn ?? 0,
+      globalFadeOut: g.globalFadeOut ?? 0,
+      cuesStopOthers: g.cuesStopOthers ?? false,
+      cuesCrossfade: g.cuesCrossfade ?? 0,
+      cuesDuck: g.cuesDuck ?? false,
+      cuesStopPlaylist: g.cuesStopPlaylist ?? false,
+      selectedDeviceId: g.cuesDeviceId ?? '',
+      playlistDeviceId: g.playlistDeviceId ?? '',
+      previewDeviceId: g.previewDeviceId ?? '',
       colorOutputs: globals.colorOutputs ?? {},
       duckEnabled: globals.duckEnabled ?? false,
       duckAmount: globals.duckAmount ?? 0.3,

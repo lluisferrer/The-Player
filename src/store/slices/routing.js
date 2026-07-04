@@ -14,7 +14,7 @@
 
 import { AudioCtx } from '../audioCtx';
 import { invoke } from '@tauri-apps/api/core';
-import { isAsioTarget, parseTarget, resolveCueTargetStr } from '../../lib/outputTarget';
+import { isAsioTarget, isNativeTarget, isHardwareEngineTarget, parseTarget, resolveCueTargetStr } from '../../lib/outputTarget';
 import { dispatchCue } from '../../lib/cueDispatch';
 import { isVisual, hasClip } from '../../lib/slotAudio';
 import {
@@ -54,7 +54,7 @@ export function createRoutingSlice(set, get) {
         ctx = new AudioCtx();
         // setSinkId retorna una Promise; cal capturar el rebuig asíncron amb .catch,
         // no amb try/catch síncron (que no captura errors de Promise).
-        if (ctx.setSinkId) {
+        if (ctx.setSinkId && !isHardwareEngineTarget(deviceId)) {
           ctx.setSinkId(deviceId).catch((e) =>
             console.warn('[setSinkId] ctxForDevice: dispositiu no disponible:', deviceId, e)
           );
@@ -73,7 +73,7 @@ export function createRoutingSlice(set, get) {
         set({ playlistCtx: ctx });
         const dev = get().playlistDeviceId;
         // setSinkId és asíncron; el rebuig (dispositiu absent) es captura amb .catch.
-        if (ctx.setSinkId && dev) {
+        if (ctx.setSinkId && dev && !isHardwareEngineTarget(dev)) {
           ctx.setSinkId(dev).catch((e) =>
             console.warn('[setSinkId] ensurePlaylistCtx: dispositiu no disponible:', dev, e)
           );
@@ -89,8 +89,9 @@ export function createRoutingSlice(set, get) {
     detectOutputChannels: async () => {
       const ctx = get().audioContext || get().initAudioContext();
       const dev = get().selectedDeviceId;
-      // Si el bus de Cues apunta a ASIO, no és un sinkId WASAPI: no el toquem.
-      if (ctx.setSinkId && dev && dev !== 'default' && !isAsioTarget(dev)) {
+      // Si el bus de Cues apunta a un motor de maquinari (ASIO o natiu), no és un
+      // sinkId WASAPI: no el toquem.
+      if (ctx.setSinkId && dev && dev !== 'default' && !isHardwareEngineTarget(dev)) {
         try { await ctx.setSinkId(dev); } catch { /* res */ }
       }
       const max = ctx.destination.maxChannelCount;
@@ -122,14 +123,14 @@ export function createRoutingSlice(set, get) {
       // Si el bus de Cues s'assigna a un target ASIO (string "asio:…"), NO és un
       // sinkId WASAPI vàlid: no toquem el setSinkId del context Web Audio (el
       // render ASIO és el pas següent). Guardem el valor igualment (routing).
-      if (!isAsioTarget(deviceId) && audioContext && audioContext.setSinkId) {
+      if (!isHardwareEngineTarget(deviceId) && audioContext && audioContext.setSinkId) {
         try {
           await audioContext.setSinkId(deviceId);
         } catch (e) {
           console.warn('setSinkId no suportat:', e);
         }
       }
-      if (!isAsioTarget(deviceId)) get().detectOutputChannels();
+      if (!isHardwareEngineTarget(deviceId)) get().detectOutputChannels();
       get().persistGlobals();
       // El bus de Cues ha canviat: pre-descodifica els cues que ara routegen a ASIO.
       get().preloadAllAsioCues();
@@ -141,37 +142,38 @@ export function createRoutingSlice(set, get) {
     setPlaylistDevice: (deviceId) => {
       const oldDev = get().playlistDeviceId;
       if (oldDev === deviceId) return;
-      const wasAsio = isAsioTarget(oldDev);
-      const willAsio = isAsioTarget(deviceId);
+      const oldHw = isHardwareEngineTarget(oldDev);   // ASIO o natiu cpal
+      const newHw = isHardwareEngineTarget(deviceId);
 
-      // WASAPI → WASAPI: canvi de sink en calent, sense cap tall.
-      if (!wasAsio && !willAsio) {
+      // WASAPI → WASAPI (cap dels dos és motor de maquinari): canvi de sink en calent.
+      if (!oldHw && !newHw) {
         set({ playlistDeviceId: deviceId });
         plSetDevice(get);
         get().persistGlobals();
         return;
       }
 
-      // Canvi que implica ASIO (o de tipus): captura la posició actual, fa fade-out
-      // a la sortida antiga i reprèn a la nova des de la mateixa posició (crossfade
-      // entre sortides). Si estava en pausa, simplement atura (no es reprèn).
+      // Canvi que implica ASIO o natiu (o de tipus): captura la posició actual, atura
+      // el motor antic i reprèn a la nova sortida des de la mateixa posició. Si estava
+      // en pausa, simplement atura (no es reprèn).
       const wasPlaying = get().playlistPlaying;
       let resumeIndex = -1, resumePos = 0;
       if (wasPlaying) {
-        // Motor antic: ASIO si ho era; si no, natiu cpal quan està actiu, o Web Audio.
-        const p = wasAsio ? plaPosition() : (get().useNativeCueEngine ? plnPosition() : plPosition());
+        // Motor antic segons el target ANTIC (encara vigent): ASIO / natiu / Web Audio.
+        const p = get().plIsAsio() ? plaPosition() : get().plIsNative() ? plnPosition() : plPosition();
         if (p && p.index >= 0) { resumeIndex = p.index; resumePos = Math.max(0, p.elapsed); }
       }
       get().playlistStop(); // atura el motor antic (routeja amb el deviceId encara antic)
       set({ playlistDeviceId: deviceId });
       if (wasPlaying && resumeIndex >= 0) {
         const cf = Math.max(0, get().crossfade || 0);
-        // Motor nou segons el dispositiu destí i si el motor natiu està actiu.
-        if (willAsio) plaStartAt(get, set, resumeIndex, resumePos, cf);
-        else if (get().useNativeCueEngine) plnStartAt(get, set, resumeIndex, resumePos, cf);
+        // Motor nou segons el target DESTÍ.
+        if (isAsioTarget(deviceId)) plaStartAt(get, set, resumeIndex, resumePos, cf);
+        else if (isNativeTarget(deviceId)) plnStartAt(get, set, resumeIndex, resumePos, cf);
         else plStartAt(get, set, resumeIndex, resumePos, cf);
       }
       get().persistGlobals();
+      get().closeUnusedNativeDevices(); // allibera dispositius natius que ja no s'usin
     },
 
     // Canvia el dispositiu del bus de Preview. Atura qualsevol preview en curs.
@@ -180,12 +182,13 @@ export function createRoutingSlice(set, get) {
       // migrar en calent entre WASAPI i ASIO).
       if (get().previewingSlot != null) get().stopPreview();
       set({ previewDeviceId: deviceId });
-      // ASIO no és un sinkId WASAPI vàlid: no toquem el setSinkId del context.
-      if (!isAsioTarget(deviceId)) {
+      // ASIO/natiu no són sinkIds WASAPI vàlids: no toquem el setSinkId del context.
+      if (!isHardwareEngineTarget(deviceId)) {
         const ctx = get().previewCtx;
         if (ctx && ctx.setSinkId) { try { await ctx.setSinkId(deviceId); } catch (e) { console.warn(e); } }
       }
       get().persistGlobals();
+      get().closeUnusedNativeDevices(); // allibera dispositius natius que ja no s'usin
     },
 
     // Assigna un color a un dispositiu de sortida (routing per grup)
@@ -327,9 +330,14 @@ export function createRoutingSlice(set, get) {
     // preview) i que no sonin, perquè en canviar de sortida el vell quedi lliure.
     closeUnusedNativeDevices: () => {
       const st = get();
-      const keep = st.useNativeCueEngine
-        ? [st.nativeCueDeviceName || '', st.nativePlaylistDeviceName || '', st.nativePreviewDeviceName || '']
-        : [];
+      // Manté oberts els dispositius cpal que algun bus (Cues, color, Playlist,
+      // Preview) fa servir de debò via un target "native:…". La resta es tanquen.
+      const keep = [];
+      const addNative = (v) => { const t = parseTarget(v); if (t.kind === 'native') keep.push(t.device || ''); };
+      addNative(st.selectedDeviceId);
+      addNative(st.playlistDeviceId);
+      addNative(st.previewDeviceId);
+      Object.values(st.colorOutputs || {}).forEach(addNative);
       invoke('native_close_unused', { keep }).catch(() => { /* sense motor natiu */ });
     },
 
@@ -418,17 +426,17 @@ export function createRoutingSlice(set, get) {
     // carregui la latència de descodificació (~4 s). Només actua si el motor natiu
     // està actiu i el cue surt per WASAPI (la mateixa condició que a `playSlot`).
     preloadNativeSlot: (slotId) => {
-      if (!get().useNativeCueEngine) return;
       const slot = get().slots.find((s) => s.id === slotId);
       if (!slot || !slot.filePath || isVisual(slot)) return;
       // Cue llarg (streaming): NO té sentit fer-ne full-decode a la cau; el dispar
       // ja va per decode-ahead. Saltem la precàrrega nativa.
       if (slot.isStreaming) return;
-      // Mateixa decisió de routing que al dispar: si va a ASIO, no és cosa del natiu.
+      // Mateixa decisió de routing que al dispar: només precarreguem els que routegen
+      // al motor NATIU (els ASIO els cobreix preloadAsioSlot; els WASAPI, Web Audio).
       const decision = dispatchCue(get(), slot, { kind: 'preload' });
-      if (decision.route !== 'wasapi') return;
+      if (decision.route !== 'native') return;
       invoke('native_preload', {
-        deviceName: get().nativeCueDeviceName || '',
+        deviceName: decision.target.device || '',
         filePath: slot.filePath,
       }).catch((e) => console.warn('[native] preload:', e));
     },
@@ -436,7 +444,6 @@ export function createRoutingSlice(set, get) {
     // Pre-descodifica al motor natiu tots els cues carregats que hi routejaran.
     // S'hi crida en activar el motor natiu o en canviar-ne el dispositiu/canals.
     preloadAllNativeCues: () => {
-      if (!get().useNativeCueEngine) return;
       for (const s of get().slots) {
         if (s.filePath) get().preloadNativeSlot(s.id);
       }
