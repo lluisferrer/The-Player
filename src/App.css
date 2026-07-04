@@ -846,6 +846,20 @@ body {
   outline-offset: -2px;
   box-shadow: 0 0 10px var(--accent-glow);
 }
+/* Barra d'inserció: línia contínua a la vora on caurà el contingut (insert) */
+.tile-insert-bar {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--text-primary);
+  box-shadow: 0 0 8px var(--accent-glow);
+  z-index: 6;
+  pointer-events: none;
+}
+.tile-insert-bar.before { left: 0; }
+.tile-insert-bar.after  { right: 0; }
 
 /* Slot seleccionat (cursor de teclat): contorn clar, conviu amb el glow */
 .sound-button.selected {

@@ -32,10 +32,12 @@ export function SoundButton({ slotId }) {
   // Reorganització de tiles (pointer drag intern): outline blanc a l'origen i al destí.
   const isTileDragging = useSoundStore((s) => s.draggingSlot === slotId);
   const isTileDropTarget = useSoundStore((s) => s.draggingSlot != null && s.draggingSlot !== slotId && s.dropTargetSlot === slotId);
+  const dropEdge       = useSoundStore((s) => (s.dropTargetSlot === slotId ? s.dropEdge : null));
   const beginTileDrag  = useSoundStore((s) => s.beginTileDrag);
   const setTileDropTarget = useSoundStore((s) => s.setTileDropTarget);
   const endTileDrag    = useSoundStore((s) => s.endTileDrag);
   const reorderSlots   = useSoundStore((s) => s.reorderSlots);
+  const insertSlotContent = useSoundStore((s) => s.insertSlotContent);
   const { loadFromPath } = useAudioEngine();
 
   const [showHover, setShowHover]   = useState(false);
@@ -341,7 +343,21 @@ export function SoundButton({ slotId }) {
     }
     const el = document.elementFromPoint(e.clientX, e.clientY);
     const tile = el && el.closest('[data-slot-id]');
-    setTileDropTarget(tile ? Number(tile.getAttribute('data-slot-id')) : null);
+    if (!tile) { setTileDropTarget(null, null); return; }
+    const tid = Number(tile.getAttribute('data-slot-id'));
+    // Vora d'inserció: sobre un tile PLE, el 30% esquerre = insert abans, el 30%
+    // dret = insert després, el centre = swap. Sobre un buit, sempre "a sobre" (move).
+    let edge = null;
+    if (tid !== slotId) {
+      const ts = useSoundStore.getState().slots.find((s) => s.id === tid);
+      if (ts && (ts.filePath || ts.label)) {
+        const r = tile.getBoundingClientRect();
+        const fx = (e.clientX - r.left) / r.width;
+        if (fx < 0.30) edge = 'before';
+        else if (fx > 0.70) edge = 'after';
+      }
+    }
+    setTileDropTarget(tid, edge);
   };
   const handleTilePointerUp = () => {
     const d = tileDragRef.current;
@@ -349,9 +365,12 @@ export function SoundButton({ slotId }) {
     if (!d) return;
     try { rootRef.current?.releasePointerCapture(d.pid); } catch { /* res */ }
     if (!d.active) return;
-    const target = useSoundStore.getState().dropTargetSlot;
+    const { dropTargetSlot: target, dropEdge: edge } = useSoundStore.getState();
     endTileDrag();
-    if (target != null && target !== slotId) reorderSlots(slotId, target);
+    if (target != null && target !== slotId) {
+      if (edge === 'before' || edge === 'after') insertSlotContent(slotId, target, edge === 'before');
+      else reorderSlots(slotId, target);
+    }
     // Empassa el click sintètic posterior i reactiva després
     setTimeout(() => { suppressClickRef.current = false; }, 0);
   };
@@ -386,7 +405,7 @@ export function SoundButton({ slotId }) {
   return (
     <div
       ref={rootRef}
-      className={`sound-button ${stateClass} ${isMissing ? 'slot-missing' : ''} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''} ${isTileDragging ? 'tile-dragging' : ''} ${isTileDropTarget ? 'tile-drop-target' : ''}`}
+      className={`sound-button ${stateClass} ${isMissing ? 'slot-missing' : ''} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''} ${isTileDragging ? 'tile-dragging' : ''} ${isTileDropTarget && !dropEdge ? 'tile-drop-target' : ''}`}
       data-slot-id={slotId}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
@@ -398,6 +417,10 @@ export function SoundButton({ slotId }) {
       onPointerCancel={handleTilePointerCancel}
       title={hasAudio ? slot.label : 'Drag an audio file or right-click to open'}
     >
+      {/* Barra d'inserció (reorg): marca on caurà el contingut si es deixa anar */}
+      {isTileDropTarget && dropEdge === 'before' && <div className="tile-insert-bar before" />}
+      {isTileDropTarget && dropEdge === 'after' && <div className="tile-insert-bar after" />}
+
       {slot.color && <div className="slot-color-bar" style={{ background: slot.color }} />}
 
       {/* Indicador de standby: cue que es dispararà amb el proper GO */}

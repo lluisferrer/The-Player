@@ -171,6 +171,7 @@ export const useSoundStore = create((set, get) => ({
   dragOverSlot: null,      // id del slot sota un drag&drop natiu de FITXERS (o null)
   draggingSlot: null,      // id del tile que s'està reorganitzant (pointer drag intern)
   dropTargetSlot: null,    // id del tile sota el cursor durant la reorganització
+  dropEdge: null,          // null = a sobre (move/swap) | 'before' | 'after' (insert)
   selectedSlot: 1,         // slot seleccionat (cursor de teclat per al transport)
   currentPage: 0,          // pàgina de cues visible (0..NUM_PAGES-1)
   numPages: NUM_PAGES,

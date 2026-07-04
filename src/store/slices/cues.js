@@ -77,6 +77,18 @@ export const createEmptySlot = (id) => ({
   missing: false,
 });
 
+// Camps de CONTINGUT d'un slot (els que es mouen en reorganitzar tiles). Tota la
+// resta —id, nodes Web Audio, flags de reproducció— és estat viu i es reinicia a
+// partir d'un createEmptySlot(id). L'usen reorderSlots i insertSlotContent.
+const slotContent = (s) => ({
+  label: s.label, filePath: s.filePath, mediaType: s.mediaType, audioUrl: s.audioUrl,
+  audioBuffer: s.audioBuffer, isStreaming: s.isStreaming, streamDuration: s.streamDuration,
+  peaks: s.peaks, volume: s.volume, loop: s.loop, color: s.color,
+  stopOthers: s.stopOthers, duck: s.duck, stopPlaylist: s.stopPlaylist,
+  startPoint: s.startPoint, stopPoint: s.stopPoint, fadeIn: s.fadeIn, fadeOut: s.fadeOut,
+  preWait: s.preWait, continueMode: s.continueMode, missing: s.missing,
+});
+
 // ── Variables de mòdul (temporitzadors de la seqüència GO i del preload predictiu) ──
 
 // P7: debounce del preload predictiu del standby (evita disparar decodes en cada
@@ -157,9 +169,9 @@ export function createCuesSlice(set, get) {
     // ── Reorganització de tiles (pointer drag intern) ──────────────────────────
     // Estat de la reorg: quin tile s'arrossega i sobre quin està el cursor. El
     // pinten SoundButton (outline blanc origen/destí). Vegeu reorderSlots.
-    beginTileDrag: (slotId) => set({ draggingSlot: slotId, dropTargetSlot: null }),
-    setTileDropTarget: (slotId) => set({ dropTargetSlot: slotId }),
-    endTileDrag: () => set({ draggingSlot: null, dropTargetSlot: null }),
+    beginTileDrag: (slotId) => set({ draggingSlot: slotId, dropTargetSlot: null, dropEdge: null }),
+    setTileDropTarget: (slotId, edge = null) => set({ dropTargetSlot: slotId, dropEdge: edge }),
+    endTileDrag: () => set({ draggingSlot: null, dropTargetSlot: null, dropEdge: null }),
 
     // Reorganitza el CONTINGUT de dos tiles (els ids són fixos, lligats al teclat):
     //   - destí BUIT  → MOVE  (el contingut passa al destí i l'origen queda buit)
@@ -180,35 +192,72 @@ export function createCuesSlice(set, get) {
         if (get().previewingSlot === id) get().stopPreview();
       });
 
-      // Camps de CONTINGUT que es mouen (tota la resta = estat viu, es reinicia).
-      const content = (s) => ({
-        label: s.label, filePath: s.filePath, mediaType: s.mediaType, audioUrl: s.audioUrl,
-        audioBuffer: s.audioBuffer, isStreaming: s.isStreaming, streamDuration: s.streamDuration,
-        peaks: s.peaks, volume: s.volume, loop: s.loop, color: s.color,
-        stopOthers: s.stopOthers, duck: s.duck, stopPlaylist: s.stopPlaylist,
-        startPoint: s.startPoint, stopPoint: s.stopPoint, fadeIn: s.fadeIn, fadeOut: s.fadeOut,
-        preWait: s.preWait, continueMode: s.continueMode, missing: s.missing,
-      });
       const from = get().slots.find((s) => s.id === fromId);
       const to = get().slots.find((s) => s.id === toId);
-      const fromC = content(from);
+      const fromC = slotContent(from);
       const toOccupied = !!(to.filePath || to.label);
       const build = (id, c) => ({ ...createEmptySlot(id), ...c });
 
       set((state) => ({
         slots: state.slots.map((s) => {
-          if (s.id === toId) return build(toId, fromC);                 // destí ← origen
-          if (s.id === fromId) return build(fromId, toOccupied ? content(to) : {}); // swap o buit
+          if (s.id === toId) return build(toId, fromC);                     // destí ← origen
+          if (s.id === fromId) return build(fromId, toOccupied ? slotContent(to) : {}); // swap o buit
           return s;
         }),
         draggingSlot: null,
         dropTargetSlot: null,
+        dropEdge: null,
         // Si el slot seleccionat era un dels dos, mantén la selecció sobre el destí
         selectedSlot: state.selectedSlot === fromId ? toId : state.selectedSlot,
       }));
       get().persistSlots();
       // Re-preload (ASIO/natiu) dels dos slots perquè el GO segueixi instantani
       [fromId, toId].forEach((id) => { get().preloadAsioSlot(id); get().preloadNativeSlot(id); });
+    },
+
+    // INSERT-entre-dos: mou el contingut de fromId a la posició immediatament ABANS
+    // (before=true) o DESPRÉS (before=false) de toId, desplaçant en cascada la resta
+    // de la MATEIXA pàgina (l'ordre és fila-major, ids fixos). Com que canvia l'id de
+    // molts continguts, atura TOTES les reproduccions/preview de la pàgina abans.
+    insertSlotContent: (fromId, toId, before) => {
+      if (fromId === toId) return;
+      const SLOTS = SLOTS_PER_PAGE;
+      const base = Math.floor((fromId - 1) / SLOTS) * SLOTS; // primer id (0-based) de la pàgina
+      // fromId i toId han de ser de la mateixa pàgina (tots dos visibles)
+      if (Math.floor((toId - 1) / SLOTS) * SLOTS !== base) return;
+      const ids = Array.from({ length: SLOTS }, (_, i) => base + i + 1);
+
+      // Atura reproducció/preview de tota la pàgina (molts continguts canvien d'id)
+      ids.forEach((id) => {
+        const s = get().slots.find((x) => x.id === id);
+        if (s && (s.isPlaying || s.pausedAt != null || s.nativeActive || s.asioActive)) get().stopSlot(id);
+        if (get().previewingSlot === id) get().stopPreview();
+      });
+
+      // Seqüència de continguts de la pàgina, treu l'origen i insereix a la posició destí
+      const conts = ids.map((id) => slotContent(get().slots.find((s) => s.id === id)));
+      const fromIdx = fromId - base - 1;
+      const [moved] = conts.splice(fromIdx, 1);
+      let insertIdx = (toId - base - 1) + (before ? 0 : 1);
+      if (fromIdx < insertIdx) insertIdx -= 1; // treure l'origen desplaça el destí a l'esquerra
+      insertIdx = Math.max(0, Math.min(conts.length, insertIdx));
+      conts.splice(insertIdx, 0, moved);
+
+      const newSelId = base + insertIdx + 1; // on ha anat a parar el contingut mogut
+      set((state) => ({
+        slots: state.slots.map((s) => {
+          const idx = s.id - base - 1;
+          if (idx < 0 || idx >= SLOTS) return s; // altra pàgina: intacte
+          return { ...createEmptySlot(s.id), ...conts[idx] };
+        }),
+        draggingSlot: null,
+        dropTargetSlot: null,
+        dropEdge: null,
+        selectedSlot: state.selectedSlot === fromId ? newSelId : state.selectedSlot,
+      }));
+      get().persistSlots();
+      // Re-preload de tota la pàgina (els ids del contingut han canviat)
+      ids.forEach((id) => { get().preloadAsioSlot(id); get().preloadNativeSlot(id); });
     },
 
     // Aplica una configuració desada a un slot (després de recarregar l'àudio)
