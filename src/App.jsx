@@ -50,14 +50,13 @@ export default function App() {
   const [theme, setTheme] = useState(getInitialTheme);
   const toggleTheme = () => setTheme(applyTheme(theme === 'dark' ? 'light' : 'dark'));
   const [showSave, setShowSave] = useState(false);
-  // EDIT ↔ LIVE. Entrar a Live és directe; SORTIR de Live demana confirmació
-  // (evita desbloquejar el mode segur sense voler en ple xou).
+  // EDIT ↔ LIVE. Entrar a Live és directe; SORTIR de Live demana confirmació amb un
+  // diàleg PROPI (a Tauri v2, window.confirm està interceptat pel plugin dialog i
+  // no està habilitat → "dialog.confirm not allowed").
+  const [confirmExitLive, setConfirmExitLive] = useState(false);
   const toggleAppMode = () => {
-    if (isLive) {
-      if (window.confirm('Exit LIVE mode? Editing will be unlocked.')) setAppMode('edit');
-    } else {
-      setAppMode('live');
-    }
+    if (isLive) setConfirmExitLive(true);
+    else setAppMode('live');
   };
   const [outputOpen, setOutputOpen] = useState(false); // estat de la finestra de sortida
   const [isFullscreen, setIsFullscreen] = useState(false); // pantalla completa de la finestra principal
@@ -564,6 +563,32 @@ export default function App() {
           : <Library onClose={() => setShowSave(false)} />
       )}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} readOnly={isLive} />}
+
+      {/* Confirmació per SORTIR de LIVE (diàleg propi; window.confirm no va a Tauri) */}
+      {confirmExitLive && (
+        <div className="editor-overlay" onClick={() => setConfirmExitLive(false)}>
+          <div className="editor-panel" style={{ maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
+            <div className="editor-header">
+              <span className="editor-title">Exit LIVE mode?</span>
+              <button className="editor-close" onClick={() => setConfirmExitLive(false)}>✕</button>
+            </div>
+            <div style={{ padding: '14px 16px' }}>
+              <p style={{ marginBottom: 16, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                Editing will be unlocked — you'll be able to move, edit, delete cues and load files again.
+              </p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button className="library-btn" onClick={() => setConfirmExitLive(false)}>Stay in LIVE</button>
+                <button
+                  className="library-btn mode-lock-btn live"
+                  onClick={() => { setAppMode('edit'); setConfirmExitLive(false); }}
+                >
+                  Exit LIVE
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <Toast />
     </div>
   );
