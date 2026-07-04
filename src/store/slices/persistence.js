@@ -17,16 +17,14 @@ export function createPersistenceSlice(get) {
       const {
         globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
         duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
-        useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
-        nativePreviewDeviceName, nativePreviewChannels, separateVideoAudio,
+        separateVideoAudio,
       } = get();
       localStorage.setItem('the-player-globals', JSON.stringify({
         globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist,
         cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
         colorOutputs,
         duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
-        useNativeCueEngine, nativeCueDeviceName, nativeCueChannels, nativePlaylistDeviceName, nativePlaylistChannels,
-        nativePreviewDeviceName, nativePreviewChannels, separateVideoAudio,
+        separateVideoAudio,
       }));
     },
 

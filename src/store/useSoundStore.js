@@ -118,7 +118,7 @@ export const useSoundStore = create((set, get) => ({
   ...createPreviewSlice(set, get),
   // P5: slice de routing — dispositius/busos/contextos/preload (initAudioContext/ctxForDevice/
   // ensurePlaylistCtx/detectOutputChannels/setAudioDevices/setSelectedDevice/setPlaylistDevice/
-  // setPreviewDevice/setColorOutput/setNative*/setUseNativeCueEngine/closeUnusedNativeDevices/
+  // setPreviewDevice/setColorOutput/closeUnusedNativeDevices/
   // setAsioMasterGain/initAsioMaster/setAsioInfo/refreshAsioLoaded/toggleEnabledOutput/preload*).
   ...createRoutingSlice(set, get),
   // P5: slice de playlist — addPlaylistTracks/removePlaylistTrack/movePlaylistTrack/clearPlaylist/
@@ -192,24 +192,10 @@ export const useSoundStore = create((set, get) => ({
   previewVoiceId: PREVIEW_VOICE_ID, // id de la veu ASIO del preview actual (rotatiu)
   previewStartedAt: 0,     // instant (previewCtx) en què va començar el preview
   colorOutputs: savedGlobals.colorOutputs || {}, // { color: deviceId } routing per grup
-  // Increment 3 (experimental): si és true, els cues de ruta WASAPI surten pel
-  // motor natiu cpal en lloc de Web Audio. Default APAGAT (comportament intacte).
-  useNativeCueEngine: savedGlobals.useNativeCueEngine ?? false,
-  // Increment 4: routing del motor natiu cpal. `nativeCueDeviceName` és el NOM de
-  // cpal del dispositiu de sortida (de list_audio_outputs; buit = per defecte) —
-  // NO és un deviceId del WebView ni un target ASIO. `nativeCueChannels` són els
-  // canals destí 0-based (p. ex. [0,1] = 1-2, [2,3] = 3-4); buit = els 2 primers.
-  nativeCueDeviceName: savedGlobals.nativeCueDeviceName ?? '',
-  nativeCueChannels: Array.isArray(savedGlobals.nativeCueChannels) ? savedGlobals.nativeCueChannels : [],
-  // Dispositiu/canals cpal de la PLAYLIST quan va pel motor natiu (mateix espai de
-  // noms que nativeCueDeviceName; pot ser un dispositiu diferent del dels cues per
-  // separar música de fons i efectes). Buit = per defecte / 2 primers canals.
-  nativePlaylistDeviceName: savedGlobals.nativePlaylistDeviceName ?? '',
-  nativePlaylistChannels: Array.isArray(savedGlobals.nativePlaylistChannels) ? savedGlobals.nativePlaylistChannels : [],
-  // Dispositiu/canals cpal del bus de PREVIEW (PFL) quan va pel motor natiu
-  // (típicament uns auriculars en una sortida a part). Buit = per defecte.
-  nativePreviewDeviceName: savedGlobals.nativePreviewDeviceName ?? '',
-  nativePreviewChannels: Array.isArray(savedGlobals.nativePreviewChannels) ? savedGlobals.nativePreviewChannels : [],
+  // P3: el motor de cada bus (WASAPI/ASIO/natiu) es codifica al seu propi target
+  // (selectedDeviceId/playlistDeviceId/previewDeviceId/colorOutputs). Ja no hi ha un
+  // flag global useNativeCueEngine ni camps nativeCue*/nativePlaylist*/nativePreview*
+  // separats; migrateGlobals converteix les sessions antigues (vegeu a dalt).
   // Monitor predeterminat de la finestra de sortida de vídeo, identificat per NOM
   // (m.name d'availableMonitors). null = auto (primer monitor no principal).
   videoMonitorName: savedGlobals.videoMonitorName ?? null,
@@ -239,9 +225,7 @@ export const useSoundStore = create((set, get) => ({
 
   // initAudioContext / ctxForDevice / ensurePlaylistCtx / detectOutputChannels /
   // setAudioDevices / setSelectedDevice / setPlaylistDevice / setPreviewDevice /
-  // setColorOutput / setNativeCueDevice / setNativeCueChannels / setNativePlaylistDevice /
-  // setNativePlaylistChannels / setNativePreviewDevice / setNativePreviewChannels /
-  // setUseNativeCueEngine / closeUnusedNativeDevices / setAsioMasterGain / initAsioMaster /
+  // setColorOutput / closeUnusedNativeDevices / setAsioMasterGain / initAsioMaster /
   // setAsioInfo / refreshAsioLoaded / toggleEnabledOutput / preloadAsioSlot /
   // preloadAllAsioCues / preloadNativeSlot / preloadAllNativeCues → slice de routing (P5).
 
@@ -319,13 +303,6 @@ export const useSoundStore = create((set, get) => ({
       videoMonitorName: state.videoMonitorName,
       videoIdlePattern: state.videoIdlePattern,
       videoOutputOpen: state.videoOutputOpen,
-      useNativeCueEngine: state.useNativeCueEngine,
-      nativeCueDeviceName: state.nativeCueDeviceName,
-      nativeCueChannels: state.nativeCueChannels,
-      nativePlaylistDeviceName: state.nativePlaylistDeviceName,
-      nativePlaylistChannels: state.nativePlaylistChannels,
-      nativePreviewDeviceName: state.nativePreviewDeviceName,
-      nativePreviewChannels: state.nativePreviewChannels,
       separateVideoAudio: state.separateVideoAudio,
     };
 
@@ -379,13 +356,6 @@ export const useSoundStore = create((set, get) => ({
       videoIdlePattern: globals.videoIdlePattern ?? 'black',
       // videoOutputOpen s'ignora deliberadament: no volem obrir la sortida de vídeo
       // automàticament en importar (pot sorprendre a l'operador en ple show).
-      useNativeCueEngine: globals.useNativeCueEngine ?? false,
-      nativeCueDeviceName: globals.nativeCueDeviceName ?? '',
-      nativeCueChannels: globals.nativeCueChannels ?? [],
-      nativePlaylistDeviceName: globals.nativePlaylistDeviceName ?? '',
-      nativePlaylistChannels: globals.nativePlaylistChannels ?? [],
-      nativePreviewDeviceName: globals.nativePreviewDeviceName ?? '',
-      nativePreviewChannels: globals.nativePreviewChannels ?? [],
       separateVideoAudio: globals.separateVideoAudio ?? false,
     });
     get().persistGlobals();

@@ -1,10 +1,9 @@
 // Motor NATIU de la Playlist per al backend cpal multiplataforma (WASAPI a
 // Windows, CoreAudio a Mac).
 //
-// Quan el motor natiu cpal està actiu (`useNativeCueEngine`) i el dispositiu de
-// la playlist NO és un target ASIO, les pistes es reprodueixen pel motor de veus
-// natiu (`native_play_cue` → camí streaming) cap als canals del dispositiu cpal
-// triat (`nativePlaylistDeviceName`/`nativePlaylistChannels`), en comptes
+// Quan el bus de la playlist routeja a un target "native:…" (plIsNative), les
+// pistes es reprodueixen pel motor de veus natiu (`native_play_cue` → camí
+// streaming) cap al dispositiu i canals cpal codificats al target, en comptes
 // d'elements <audio> + setSinkId. Això dona routing multicanal real també a Mac,
 // on el WebView no té `setSinkId`.
 //
@@ -60,13 +59,10 @@ function killOrphanN() {
 }
 
 // Dispositiu cpal efectiu de la playlist (nom + canals destí), llegit del target
-// "native:…" del bus de la playlist. (Fallback als camps antics per compatibilitat
-// amb sessions anteriors a la unificació del routing.)
+// "native:…" del bus de la playlist (només s'hi entra quan plIsNative és cert).
 function target(get) {
   const t = parseTarget(get().playlistDeviceId);
-  if (t.kind === 'native') return { deviceName: t.device || '', channels: t.channels || [] };
-  const st = get();
-  return { deviceName: st.nativePlaylistDeviceName || '', channels: st.nativePlaylistChannels || [] };
+  return { deviceName: t.device || '', channels: t.channels || [] };
 }
 
 // Temps transcorregut segons el rellotge (per planificar; robust i monòton).

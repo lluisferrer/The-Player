@@ -21,10 +21,10 @@ import {
   plSetDevice, plPosition, plStartAt,
 } from '../../lib/playlistEngine';
 import {
-  plaPosition, plaStartAt, plaSetDevice,
+  plaPosition, plaStartAt,
 } from '../../lib/playlistAsio';
 import {
-  plnSetDevice, plnPosition, plnStartAt,
+  plnPosition, plnStartAt,
 } from '../../lib/playlistNative';
 
 // Registre de contextos Web Audio per als busos de color dels cues:
@@ -204,126 +204,6 @@ export function createRoutingSlice(set, get) {
       get().preloadAllAsioCues();
       // ...i els que ara routegen a WASAPI pel motor natiu (si està actiu).
       get().preloadAllNativeCues();
-    },
-
-    // Increment 4: dispositiu de sortida del motor natiu (NOM de cpal; buit = per
-    // defecte). En canviar de dispositiu, el routing de canals deixa de ser vàlid:
-    // el reiniciem a buit (els 2 primers canals) perquè no apunti a canals inexistents.
-    setNativeCueDevice: (name) => {
-      set({ nativeCueDeviceName: name || '', nativeCueChannels: [] });
-      get().persistGlobals();
-      // El dispositiu natiu (i, per tant, la seva freqüència) ha canviat: re-preload
-      // a la nova freqüència perquè la cau tingui el PCM al rate correcte.
-      get().preloadAllNativeCues();
-      get().closeUnusedNativeDevices(); // allibera el dispositiu anterior si ja no s'usa
-    },
-    // Increment 4: canals destí del motor natiu (array 0-based, p. ex. [2,3] = 3-4).
-    setNativeCueChannels: (channels) => {
-      set({ nativeCueChannels: Array.isArray(channels) ? channels : [] });
-      get().persistGlobals();
-      // Els canals no afecten el rate ni el PCM, però reprecarreguem per coherència
-      // (idempotent: si ja és a la cau, el motor no torna a descodificar).
-      get().preloadAllNativeCues();
-    },
-
-    // Dispositiu/canals cpal de la PLAYLIST nativa. Canviar-los atura la playlist
-    // nativa actual (no es pot migrar l'stream en calent entre dispositius cpal).
-    setNativePlaylistDevice: (name) => {
-      if (get().plIsNative()) plnSetDevice(get);
-      set({ nativePlaylistDeviceName: name || '', nativePlaylistChannels: [] });
-      get().persistGlobals();
-      get().closeUnusedNativeDevices();
-    },
-    setNativePlaylistChannels: (channels) => {
-      set({ nativePlaylistChannels: Array.isArray(channels) ? channels : [] });
-      get().persistGlobals();
-    },
-
-    // Dispositiu/canals cpal del bus de preview natiu. Canviar-los atura el preview
-    // en curs (no es pot migrar en calent entre dispositius cpal).
-    setNativePreviewDevice: (name) => {
-      if (get().previewingSlot != null) get().stopPreview();
-      set({ nativePreviewDeviceName: name || '', nativePreviewChannels: [] });
-      get().persistGlobals();
-      get().closeUnusedNativeDevices();
-    },
-    setNativePreviewChannels: (channels) => {
-      set({ nativePreviewChannels: Array.isArray(channels) ? channels : [] });
-      get().persistGlobals();
-    },
-
-    // Increment 3 (experimental): activa/desactiva el motor natiu cpal per a cues
-    // de ruta WASAPI. Es desa als globals; default APAGAT.
-    //
-    // CORRECCIÓ A4 — migració en calent:
-    // Quan es commuta el flag amb àudio en curs, calen tres accions per evitar
-    // que elements <audio> (motor Web) o veus cpal quedin orfes sense control:
-    //
-    //   1. PLAYLIST: si sona i el dispositiu NO és ASIO (l'ASIO no canvia de
-    //      motor amb aquest flag), captura posició amb el motor ANTIC, l'atura,
-    //      canvia el flag i reprèn amb el motor NOU des de la mateixa posició.
-    //      Segueix exactament el patró de setPlaylistDevice (~L505-538).
-    //
-    //   2. CUES nativeActive: si s'apaga el motor natiu, els cues que sonaven per
-    //      cpal ja no tindran control (cap ruta Web Audio els pot aturar). Els
-    //      aturem de cop amb native_stop_voice i netegem l'estat.
-    //      En activar el motor, els cues Web Audio actuals segueixen pel seu camí
-    //      fins que acabin (no els tallem); el motor nou s'aplica als propers.
-    //
-    //   3. PREVIEW: aturem qualsevol preview en curs (pot usar el motor que deixa
-    //      de ser vigent) perquè no quedi orfe.
-    setUseNativeCueEngine: (on) => {
-      const st = get();
-      const wasNative = !!st.useNativeCueEngine;
-      if (wasNative === !!on) return; // cap canvi efectiu
-
-      // ── 3. Preview en curs: atura'l SEMPRE (pot usar el motor que canvia) ──
-      if (st.previewingSlot != null) st.stopPreview();
-
-      // ── 2. Cues nativeActive: si apaguem el motor natiu, atura'ls de cop ──
-      // (Si l'activem, els cues Web Audio actuals seguiran fins que acabin sol.)
-      if (!on) {
-        // get().slots (no l'snapshot st): stopSlot va mutant l'estat a cada iteració.
-        get().slots.forEach((s) => {
-          if (s.nativeActive && (s.isPlaying || s.pausedAt != null)) {
-            get().stopSlot(s.id); // stopSlot ja fa invoke('native_stop_voice') i neteja flags
-          }
-        });
-      }
-
-      // ── 1. Playlist: migra en calent si sona i el dispositiu NO és ASIO ──
-      // L'ASIO té el seu propi camí (plIsAsio) i no depèn del flag useNativeCueEngine.
-      // NOTA: només migrem la playlist SONANT. Si estava en PAUSA, el resume posterior
-      // arrencarà la pista des de l'inici (la posició de pausa vivia al motor antic,
-      // ja aturat); és una limitació acceptada d'aquest commutador poc freqüent.
-      const playlistAffected = st.playlistPlaying && !isAsioTarget(st.playlistDeviceId);
-      let resumeIndex = -1;
-      let resumePos = 0;
-      if (playlistAffected) {
-        // Captura posició amb el motor ANTIC (before flag change):
-        //   on=true  → ara és motor Web → plPosition()
-        //   on=false → ara és motor natiu → plnPosition()
-        const p = on ? plPosition() : plnPosition();
-        if (p && p.index >= 0) { resumeIndex = p.index; resumePos = Math.max(0, p.elapsed); }
-        // Atura amb el motor antic ABANS de canviar el flag
-        get().playlistStop();
-      }
-
-      // ── Canvi efectiu del flag ──
-      set({ useNativeCueEngine: !!on });
-      get().persistGlobals();
-
-      // ── 1 (cont.) Reprèn amb el motor NOU des de la mateixa posició ──
-      if (playlistAffected && resumeIndex >= 0) {
-        const cf = Math.max(0, get().crossfade || 0);
-        if (on) plnStartAt(get, set, resumeIndex, resumePos, cf);
-        else plStartAt(get, set, resumeIndex, resumePos, cf);
-      }
-
-      // En activar el motor natiu, pre-descodifica ja els cues que hi routejaran.
-      if (on) get().preloadAllNativeCues();
-      // En desactivar-lo, allibera tots els dispositius natius que no sonin.
-      else get().closeUnusedNativeDevices();
     },
 
     // Allibera els dispositius cpal oberts que ja no usa cap rol (cues/playlist/
