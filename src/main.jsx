@@ -4,6 +4,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import { VideoOutput } from "./components/VideoOutput";
 import { OUTPUT_LABEL } from "./lib/videoOutput";
+import { getInitialTheme, applyTheme } from "./lib/theme";
+
+// Aplica el tema Dia/Nit desat ABANS del primer render (evita el flash del tema
+// per defecte). La finestra de sortida de vídeo no el necessita, però és inofensiu.
+applyTheme(getInitialTheme());
 
 // Segons el label de la finestra actual decidim quina vista renderitzem:
 // la finestra "output" mostra la sortida de vídeo; la resta, l'app normal.

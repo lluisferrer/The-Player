@@ -20,6 +20,24 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/* ─── TEMA DIA (clar, alt contrast per a llum de sol a l'aire lliure) ───
+   Override de les variables de color; tota la resta de l'App.css ja les fa
+   servir amb var(...), així que amb redefinir-les n'hi ha prou. S'activa amb
+   data-theme="light" a <html> (vegeu src/lib/theme.js). */
+:root[data-theme="light"] {
+  --bg-primary:       #d6d6da;  /* fons general clar (no blanc pur: menys enlluernament) */
+  --bg-button:        #ffffff;  /* tiles blancs: màxim contrast amb el text */
+  --bg-button-hover:  #ececf0;
+  --accent:           #1d4ed8;  /* blau més fosc i saturat: visible sobre blanc */
+  --accent-glow:      rgba(29, 78, 216, 0.35);
+  --text-primary:     #18181b;  /* text quasi negre */
+  --text-secondary:   #52525b;  /* gris fosc: llegible amb sol */
+  --border:           #9ca3af;  /* vores visibles sobre clar */
+  --vu-green:         #15803d;  /* VU en tons més foscos per contrast sobre tile clar */
+  --vu-yellow:        #b45309;
+  --vu-red:           #dc2626;
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;

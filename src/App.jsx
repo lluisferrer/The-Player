@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Maximize, Minimize } from 'lucide-react';
+import { Maximize, Minimize, Sun, Moon } from 'lucide-react';
 import { useSoundStore } from './store/useSoundStore';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { SoundBoard } from './components/SoundBoard';
@@ -13,6 +13,7 @@ import { PlaylistSave } from './components/PlaylistSave';
 import { SettingsModal } from './components/SettingsModal';
 import { Toast } from './components/Toast';
 import { slotForKey } from './lib/keyMap';
+import { getInitialTheme, applyTheme } from './lib/theme';
 import { hasClip, isVideo } from './lib/slotAudio';
 import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow } from './lib/videoOutput';
 import { listen } from '@tauri-apps/api/event';
@@ -42,6 +43,9 @@ export default function App() {
   const { loadFromPath } = useAudioEngine();
 
   const [showSettings, setShowSettings] = useState(false);
+  // Tema Dia/Nit (botó manual a la capçalera; es recorda entre sessions).
+  const [theme, setTheme] = useState(getInitialTheme);
+  const toggleTheme = () => setTheme(applyTheme(theme === 'dark' ? 'light' : 'dark'));
   const [showSave, setShowSave] = useState(false);
   const [outputOpen, setOutputOpen] = useState(false); // estat de la finestra de sortida
   const [isFullscreen, setIsFullscreen] = useState(false); // pantalla completa de la finestra principal
@@ -502,6 +506,13 @@ export default function App() {
 
           <button className="library-btn" onClick={() => setShowSave(true)}>FILES</button>
           <button className="library-btn" onClick={() => setShowSettings(true)}>SETTINGS</button>
+          <button
+            className="library-btn icon-btn"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Day mode (light)' : 'Night mode (dark)'}
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
           <button
             className={`library-btn icon-btn ${isFullscreen ? 'active' : ''}`}
             onClick={toggleFullscreen}
