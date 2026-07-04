@@ -29,6 +29,13 @@ export function SoundButton({ slotId }) {
   const isSelected     = useSoundStore((s) => s.selectedSlot === slotId);
   const previewArmed   = useSoundStore((s) => s.previewArmed);
   const isPreviewing   = useSoundStore((s) => s.previewingSlot === slotId);
+  // Reorganització de tiles (pointer drag intern): outline blanc a l'origen i al destí.
+  const isTileDragging = useSoundStore((s) => s.draggingSlot === slotId);
+  const isTileDropTarget = useSoundStore((s) => s.draggingSlot != null && s.draggingSlot !== slotId && s.dropTargetSlot === slotId);
+  const beginTileDrag  = useSoundStore((s) => s.beginTileDrag);
+  const setTileDropTarget = useSoundStore((s) => s.setTileDropTarget);
+  const endTileDrag    = useSoundStore((s) => s.endTileDrag);
+  const reorderSlots   = useSoundStore((s) => s.reorderSlots);
   const { loadFromPath } = useAudioEngine();
 
   const [showHover, setShowHover]   = useState(false);
@@ -44,6 +51,8 @@ export function SoundButton({ slotId }) {
   const scrubRef = useRef(null);
   const suppressClickRef = useRef(false); // evita que el click post-drag faci play/stop
   const waveRef = useRef(null);
+  const rootRef = useRef(null);       // arrel del tile (per a la captura de pointer)
+  const tileDragRef = useRef(null);   // estat del drag de reorganització en curs
 
   const hasAudio  = hasClip(slot);
   const isVideoCue = slot.mediaType === 'video';
@@ -310,6 +319,48 @@ export function SoundButton({ slotId }) {
     setSeeking(true);
   };
 
+  // ── Reorganització del tile per arrossegament (pointer) ──
+  // Comença NOMÉS des del cos del tile (no des de slider, botons ni el playhead) i
+  // només si té contingut. El drag s'activa en superar un llindar de moviment; així
+  // un clic net segueix disparant el cue. L'outline blanc (origen/destí) el pinta el
+  // CSS via les classes tile-dragging / tile-drop-target.
+  const handleTilePointerDown = (e) => {
+    if (e.button !== 0 || !(hasAudio || slot.label)) return;
+    if (e.target.closest('input, button, .slot-playhead')) return;
+    tileDragRef.current = { x: e.clientX, y: e.clientY, pid: e.pointerId, active: false };
+  };
+  const handleTilePointerMove = (e) => {
+    const d = tileDragRef.current;
+    if (!d) return;
+    if (!d.active) {
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return; // llindar anti-clic
+      d.active = true;
+      suppressClickRef.current = true; // en soltar, no disparar el cue
+      beginTileDrag(slotId);
+      try { rootRef.current?.setPointerCapture(d.pid); } catch { /* res */ }
+    }
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const tile = el && el.closest('[data-slot-id]');
+    setTileDropTarget(tile ? Number(tile.getAttribute('data-slot-id')) : null);
+  };
+  const handleTilePointerUp = () => {
+    const d = tileDragRef.current;
+    tileDragRef.current = null;
+    if (!d) return;
+    try { rootRef.current?.releasePointerCapture(d.pid); } catch { /* res */ }
+    if (!d.active) return;
+    const target = useSoundStore.getState().dropTargetSlot;
+    endTileDrag();
+    if (target != null && target !== slotId) reorderSlots(slotId, target);
+    // Empassa el click sintètic posterior i reactiva després
+    setTimeout(() => { suppressClickRef.current = false; }, 0);
+  };
+  const handleTilePointerCancel = () => {
+    if (tileDragRef.current?.active) endTileDrag();
+    tileDragRef.current = null;
+    suppressClickRef.current = false;
+  };
+
   const paused = hasAudio && slot.pausedAt != null;
   // Reproduint o pausat: temps transcorregut; aturat: durada total
   const timeLabel = hasAudio ? fmtTime((isPlaying || paused) ? elapsed : duration) : '';
@@ -334,12 +385,17 @@ export function SoundButton({ slotId }) {
 
   return (
     <div
-      className={`sound-button ${stateClass} ${isMissing ? 'slot-missing' : ''} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''}`}
+      ref={rootRef}
+      className={`sound-button ${stateClass} ${isMissing ? 'slot-missing' : ''} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''} ${isTileDragging ? 'tile-dragging' : ''} ${isTileDropTarget ? 'tile-drop-target' : ''}`}
       data-slot-id={slotId}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
       onMouseEnter={() => setShowHover(true)}
       onMouseLeave={() => setShowHover(false)}
+      onPointerDown={handleTilePointerDown}
+      onPointerMove={handleTilePointerMove}
+      onPointerUp={handleTilePointerUp}
+      onPointerCancel={handleTilePointerCancel}
       title={hasAudio ? slot.label : 'Drag an audio file or right-click to open'}
     >
       {slot.color && <div className="slot-color-bar" style={{ background: slot.color }} />}

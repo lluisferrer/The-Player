@@ -831,6 +831,22 @@ body {
   background: rgba(59, 130, 246, 0.1);
 }
 
+/* Reorganització de tiles (drag intern amb pointer):
+   - origen que s'arrossega: atenuat + contorn discontinu
+   - destí sota el cursor: contorn ple i realçat
+   S'usa var(--text-primary) (blanc en nit, negre en dia) perquè el contorn es
+   vegi en tots dos temes. */
+.sound-button.tile-dragging {
+  opacity: 0.4;
+  outline: 2px dashed var(--text-primary);
+  outline-offset: -2px;
+}
+.sound-button.tile-drop-target {
+  outline: 3px solid var(--text-primary);
+  outline-offset: -2px;
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
 /* Slot seleccionat (cursor de teclat): contorn clar, conviu amb el glow */
 .sound-button.selected {
   outline: 2px solid rgba(244, 244, 245, 0.85);

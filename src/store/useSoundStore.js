@@ -168,7 +168,9 @@ export const useSoundStore = create((set, get) => ({
   duckHold: savedGlobals.duckHold ?? 0,             // espera (s) abans de recuperar (0 = immediat)
   viewMode: 'grid',        // 'grid' (botonera 8×4) | 'list' (llista de files)
   editingSlot: null,       // id del slot obert a l'editor (o null)
-  dragOverSlot: null,      // id del slot sota un drag&drop natiu (o null)
+  dragOverSlot: null,      // id del slot sota un drag&drop natiu de FITXERS (o null)
+  draggingSlot: null,      // id del tile que s'està reorganitzant (pointer drag intern)
+  dropTargetSlot: null,    // id del tile sota el cursor durant la reorganització
   selectedSlot: 1,         // slot seleccionat (cursor de teclat per al transport)
   currentPage: 0,          // pàgina de cues visible (0..NUM_PAGES-1)
   numPages: NUM_PAGES,
