@@ -41,12 +41,37 @@ export function createPreviewSlice(set, get) {
       if (!slot || !hasClip(slot)) return;
       // Cues d'IMATGE: no tenen preview viu (ja es veuen com a miniatura al tile).
       if (isImage(slot)) { get().stopPreview(); return; }
-      // Cues de VÍDEO: preview VISUAL dins el propi tile (no pel motor d'àudio/ASIO,
-      // que no en sap el còdec). El WebView descodifica el vídeo i el SoundButton el
-      // reprodueix amb un <video>; el so va al dispositiu de preview si és WASAPI, o
-      // mut si és ASIO/no disponible. Només un preview viu alhora (atura l'anterior).
+      // Cues de VÍDEO: preview VISUAL dins el propi tile (el WebView descodifica el
+      // vídeo i el SoundButton el reprodueix amb un <video>). El SO:
+      //   - WASAPI/default: el treu el propi <video> (SoundButton fa setSinkId).
+      //   - ASIO/natiu: el WebView no hi pot enrutar el <video> → toquem l'ÀUDIO del
+      //     fitxer pel motor cap al bus de preview (el <video> va mut, només imatge),
+      //     igual que separateVideoAudio fa per als cues. Sync prou bo per a un PFL curt.
+      // Només un preview viu alhora (atura l'anterior).
       if (isVideo(slot)) {
         get().stopPreview();
+        const pdev = get().previewDeviceId;
+        if (isAsioTarget(pdev) || isNativeTarget(pdev)) {
+          const voiceId = PREVIEW_VOICE_ID + (previewSeq = (previewSeq + 1) % 100000);
+          const tgt = parseTarget(pdev);
+          const total = slotDuration(slot);
+          const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || 0));
+          const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0; // 0 = fins al final
+          const base = {
+            voiceId, filePath: slot.filePath, gain: slot.volume ?? 0.8,
+            fadeIn: 0, fadeOut: 0, loopOn: !!slot.loop, startPoint, stopPoint,
+            streaming: !!slot.isStreaming,
+          };
+          if (isAsioTarget(pdev)) {
+            invoke('asio_play_voice', { ...base, driver: tgt.driver, channels: tgt.channels })
+              .catch((e) => console.warn('[asio] preview video:', e));
+          } else {
+            invoke('native_play_cue', { ...base, deviceName: tgt.device || '', channels: tgt.channels || [] })
+              .catch((e) => console.warn('[native] preview video:', e));
+          }
+          set({ previewingSlot: slotId, previewStartedAt: performance.now() / 1000, previewVoiceId: voiceId });
+          return;
+        }
         set({ previewingSlot: slotId, previewStartedAt: performance.now() / 1000 });
         return;
       }

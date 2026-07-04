@@ -6,7 +6,7 @@ import { useAudioEngine } from '../hooks/useAudioEngine';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { keyForSlot } from '../lib/keyMap';
 import { hasClip, slotDuration } from '../lib/slotAudio';
-import { isAsioTarget } from '../lib/outputTarget';
+import { isHardwareEngineTarget } from '../lib/outputTarget';
 import { getVideoThumb } from '../lib/videoThumb';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
@@ -190,17 +190,23 @@ export function SoundButton({ slotId }) {
   }, [vidSeeking, segDur, slotId]);
 
   // ── Preview in-tile del cue de vídeo (PFL) ──
-  // En carregar metadades: enruta el so al dispositiu de preview (si és WASAPI;
-  // mut si és ASIO o no es pot), posa el volum del cue, salta al punt d'inici i
-  // arrenca. El <video> viu només es munta mentre isPreviewing (un alhora).
+  // El so del preview de vídeo:
+  //   - ASIO/natiu: el WebView no hi pot enrutar el <video> → l'àudio surt pel MOTOR
+  //     cap al bus de preview (vegeu preview.js) i aquí el <video> va MUT (només imatge).
+  //   - WASAPI concret: enruta el so del <video> a aquell dispositiu amb setSinkId.
+  //   - default: so pel dispositiu per defecte del WebView.
+  // Després posa el volum del cue, salta al punt d'inici i arrenca. El <video> viu
+  // només es munta mentre isPreviewing (un alhora).
   const handlePreviewLoaded = async () => {
     const v = previewVidRef.current;
     if (!v) return;
     const dev = previewDeviceId;
-    if (typeof v.setSinkId === 'function' && dev && dev !== 'default' && !isAsioTarget(dev)) {
-      try { await v.setSinkId(dev); v.muted = false; } catch { v.muted = true; }
-    } else if (isAsioTarget(dev)) {
-      v.muted = true; // el WebView no pot enrutar vídeo a ASIO
+    if (isHardwareEngineTarget(dev)) {
+      v.muted = true; // l'àudio el treu el motor (ASIO/natiu); el <video> només imatge
+    } else if (typeof v.setSinkId === 'function' && dev && dev !== 'default') {
+      try { await v.setSinkId(dev); v.muted = false; } catch { v.muted = false; }
+    } else {
+      v.muted = false; // default: so pel dispositiu per defecte del WebView
     }
     try { v.volume = slot.volume ?? 0.8; } catch { /* res */ }
     if (startSec > 0) { try { v.currentTime = startSec; } catch { /* res */ } }
