@@ -50,6 +50,7 @@ export function SoundButton({ slotId }) {
   const [vidSeeking, setVidSeeking] = useState(false); // arrossegant el playhead del vídeo
   const [previewVidPct, setPreviewVidPct] = useState(0); // playhead del preview de vídeo (0..100, dins el segment)
   const previewVidRef = useRef(null);  // <video> del preview in-tile
+  const playVidRef = useRef(null);     // <video> mirall de la reproducció (monitor al tile)
   const vidBodyRef = useRef(null);
   const scrubRef = useRef(null);
   const suppressClickRef = useRef(false); // evita que el click post-drag faci play/stop
@@ -246,6 +247,39 @@ export function SoundButton({ slotId }) {
     }
     stopPreview();
   };
+
+  // ── Mirall de reproducció al tile (monitor) ──
+  // Un <video> MUT que reflecteix la reproducció del cue de vídeo (l'àudio ja surt
+  // per la finestra de sortida o pel motor). En muntar-se, se situa a la posició
+  // actual (startSec + temps ja transcorregut) per no reiniciar si el tile apareix
+  // amb el cue ja sonant (p. ex. en canviar de pàgina). Loop/stop al punt d'out.
+  const handlePlayVidLoaded = () => {
+    const v = playVidRef.current;
+    if (!v) return;
+    v.muted = true;
+    try { v.currentTime = startSec + Math.max(0, vidElapsed || 0); } catch { /* res */ }
+    v.play().catch(() => { /* autoplay pot fallar fins a interacció */ });
+  };
+  const handlePlayVidTime = () => {
+    const v = playVidRef.current;
+    if (!v) return;
+    if (slot.stopPoint != null && v.currentTime >= stopSec) {
+      if (slot.loop) { try { v.currentTime = startSec; } catch { /* res */ } }
+    }
+  };
+  const handlePlayVidEnded = () => {
+    if (!slot.loop) return;
+    const v = playVidRef.current;
+    if (v) { try { v.currentTime = startSec; v.play().catch(() => {}); } catch { /* res */ } }
+  };
+
+  // Sincronitza pausa/represa del mirall amb l'estat del cue.
+  useEffect(() => {
+    const v = playVidRef.current;
+    if (!v) return;
+    if (slot.pausedAt != null) { try { v.pause(); } catch { /* res */ } }
+    else { v.play().catch(() => {}); }
+  }, [slot.pausedAt]);
 
   const handleClick = async (e) => {
     // Ignora el click immediatament posterior a arrossegar el playhead
@@ -490,6 +524,20 @@ export function SoundButton({ slotId }) {
                 onLoadedMetadata={handlePreviewLoaded}
                 onTimeUpdate={handlePreviewTime}
                 onEnded={handlePreviewEnded}
+                autoPlay
+              />
+            )}
+            {/* Mirall de reproducció: vídeo MUT que reflecteix el que sona a la
+                sortida (l'àudio ja surt per la finestra/motor). El preview té prioritat. */}
+            {isVideoCue && isPlaying && !isPreviewing && (
+              <video
+                ref={playVidRef}
+                className="slot-video-preview"
+                src={convertFileSrc(slot.filePath)}
+                muted
+                onLoadedMetadata={handlePlayVidLoaded}
+                onTimeUpdate={handlePlayVidTime}
+                onEnded={handlePlayVidEnded}
                 autoPlay
               />
             )}
