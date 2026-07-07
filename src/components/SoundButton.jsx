@@ -302,18 +302,19 @@ export function SoundButton({ slotId }) {
   const handlePlayVidTime = () => {
     const v = playVidRef.current;
     if (!v || slot.pausedAt != null) return; // pausat: no re-alineïs (frame congelat)
-    // Re-alinea al rellotge de reproducció (vidElapsed) si deriva: el mirall és un
-    // decodificador independent del de la sortida i, sense això, es va desincronitzant.
+    // Re-alinea al rellotge de reproducció (vidElapsed). Com que vidElapsed ja fa el
+    // wrap del loop (e % segDur), saltar a startSec+vidElapsed cobreix TANT la deriva
+    // COM la volta del loop, sense acumular desfasament a cada volta (issue del loop).
     const target = startSec + Math.max(0, vidElapsed || 0);
-    if (Math.abs(v.currentTime - target) > 0.3) { try { v.currentTime = target; } catch { /* res */ } }
-    if (slot.stopPoint != null && v.currentTime >= stopSec) {
-      if (slot.loop) { try { v.currentTime = startSec; } catch { /* res */ } }
+    if ((slot.stopPoint != null && v.currentTime >= stopSec) || Math.abs(v.currentTime - target) > 0.3) {
+      try { v.currentTime = target; } catch { /* res */ }
     }
   };
   const handlePlayVidEnded = () => {
     if (!slot.loop) return;
     const v = playVidRef.current;
-    if (v) { try { v.currentTime = startSec; v.play().catch(() => {}); } catch { /* res */ } }
+    // Final natural (loop del fitxer sencer): reprèn a la posició del rellotge.
+    if (v) { try { v.currentTime = startSec + Math.max(0, vidElapsed || 0); v.play().catch(() => {}); } catch { /* res */ } }
   };
 
   // Sincronitza pausa/represa del mirall amb l'estat del cue.

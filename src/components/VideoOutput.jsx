@@ -175,6 +175,7 @@ export function VideoOutput() {
           // 4c separat: l'àudio surt pel motor → silenciem el <video> i la imatge
           // segueix l'àudio (events video-resync). Sense àudio propi ni setSinkId.
           muted: !!p.muted,
+          paused: false, // un cue nou sempre arrenca reproduint
         };
         const kind = p.mediaType === 'image' ? 'image' : 'video';
         kindRef.current = kind;
@@ -208,12 +209,16 @@ export function VideoOutput() {
         const v = videoRef.current;
         if (v && t != null) { try { v.currentTime = t; } catch { /* res */ } }
       }));
-      // Pausa / resume del vídeo (congela sense amagar; NO passa a negre)
+      // Pausa / resume del vídeo (congela sense amagar; NO passa a negre). El flag
+      // `paused` a playInfo bloqueja els handlers de loop (handleTimeUpdate/handleEnded)
+      // perquè no facin play() i des-pausin en una cursa amb la volta del loop.
       unlisteners.push(await listen('video-pause', () => {
+        playInfo.current.paused = true;
         const v = videoRef.current;
         if (v) { try { v.pause(); } catch { /* res */ } }
       }));
       unlisteners.push(await listen('video-resume', () => {
+        playInfo.current.paused = false;
         const v = videoRef.current;
         if (v) { v.play().catch(() => {}); }
       }));
@@ -349,6 +354,7 @@ export function VideoOutput() {
   const handleTimeUpdate = () => {
     const v = videoRef.current;
     if (!v) return;
+    if (playInfo.current.paused) return; // pausat: no gestionis loop/fade
     const { startPoint, stopPoint, fadeOut, volume, loop } = playInfo.current;
     if (!(stopPoint > 0)) return; // sense punt de stop: deixem que acabi sol (onEnded)
 
@@ -376,6 +382,7 @@ export function VideoOutput() {
   // Final (natural o per punt de stop): torna a negre i informa la finestra
   // principal perquè reseteji l'estat del cue (isPlaying/activeSlot)
   const handleEnded = () => {
+    if (playInfo.current.paused) return; // pausat: no rebobinis ni informis el final
     // Loop sense stopPoint (loop del fitxer sencer): rebobina al punt d'inici
     // i continua, sense informar el final ni resetejar el cue.
     if (playInfo.current.loop) {
