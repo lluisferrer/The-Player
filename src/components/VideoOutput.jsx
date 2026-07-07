@@ -354,6 +354,11 @@ export function VideoOutput() {
   const handleTimeUpdate = () => {
     const v = videoRef.current;
     if (!v) return;
+    // Difon la posició real cap a la finestra principal perquè el mirall del tile
+    // la segueixi (el <video> mut del tile no està rate-locked i derivaria).
+    if (currentSlot.current != null) {
+      emit('video-mirror', { slotId: currentSlot.current, time: v.currentTime }).catch(() => {});
+    }
     if (playInfo.current.paused) return; // pausat: no gestionis loop/fade
     const { startPoint, stopPoint, fadeOut, volume, loop } = playInfo.current;
     if (!(stopPoint > 0)) return; // sense punt de stop: deixem que acabi sol (onEnded)

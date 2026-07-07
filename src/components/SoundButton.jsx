@@ -8,6 +8,7 @@ import { keyForSlot } from '../lib/keyMap';
 import { hasClip, slotDuration } from '../lib/slotAudio';
 import { isHardwareEngineTarget } from '../lib/outputTarget';
 import { getVideoThumb } from '../lib/videoThumb';
+import { mirrorTime } from '../lib/videoMirror';
 import { renderPdfPageToCanvas } from '../lib/pdfRender';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
@@ -292,29 +293,35 @@ export function SoundButton({ slotId }) {
   // per la finestra de sortida o pel motor). En muntar-se, se situa a la posició
   // actual (startSec + temps ja transcorregut) per no reiniciar si el tile apareix
   // amb el cue ja sonant (p. ex. en canviar de pàgina). Loop/stop al punt d'out.
+  // Posició objectiu del mirall: la REAL de la sortida (videoMirror) si n'hi ha; si
+  // no (encara no ha arribat cap difusió), el rellotge de paret com a fallback.
+  const mirrorTarget = () => {
+    const out = mirrorTime(slotId);
+    return out != null ? out : startSec + Math.max(0, vidElapsed || 0);
+  };
   const handlePlayVidLoaded = () => {
     const v = playVidRef.current;
     if (!v) return;
     v.muted = true;
-    try { v.currentTime = startSec + Math.max(0, vidElapsed || 0); } catch { /* res */ }
+    try { v.currentTime = mirrorTarget(); } catch { /* res */ }
     v.play().catch(() => { /* autoplay pot fallar fins a interacció */ });
   };
   const handlePlayVidTime = () => {
     const v = playVidRef.current;
     if (!v || slot.pausedAt != null) return; // pausat: no re-alineïs (frame congelat)
-    // Re-alinea al rellotge de reproducció (vidElapsed). Com que vidElapsed ja fa el
-    // wrap del loop (e % segDur), saltar a startSec+vidElapsed cobreix TANT la deriva
-    // COM la volta del loop, sense acumular desfasament a cada volta (issue del loop).
-    const target = startSec + Math.max(0, vidElapsed || 0);
-    if ((slot.stopPoint != null && v.currentTime >= stopSec) || Math.abs(v.currentTime - target) > 0.3) {
-      try { v.currentTime = target; } catch { /* res */ }
-    }
+    // Segueix la posició REAL de la sortida: el <video> mut del tile no està
+    // rate-locked i, sol, derivaria volta rere volta del loop. Corregim si la
+    // deriva passa el llindar (inclou la volta del loop, quan la sortida ja ha
+    // saltat a startPoint i el target baixa de cop).
+    const target = mirrorTarget();
+    if (Math.abs(v.currentTime - target) > 0.2) {
+      try { v.currentTime = target; } catch { /* res */ } }
   };
   const handlePlayVidEnded = () => {
     if (!slot.loop) return;
     const v = playVidRef.current;
-    // Final natural (loop del fitxer sencer): reprèn a la posició del rellotge.
-    if (v) { try { v.currentTime = startSec + Math.max(0, vidElapsed || 0); v.play().catch(() => {}); } catch { /* res */ } }
+    // Final natural (loop del fitxer sencer): reprèn seguint la sortida.
+    if (v) { try { v.currentTime = mirrorTarget(); v.play().catch(() => {}); } catch { /* res */ } }
   };
 
   // Sincronitza pausa/represa del mirall amb l'estat del cue.

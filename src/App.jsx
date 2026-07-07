@@ -18,6 +18,7 @@ import { hasClip, isVideo } from './lib/slotAudio';
 import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow, resolveTargetMonitorName, monitorIsPresent, reassertOutputFullscreen } from './lib/videoOutput';
 import { listen } from '@tauri-apps/api/event';
 import { applyAsioTelemetry, asioPosition } from './lib/asioTelemetry';
+import { setMirrorTime } from './lib/videoMirror';
 import { plaOnVoiceEnded } from './lib/playlistAsio';
 import { plnOnVoiceEnded } from './lib/playlistNative';
 import logo from './assets/ezyPlayerMinimalLogo.svg';
@@ -324,6 +325,21 @@ export default function App() {
           if (Array.isArray(e.payload) && e.payload.length) {
             useSoundStore.getState().confirmArming(e.payload.map((it) => it && it.id));
           }
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // Posició del vídeo de la sortida → Map de mòdul (videoMirror), perquè el mirall
+  // del tile (un <video> mut, no rate-locked) segueixi la sortida i no derivi en loop.
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('video-mirror', (e) => {
+          const p = e.payload || {};
+          setMirrorTime(p.slotId, p.time);
         });
       } catch { /* fora de Tauri */ }
     })();
