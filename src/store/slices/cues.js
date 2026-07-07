@@ -953,6 +953,10 @@ export function createCuesSlice(set, get) {
       // programat, no s'ha de disparar.
       clearGoTimers();
       const { slots } = get();
+      // Hi ha algun cue VISUAL sonant? Si és així, el seu stopSlot(true) ja farà el
+      // fade-out a negre a la sortida (respectant el fade del cue o el global); un
+      // negre instantani el tallaria.
+      const anyVisualPlaying = slots.some((s) => isVisual(s) && (s.isPlaying || s.pausedAt != null));
       slots.forEach((s) => {
         if (s.isPlaying || s.pausedAt != null) get().stopSlot(s.id, true);
       });
@@ -960,9 +964,10 @@ export function createCuesSlice(set, get) {
       // NOTA: el Stop All dels cues (Esc a la vista de cues) NO atura la Playlist:
       // la música de fons no forma part del pànic dels cues. La Playlist té el seu
       // propi Stop (Esc a la vista de Playlist). [Revertit M7 a petició de l'usuari.]
-      // Negre a la sortida de vídeo (pànic: assegura pantalla negra encara que
-      // cap cue de vídeo constés com a actiu)
-      emitVideoBlack();
+      // Negre a la sortida de vídeo NOMÉS com a seguretat si cap cue visual constava
+      // sonant (per assegurar pantalla neta encara que hi hagués un frame orfe); si un
+      // visual sonava, el seu fade-out ja porta la sortida a negre respectant el fade.
+      if (!anyVisualPlaying) emitVideoBlack();
       // Seguretat: buida el comptador de ducking (recupera la playlist) per si
       // hagués quedat algun id penjat
       duckReset(get);

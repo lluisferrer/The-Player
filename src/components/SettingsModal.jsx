@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import { availableMonitors } from '@tauri-apps/api/window';
 import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
@@ -199,9 +200,33 @@ export function SettingsModal({ onClose, readOnly = false }) {
   const videoMonitorName = useSoundStore((s) => s.videoMonitorName);
   const setVideoMonitorName = useSoundStore((s) => s.setVideoMonitorName);
   const videoIdlePattern = useSoundStore((s) => s.videoIdlePattern);
+  const videoIdleImage = useSoundStore((s) => s.videoIdleImage);
+  const videoIdleImageFit = useSoundStore((s) => s.videoIdleImageFit);
+  const setVideoIdleImage = useSoundStore((s) => s.setVideoIdleImage);
+  const setVideoIdleImageFit = useSoundStore((s) => s.setVideoIdleImageFit);
   const separateVideoAudio = useSoundStore((s) => s.separateVideoAudio);
   const setSeparateVideoAudio = useSoundStore((s) => s.setSeparateVideoAudio);
   const setVideoIdlePattern = useSoundStore((s) => s.setVideoIdlePattern);
+
+  // Tria una imatge de fons personalitzada (patró 'custom') amb el selector natiu.
+  const pickIdleImage = async () => {
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }],
+      });
+      if (path) {
+        setVideoIdleImage(path);
+        // En triar imatge, passa directament al mode 'custom' (comoditat).
+        if (videoIdlePattern !== 'custom') setVideoIdlePattern('custom');
+      }
+    } catch (err) {
+      console.warn('No s\'ha pogut obrir la imatge de fons:', err);
+    }
+  };
+
+  // Nom del fitxer de la imatge de fons (per mostrar-lo, sense la ruta sencera).
+  const idleImageName = videoIdleImage ? videoIdleImage.replace(/^.*[\\/]/, '') : null;
 
   const duckEnabled = useSoundStore((s) => s.duckEnabled);
   const duckAmount  = useSoundStore((s) => s.duckAmount);
@@ -600,12 +625,46 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   <option value="black">Full black</option>
                   <option value="bars">Color bars</option>
                   <option value="testcard">Test card</option>
+                  <option value="custom">Custom image</option>
                 </select>
               </div>
               <div className="settings-note">
                 What shows on the output when nothing is playing (blackout). <b>Full black</b> is
                 pure black, no text. Applies instantly to the open window.
               </div>
+
+              {videoIdlePattern === 'custom' && (
+                <>
+                  <div className="settings-row">
+                    <label>Background image</label>
+                    <div className="settings-idle-image">
+                      {videoIdleImage && (
+                        <img className="settings-idle-thumb" src={convertFileSrc(videoIdleImage)} alt="" />
+                      )}
+                      <button type="button" onClick={pickIdleImage}>
+                        {idleImageName ? 'Change…' : 'Choose…'}
+                      </button>
+                      {videoIdleImage && (
+                        <button type="button" onClick={() => setVideoIdleImage(null)}>Clear</button>
+                      )}
+                    </div>
+                  </div>
+                  {idleImageName && (
+                    <div className="settings-note settings-idle-name">{idleImageName}</div>
+                  )}
+                  <div className="settings-row">
+                    <label htmlFor="video-idle-fit">Fit</label>
+                    <select
+                      id="video-idle-fit"
+                      value={videoIdleImageFit}
+                      onChange={(e) => setVideoIdleImageFit(e.target.value)}
+                    >
+                      <option value="cover">Cover (fill, crop)</option>
+                      <option value="contain">Contain (fit, black bars)</option>
+                    </select>
+                  </div>
+                </>
+              )}
 
               <div className="settings-subtitle">Video audio</div>
               <div className="editor-options">

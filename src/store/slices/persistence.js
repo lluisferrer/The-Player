@@ -16,14 +16,14 @@ export function createPersistenceSlice(get) {
     persistGlobals: () => {
       const {
         globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist, selectedDeviceId, playlistDeviceId, previewDeviceId, colorOutputs,
-        duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, nativeBufferSize, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
+        duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, nativeBufferSize, enabledOutputs, videoMonitorName, videoIdlePattern, videoIdleImage, videoIdleImageFit, videoOutputOpen,
         separateVideoAudio,
       } = get();
       localStorage.setItem('the-player-globals', JSON.stringify({
         globalFadeIn, globalFadeOut, cuesStopOthers, cuesCrossfade, cuesDuck, cuesStopPlaylist,
         cuesDeviceId: selectedDeviceId, playlistDeviceId, previewDeviceId,
         colorOutputs,
-        duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, nativeBufferSize, enabledOutputs, videoMonitorName, videoIdlePattern, videoOutputOpen,
+        duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, nativeBufferSize, enabledOutputs, videoMonitorName, videoIdlePattern, videoIdleImage, videoIdleImageFit, videoOutputOpen,
         separateVideoAudio,
       }));
     },

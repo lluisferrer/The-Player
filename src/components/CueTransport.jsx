@@ -1,8 +1,17 @@
-import { SkipBack, SkipForward, Play, Square, MonitorOff } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { SkipBack, SkipForward, Play, Square, MonitorOff, Check } from 'lucide-react';
 import { useSoundStore } from '../store/useSoundStore';
 
 // Hint que es mostra al camp Preview quan no hi ha res en preview
 const PREVIEW_HINT = 'Ctrl + Tile to preview';
+
+// Modes de blackout que ofereix el menú contextual del botó Black (clic dret).
+const IDLE_MODES = [
+  { value: 'black',    label: 'Full black' },
+  { value: 'bars',     label: 'Color bars' },
+  { value: 'testcard', label: 'Test card' },
+  { value: 'custom',   label: 'Custom image' },
+];
 
 // Barra de transport per als cues (sobre la botonera)
 export function CueTransport() {
@@ -11,11 +20,29 @@ export function CueTransport() {
   const previewingSlot = useSoundStore((s) => s.previewingSlot);
   const slots          = useSoundStore((s) => s.slots);
   const idlePattern    = useSoundStore((s) => s.videoIdlePattern); // patró de blackout (Settings → Video)
+  const idleImage      = useSoundStore((s) => s.videoIdleImage);   // imatge del mode 'custom'
 
   // Etiqueta del botó de blackout segons el patró seleccionat a Settings → Video.
-  const blackoutLabel = idlePattern === 'bars' ? 'BARS' : idlePattern === 'testcard' ? 'CARD' : 'BLACK';
+  const blackoutLabel = idlePattern === 'bars' ? 'BARS'
+    : idlePattern === 'testcard' ? 'CARD'
+    : idlePattern === 'custom' ? 'IMG'
+    : 'BLACK';
 
-  const { selectStep, go, stopSlot, stopAll, goToBlack } = useSoundStore.getState();
+  const { selectStep, go, stopSlot, stopAll, goToBlack, setVideoIdlePattern } = useSoundStore.getState();
+
+  // Menú contextual (clic dret sobre el botó Black) per canviar el mode en viu.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  // Tanca el menú en clicar fora o prémer Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [menuOpen]);
 
   const nameOf = (id) => {
     const s = slots.find((x) => x.id === id);
@@ -38,9 +65,33 @@ export function CueTransport() {
         <button className="cue-stop-all" onClick={() => stopAll()} title="Stop all (panic)">
           <Square size={16} fill="currentColor" /> ALL
         </button>
-        <button className="cue-black" onClick={() => goToBlack()} title={`Go to black: stop any playing video and show the idle screen (${blackoutLabel})`}>
-          <MonitorOff size={16} /> {blackoutLabel}
-        </button>
+        <div className="cue-black-wrap" ref={menuRef}>
+          <button
+            className="cue-black"
+            onClick={() => goToBlack()}
+            onContextMenu={(e) => { e.preventDefault(); setMenuOpen((v) => !v); }}
+            title={`Go to black: stop any playing video and show the idle screen (${blackoutLabel}). Right-click to change mode.`}
+          >
+            <MonitorOff size={16} /> {blackoutLabel}
+          </button>
+          {menuOpen && (
+            <div className="cue-black-menu" role="menu">
+              {IDLE_MODES.map((m) => (
+                <button
+                  key={m.value}
+                  role="menuitemradio"
+                  aria-checked={idlePattern === m.value}
+                  className={idlePattern === m.value ? 'active' : ''}
+                  onClick={() => { setVideoIdlePattern(m.value); setMenuOpen(false); }}
+                >
+                  <span className="cue-black-menu-check">{idlePattern === m.value ? <Check size={13} /> : null}</span>
+                  {m.label}
+                  {m.value === 'custom' && !idleImage ? <span className="cue-black-menu-hint"> (no image)</span> : null}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Tres camps fixos: Preview (vermell) · Next (verd) · Playing (gris).

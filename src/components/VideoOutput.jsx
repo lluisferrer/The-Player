@@ -5,13 +5,19 @@ import { pdfjsLib } from '../lib/pdfjs';
 import { ColorBars, TestCard } from './VideoTestPatterns';
 import './VideoOutput.css';
 
-// Llegeix el patró de blackout inicial del localStorage (compartit amb la
-// finestra principal, mateix origen). 'black' | 'bars' | 'testcard'.
-function readIdlePattern() {
+// Llegeix la config de blackout inicial del localStorage (compartit amb la
+// finestra principal, mateix origen): patró ('black' | 'bars' | 'testcard' |
+// 'custom'), ruta de la imatge de fons i encaix ('cover' | 'contain').
+function readIdleConfig() {
   try {
     const g = JSON.parse(localStorage.getItem('the-player-globals')) || {};
-    return ['black', 'bars', 'testcard'].includes(g.videoIdlePattern) ? g.videoIdlePattern : 'black';
-  } catch { return 'black'; }
+    const pattern = ['black', 'bars', 'testcard', 'custom'].includes(g.videoIdlePattern) ? g.videoIdlePattern : 'black';
+    return {
+      pattern,
+      image: g.videoIdleImage || null,
+      fit: g.videoIdleImageFit === 'contain' ? 'contain' : 'cover',
+    };
+  } catch { return { pattern: 'black', image: null, fit: 'cover' }; }
 }
 
 // Vista de la finestra de sortida (label "output"). Ocupa tota la finestra
@@ -55,7 +61,8 @@ export function VideoOutput() {
   const [pdfReady, setPdfReady] = useState(false); // document carregat i llest per renderitzar
   const [opacity, setOpacity] = useState(1); // opacitat del mèdia (fades visuals cap a negre)
   const [fadeDur, setFadeDur] = useState(0); // durada (s) de la transició d'opacitat actual
-  const [idlePattern, setIdlePattern] = useState(readIdlePattern); // patró de blackout
+  const [idleConfig, setIdleConfig] = useState(readIdleConfig); // patró + imatge + encaix de blackout
+  const { pattern: idlePattern, image: idleImage, fit: idleFit } = idleConfig;
 
   // Cancel·la el rAF de fade de volum i el timer de negre diferit pendents
   const cancelFade = () => {
@@ -247,10 +254,16 @@ export function VideoOutput() {
           try { v.currentTime = t; } catch { /* res */ }
         }
       }));
-      // Canvi del patró de blackout en calent (des de Settings → Vídeo)
+      // Canvi del patró de blackout en calent (des de Settings → Vídeo o del menú
+      // contextual del botó Black). Porta també imatge i encaix per al mode 'custom'.
       unlisteners.push(await listen('video-idle-pattern', (e) => {
-        const p = e.payload && e.payload.pattern;
-        if (['black', 'bars', 'testcard'].includes(p)) setIdlePattern(p);
+        const pl = e.payload || {};
+        if (!['black', 'bars', 'testcard', 'custom'].includes(pl.pattern)) return;
+        setIdleConfig({
+          pattern: pl.pattern,
+          image: pl.image || null,
+          fit: pl.fit === 'contain' ? 'contain' : 'cover',
+        });
       }));
     })();
 
@@ -508,9 +521,19 @@ export function VideoOutput() {
           />
         )
       ) : (
-        // Blackout: negre total (sense text), barres de color o carta d'ajust
+        // Blackout: negre total (sense text), barres de color, carta d'ajust o
+        // imatge de fons personalitzada (patró 'custom').
         idlePattern === 'bars' ? <ColorBars />
           : idlePattern === 'testcard' ? <TestCard />
+          : idlePattern === 'custom' && idleImage ? (
+            <img
+              className="video-output-pattern"
+              src={convertFileSrc(idleImage)}
+              alt=""
+              style={{ objectFit: idleFit }}
+              onError={(e) => console.warn('[output] error de fons personalitzat', e?.currentTarget?.src)}
+            />
+          )
           : null
       )}
     </div>

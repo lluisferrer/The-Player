@@ -243,9 +243,10 @@ export async function emitVideoSeek(time) {
 }
 
 // Canvia el patró de la pantalla de blackout a la sortida en calent
-// ('black' | 'bars' | 'testcard'). La finestra de sortida llegeix el valor
-// inicial del localStorage compartit; aquest event és per al canvi en viu.
-export async function emitVideoIdlePattern(pattern) {
-  try { await emit('video-idle-pattern', { pattern }); }
+// ('black' | 'bars' | 'testcard' | 'custom'). La finestra de sortida llegeix el
+// valor inicial del localStorage compartit; aquest event és per al canvi en viu.
+// Per al patró 'custom' hi va també la ruta de la imatge i l'encaix (cover/contain).
+export async function emitVideoIdlePattern(pattern, image = null, fit = 'cover') {
+  try { await emit('video-idle-pattern', { pattern, image, fit }); }
   catch (e) { console.warn('video-idle-pattern:', e); }
 }

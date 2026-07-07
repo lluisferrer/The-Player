@@ -212,8 +212,14 @@ export const useSoundStore = create((set, get) => ({
   // (m.name d'availableMonitors). null = auto (primer monitor no principal).
   videoMonitorName: savedGlobals.videoMonitorName ?? null,
   // Patró de la pantalla de sortida quan no hi ha vídeo (blackout): 'black'
-  // (negre total, sense text), 'bars' (barres de color) o 'testcard' (carta d'ajust).
+  // (negre total, sense text), 'bars' (barres de color), 'testcard' (carta d'ajust)
+  // o 'custom' (imatge de fons triada per l'usuari a Settings → Video).
   videoIdlePattern: savedGlobals.videoIdlePattern ?? 'black',
+  // Ruta del fitxer d'imatge del fons personalitzat (patró 'custom'). null = cap.
+  videoIdleImage: savedGlobals.videoIdleImage ?? null,
+  // Encaix de la imatge de fons a la pantalla: 'cover' (omple i retalla) o
+  // 'contain' (sencera amb marges negres si l'aspecte no coincideix).
+  videoIdleImageFit: savedGlobals.videoIdleImageFit ?? 'cover',
   // Si la finestra de sortida de vídeo estava oberta en tancar l'app: es torna a
   // obrir automàticament a la pròxima arrencada (persistència de sessió).
   videoOutputOpen: savedGlobals.videoOutputOpen ?? false,
@@ -317,6 +323,8 @@ export const useSoundStore = create((set, get) => ({
       enabledOutputs: state.enabledOutputs,
       videoMonitorName: state.videoMonitorName,
       videoIdlePattern: state.videoIdlePattern,
+      videoIdleImage: state.videoIdleImage,
+      videoIdleImageFit: state.videoIdleImageFit,
       videoOutputOpen: state.videoOutputOpen,
       separateVideoAudio: state.separateVideoAudio,
     };
@@ -370,6 +378,8 @@ export const useSoundStore = create((set, get) => ({
       enabledOutputs: Array.isArray(globals.enabledOutputs) ? globals.enabledOutputs : [],
       videoMonitorName: globals.videoMonitorName ?? null,
       videoIdlePattern: globals.videoIdlePattern ?? 'black',
+      videoIdleImage: globals.videoIdleImage ?? null,
+      videoIdleImageFit: globals.videoIdleImageFit ?? 'cover',
       // videoOutputOpen s'ignora deliberadament: no volem obrir la sortida de vídeo
       // automàticament en importar (pot sorprendre a l'operador en ple show).
       separateVideoAudio: globals.separateVideoAudio ?? false,

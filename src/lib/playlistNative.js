@@ -29,7 +29,16 @@ import { parseTarget } from './outputTarget';
 // Ids de veu reservats per a la playlist (no col·lideixen amb els cues 1..128 ni
 // amb el to de prova). Comptador creixent: cada pista nova en pren un de nou,
 // així el crossfade pot tenir-ne dues de vives alhora amb ids diferents.
-const PL_VOICE_BASE = 3_000_000;
+//
+// Ha de coincidir amb la banda de la playlist ASIO (2_000_000) i, sobretot, NO
+// trepitjar la banda del PREVIEW (3_000_000..3_099_999, vegeu asioIds.js): abans
+// aquest base era 3_000_000 i, quan la playlist nativa avançava de pista, la seva
+// veu queia dins el rang del preview; fer un preview aleshores reutilitzava aquell
+// id i el motor natiu SUBSTITUÏA la veu de la playlist per la del preview (i en
+// aturar el preview la matava) → la playlist quedava «penjada sense sonar». Com
+// que només un motor de playlist (ASIO o natiu) sona alhora, compartir la banda
+// 2_000_000 amb l'ASIO és segur.
+const PL_VOICE_BASE = 2_000_000;
 let plVoiceSeq = 0;
 function nextVoiceId() { return PL_VOICE_BASE + (plVoiceSeq++); }
 

@@ -8,7 +8,7 @@
 import { duckRemove } from '../../lib/playlistEngine';
 import { clearAsioTelemetry } from '../../lib/asioTelemetry';
 import { emitVideoSeek, emitVideoIdlePattern, emitVideoBlack, stopVideoResync } from '../../lib/videoOutput';
-import { isVideo } from '../../lib/slotAudio';
+import { isVideo, isVisual } from '../../lib/slotAudio';
 import { invoke } from '@tauri-apps/api/core';
 
 export function createVideoSlice(set, get) {
@@ -26,23 +26,51 @@ export function createVideoSlice(set, get) {
       get().persistGlobals();
     },
 
-    // Patró de la pantalla de blackout ('black' | 'bars' | 'testcard'). Es desa i
-    // s'emet a la finestra de sortida perquè el canvi s'apliqui en calent.
+    // Patró de la pantalla de blackout ('black' | 'bars' | 'testcard' | 'custom').
+    // Es desa i s'emet a la finestra de sortida perquè el canvi s'apliqui en calent.
     setVideoIdlePattern: (pattern) => {
-      const p = ['black', 'bars', 'testcard'].includes(pattern) ? pattern : 'black';
+      const p = ['black', 'bars', 'testcard', 'custom'].includes(pattern) ? pattern : 'black';
       set({ videoIdlePattern: p });
       get().persistGlobals();
-      emitVideoIdlePattern(p);
+      const { videoIdleImage, videoIdleImageFit } = get();
+      emitVideoIdlePattern(p, videoIdleImage, videoIdleImageFit);
+    },
+
+    // Ruta de la imatge de fons personalitzada (patró 'custom'). null la treu.
+    // Emet el patró actual amb la nova imatge perquè la sortida s'actualitzi en viu.
+    setVideoIdleImage: (path) => {
+      set({ videoIdleImage: path || null });
+      get().persistGlobals();
+      const { videoIdlePattern, videoIdleImageFit } = get();
+      emitVideoIdlePattern(videoIdlePattern, path || null, videoIdleImageFit);
+    },
+
+    // Encaix de la imatge de fons: 'cover' o 'contain'. També s'aplica en calent.
+    setVideoIdleImageFit: (fit) => {
+      const f = fit === 'contain' ? 'contain' : 'cover';
+      set({ videoIdleImageFit: f });
+      get().persistGlobals();
+      const { videoIdlePattern, videoIdleImage } = get();
+      emitVideoIdlePattern(videoIdlePattern, videoIdleImage, f);
     },
 
     setSeparateVideoAudio: (on) => { set({ separateVideoAudio: !!on }); get().persistGlobals(); },
 
-    // Botó Black/Bars/Card del transport: "clear screen" net. Atura QUALSEVOL cue de
-    // vídeo en curs (imatge + àudio, també el separat pel motor) i deixa la sortida al
-    // patró d'inactivitat triat. Així no queda àudio orfe sonant amb la pantalla negra.
+    // Botó Black/Bars/Card del transport: "clear screen" respectant el FADE OUT del
+    // cue (o el global). Si hi ha cues visuals sonant, els atura amb fade via
+    // stopSlot(true): la sortida fa el fade d'opacitat (i el fade de l'àudio separat)
+    // i, en acabar, queda al patró d'inactivitat triat. Si el cue té fade out 0, és
+    // tall sec. Si no hi ha res sonant, neteja directa al patró (per si quedava un
+    // frame orfe). Així no queda àudio orfe sonant amb la pantalla negra.
     goToBlack: () => {
-      get().clearVideoCues(); // atura cues de vídeo + àudio separat + reseteja tiles
-      emitVideoBlack();       // sortida al patró (black/bars/testcard)
+      const { slots } = get();
+      const visualPlaying = slots.filter((s) => isVisual(s) && (s.isPlaying || s.pausedAt != null));
+      if (visualPlaying.length > 0) {
+        visualPlaying.forEach((s) => get().stopSlot(s.id, true));
+      } else {
+        get().clearVideoCues(); // res sonant: neteja tiles i para el resync
+        emitVideoBlack();       // sortida al patró (black/bars/testcard)
+      }
     },
 
     // Salta un cue de vídeo en reproducció a "elapsed" segons dins el segment.
