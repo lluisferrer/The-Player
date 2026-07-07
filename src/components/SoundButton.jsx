@@ -54,6 +54,7 @@ export function SoundButton({ slotId }) {
   const [vidElapsed, setVidElapsed] = useState(0); // temps de reproducció estimat del vídeo (s)
   const [vidSeeking, setVidSeeking] = useState(false); // arrossegant el playhead del vídeo
   const [previewVidPct, setPreviewVidPct] = useState(0); // playhead del preview de vídeo (0..100, dins el segment)
+  const [browsePage, setBrowsePage] = useState(1); // pàgina de FULLEIG local del PDF (Ctrl+clic), sense projectar
   const previewVidRef = useRef(null);  // <video> del preview in-tile
   const playVidRef = useRef(null);     // <video> mirall de la reproducció (monitor al tile)
   const vidBodyRef = useRef(null);
@@ -162,16 +163,31 @@ export function SoundButton({ slotId }) {
     return () => { cancel = true; };
   }, [isVideoCue, isImageCue, slot.filePath, slot.startPoint]);
 
-  // Slides (PDF): mirall de la pàgina al tile. Mentre sona, mostra la pàgina que
-  // es projecta a la sortida (slot.currentPage); si no sona, la 1 com a portada.
-  // Reaprofita la cau de documents (passar de pàgina no rellegeix el PDF). De
-  // passada informa el recompte de pàgines perquè "x / N" surti també abans de GO.
+  // En entrar al mode FULLEIG (Ctrl+clic sobre un PDF), arrenca el browse a la pàgina
+  // que ja es veu: la projectada si sona, si no la portada (1). No es reinicia a cada
+  // canvi de currentPage per no interrompre el fulleig (només en entrar-hi).
+  useEffect(() => {
+    if (isPdfCue && isPreviewing) setBrowsePage(slot.currentPage || 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPdfCue, isPreviewing]);
+
+  // Si el PDF es projecta (GO o clic normal) mentre el fullejàvem, surt del fulleig:
+  // la projecció mana i el tile passa a emmirallar la pàgina projectada.
+  useEffect(() => {
+    if (isPdfCue && isPlaying && isPreviewing) stopPreview();
+  }, [isPdfCue, isPlaying, isPreviewing, stopPreview]);
+
+  // Slides (PDF): mirall de la pàgina al tile. En mode FULLEIG (Ctrl+clic) mostra la
+  // pàgina que s'està browsejant (browsePage) SENSE projectar-la; si no, mentre sona
+  // mostra la pàgina projectada (slot.currentPage) i, aturat, la 1 com a portada.
+  // Reaprofita la cau de documents (passar de pàgina no rellegeix el PDF). De passada
+  // informa el recompte de pàgines perquè "x / N" surti també abans de GO.
   useEffect(() => {
     if (!isPdfCue || !slot.filePath) { return; }
     const canvas = pdfCanvasRef.current;
     if (!canvas) return;
     let cancel = false;
-    const page = isPlaying ? (slot.currentPage || 1) : 1;
+    const page = isPlaying ? (slot.currentPage || 1) : (isPreviewing ? browsePage : 1);
     renderPdfPageToCanvas(slot.filePath, page, canvas)
       .then((n) => {
         if (cancel) return;
@@ -181,7 +197,7 @@ export function SoundButton({ slotId }) {
     return () => { cancel = true; };
     // slot.pageCount s'omet expressament: només l'escrivim (evita re-render en bucle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPdfCue, slot.filePath, isPlaying, slot.currentPage, slotId]);
+  }, [isPdfCue, slot.filePath, isPlaying, slot.currentPage, isPreviewing, browsePage, slotId]);
 
   // P4-lite: estat "armant" (veu de maquinari disparada, telemetria encara no
   // arribada). Només el mostrem si PERSISTEIX >300 ms: els cues sans confirmen en
@@ -356,6 +372,14 @@ export function SoundButton({ slotId }) {
     }
 
     if (hasAudio) playSlot(slotId);
+  };
+
+  // Fulleig del PDF al tile (±1), acotat a [1, pageCount] quan es coneix. Només mou
+  // la pàgina LOCAL de preview (browsePage): no toca la projecció ni l'estat del cue.
+  const browsePdf = (delta, e) => {
+    e.stopPropagation();
+    const pc = slot.pageCount || 0;
+    setBrowsePage((p) => Math.max(1, pc ? Math.min(p + delta, pc) : p + delta));
   };
 
   // Clic dret: obre el selector natiu de fitxers (retorna la ruta)
@@ -573,6 +597,24 @@ export function SoundButton({ slotId }) {
             )}
             {/* Slides: mirall de la pàgina projectada (monitor al tile) */}
             {isPdfCue && <canvas ref={pdfCanvasRef} className="slot-pdf-canvas" />}
+            {/* Fulleig (Ctrl+clic): fletxes semitransparents per passar de pàgina AL
+                TILE, sense projectar a la sortida. Es surt amb un altre Ctrl+clic. */}
+            {isPdfCue && isPreviewing && !isPlaying && (
+              <>
+                <button
+                  className="slot-pdf-nav prev"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => browsePdf(-1, e)}
+                  title="Previous page"
+                >‹</button>
+                <button
+                  className="slot-pdf-nav next"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => browsePdf(1, e)}
+                  title="Next page"
+                >›</button>
+              </>
+            )}
             {/* Preview in-tile (PFL): vídeo viu sobre la miniatura, un sol alhora */}
             {isVideoCue && isPreviewing && (
               <video
@@ -602,12 +644,12 @@ export function SoundButton({ slotId }) {
             )}
             {/* Temps (només vídeo; imatges i slides no tenen durada) */}
             {isVideoCue && <span className="slot-time">{vidTimeLabel}</span>}
-            {/* Slides: indicador de pàgina actual/total mentre es projecta */}
-            {isPdfCue && isPlaying && (
-              <span className="slot-time">{slot.currentPage || 1}{slot.pageCount ? ` / ${slot.pageCount}` : ''}</span>
+            {/* Slides: indicador de pàgina/total mentre es projecta o es fulleja */}
+            {isPdfCue && (isPlaying || isPreviewing) && (
+              <span className="slot-time">{(isPlaying ? (slot.currentPage || 1) : browsePage)}{slot.pageCount ? ` / ${slot.pageCount}` : ''}</span>
             )}
             {/* Badge del cue visual (mateix estil que STREAM dels àudios llargs) */}
-            <span className="slot-stream-badge">{isPdfCue ? 'SLIDES' : isImageCue ? 'IMAGE' : (isPreviewing ? 'PREVIEW' : 'VIDEO')}</span>
+            <span className="slot-stream-badge">{isPdfCue ? ((isPreviewing && !isPlaying) ? 'PREVIEW' : 'SLIDES') : isImageCue ? 'IMAGE' : (isPreviewing ? 'PREVIEW' : 'VIDEO')}</span>
             {/* Playhead del preview (vermell) mentre es previsualitza al tile (vídeo) */}
             {isVideoCue && isPreviewing && (
               <div className="slot-playhead preview" style={{ left: `${previewVidPct}%` }} />

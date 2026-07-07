@@ -13,7 +13,7 @@ import { csPreviewStart, csPreviewStop } from '../../lib/cueStreamEngine';
 import { isAsioTarget, isNativeTarget, parseTarget } from '../../lib/outputTarget';
 import { PREVIEW_VOICE_ID } from '../../lib/asioIds';
 import { clearAsioTelemetry } from '../../lib/asioTelemetry';
-import { hasClip, isImage, isVideo, slotDuration } from '../../lib/slotAudio';
+import { hasClip, isImage, isVideo, isPdf, slotDuration } from '../../lib/slotAudio';
 
 // Font activa del bus de preview (node Web Audio): permet aturar-la des de
 // stopPreview sense haver de guardar-la a l'estat Zustand (és un objecte
@@ -41,6 +41,17 @@ export function createPreviewSlice(set, get) {
       if (!slot || !hasClip(slot)) return;
       // Cues d'IMATGE: no tenen preview viu (ja es veuen com a miniatura al tile).
       if (isImage(slot)) { get().stopPreview(); return; }
+      // Cues de SLIDES (PDF): no tenen so; el Ctrl+clic entra al mode FULLEIG (browse
+      // de pàgines DINS el tile, sense projectar a la sortida). Reutilitza
+      // `previewingSlot` (un sol preview/fulleig alhora) perquè el toggle del principi
+      // el faci sortir amb un altre Ctrl+clic, igual que àudio/vídeo. Sense motor: només
+      // estat; la navegació i el render de pàgina viuen al SoundButton. IMPORTANT: va
+      // ABANS del camí d'àudio de sota, que faria `slot.audioBuffer.duration` (null → error).
+      if (isPdf(slot)) {
+        get().stopPreview(); // atura qualsevol preview sonor d'un altre slot
+        set({ previewingSlot: slotId, previewStartedAt: performance.now() / 1000 });
+        return;
+      }
       // Cues de VÍDEO: preview VISUAL dins el propi tile (el WebView descodifica el
       // vídeo i el SoundButton el reprodueix amb un <video>). El SO:
       //   - WASAPI/default: el treu el propi <video> (SoundButton fa setSinkId).
