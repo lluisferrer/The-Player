@@ -25,6 +25,60 @@ export async function isOutputOpen() {
   catch { return false; }
 }
 
+// Resol quin monitor és el destí de la sortida: el de nom indicat, si no el
+// primer que no sigui el principal (mode auto). Retorna l'objecte monitor o
+// null (un sol monitor / sense API → la sortida s'obre com a finestra normal,
+// sense monitor de destí). Compartit per openOutputWindow i pel watchdog de
+// resiliència (per saber quin monitor cal vigilar).
+export async function resolveTargetMonitor(monitorName = null) {
+  let monitors = [];
+  let primary = null;
+  try {
+    monitors = await availableMonitors();
+    primary = await primaryMonitor();
+  } catch { return null; } // sense API de monitors
+
+  let target = null;
+  if (monitorName) {
+    target = monitors.find((m) => m.name === monitorName) || null;
+  }
+  if (!target) {
+    if (primary) {
+      target = monitors.find((m) => m.name !== primary.name) || null;
+    } else if (monitors.length > 1) {
+      target = monitors[1];
+    }
+  }
+  return target;
+}
+
+// Nom del monitor de destí de la sortida (o null si no n'hi ha cap: un sol
+// monitor / dev). El watchdog el captura en obrir i vigila que segueixi present.
+export async function resolveTargetMonitorName(monitorName = null) {
+  const t = await resolveTargetMonitor(monitorName);
+  return t ? t.name : null;
+}
+
+// Comprova si un monitor (per nom) segueix connectat ara mateix. Sense nom (no
+// hi ha monitor de destí) o sense API → true (no vigilem res).
+export async function monitorIsPresent(name) {
+  if (!name) return true;
+  try {
+    const monitors = await availableMonitors();
+    return monitors.some((m) => m.name === name);
+  } catch { return true; }
+}
+
+// Re-assegura que la finestra de sortida segueix a pantalla completa (mateix
+// monitor). Un canvi de resolució o de topologia de pantalles pot treure-la de
+// fullscreen; això ho restaura sense moure-la de monitor. No fa res si ja hi és.
+export async function reassertOutputFullscreen() {
+  const w = await getOutputWindow();
+  if (!w) return;
+  try { if (!(await w.isFullscreen())) await w.setFullscreen(true); }
+  catch { /* res */ }
+}
+
 // Obre la finestra de sortida. Si hi ha un 2n monitor (o se n'indica un per
 // nom), la posiciona allà a pantalla completa; si no, l'obre com a finestra
 // normal (útil en dev amb un sol monitor). No duplica: si ja existeix, la
@@ -41,24 +95,7 @@ export async function openOutputWindow(monitorName = null) {
   }
 
   // Tria el monitor de destí: el de nom indicat, si no el primer que no sigui el principal
-  let monitors = [];
-  let primary = null;
-  try {
-    monitors = await availableMonitors();
-    primary = await primaryMonitor();
-  } catch { /* sense API de monitors: obrirà finestra normal */ }
-
-  let target = null;
-  if (monitorName) {
-    target = monitors.find((m) => m.name === monitorName) || null;
-  }
-  if (!target) {
-    if (primary) {
-      target = monitors.find((m) => m.name !== primary.name) || null;
-    } else if (monitors.length > 1) {
-      target = monitors[1];
-    }
-  }
+  const target = await resolveTargetMonitor(monitorName);
 
   const opts = {
     url: 'index.html',
@@ -137,8 +174,16 @@ export async function emitVideoPlay(filePath, startPoint = 0, stopPoint = null, 
       // 4c separat: la sortida silencia el <video> (l'àudio surt pel motor) i la
       // imatge segueix l'àudio via els events de resync.
       muted: !!opts.muted,
+      // Slides (PDF): pàgina inicial a projectar (1 per defecte).
+      page: opts.page || 1,
     });
   } catch (e) { console.warn('video-play:', e); }
+}
+
+// Salta a una pàgina concreta del PDF projectat ara mateix a la sortida (slides).
+export async function emitSlideGoto(page) {
+  try { await emit('slide-goto', { page: Math.max(1, page | 0) }); }
+  catch (e) { console.warn('slide-goto:', e); }
 }
 
 // ── Resync imatge→àudio (Fase 4c, separació d'àudio) ──
@@ -171,6 +216,18 @@ export async function emitVideoStop(fadeOut = 0) {
 export async function emitVideoBlack() {
   try { await emit('video-black'); }
   catch (e) { console.warn('video-black:', e); }
+}
+
+// Congela el vídeo de la sortida (pausa) sense amagar-lo ni passar a negre.
+export async function emitVideoPause() {
+  try { await emit('video-pause'); }
+  catch (e) { console.warn('video-pause:', e); }
+}
+
+// Reprèn el vídeo de la sortida des d'on estava congelat.
+export async function emitVideoResume() {
+  try { await emit('video-resume'); }
+  catch (e) { console.warn('video-resume:', e); }
 }
 
 // Canvia el volum del vídeo en reproducció a la sortida

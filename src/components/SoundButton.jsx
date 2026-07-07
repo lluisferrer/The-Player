@@ -8,6 +8,7 @@ import { keyForSlot } from '../lib/keyMap';
 import { hasClip, slotDuration } from '../lib/slotAudio';
 import { isHardwareEngineTarget } from '../lib/outputTarget';
 import { getVideoThumb } from '../lib/videoThumb';
+import { renderPdfPageToCanvas } from '../lib/pdfRender';
 import { VuMeter } from './VuMeter';
 import { Waveform } from './Waveform';
 
@@ -38,10 +39,13 @@ export function SoundButton({ slotId }) {
   const endTileDrag    = useSoundStore((s) => s.endTileDrag);
   const reorderSlots   = useSoundStore((s) => s.reorderSlots);
   const insertSlotContent = useSoundStore((s) => s.insertSlotContent);
+  const setSlidePages  = useSoundStore((s) => s.setSlidePages);
   const isLive         = useSoundStore((s) => s.appMode === 'live'); // LIVE: edició bloquejada
   const { loadFromPath } = useAudioEngine();
+  const pdfCanvasRef   = useRef(null);   // canvas del mirall/preview de slides al tile
 
   const [showHover, setShowHover]   = useState(false);
+  const [showArming, setShowArming] = useState(false); // P4-lite: mostra "armant" només si persisteix
   const [scrub, setScrub]   = useState(null);  // posició (ratio dins segment) mentre s'arrossega el playhead
   const [seeking, setSeeking] = useState(false);
   const [previewProg, setPreviewProg] = useState(0); // progrés del preview (0..1)
@@ -61,7 +65,8 @@ export function SoundButton({ slotId }) {
   const hasAudio  = hasClip(slot);
   const isVideoCue = slot.mediaType === 'video';
   const isImageCue = slot.mediaType === 'image';
-  const isVisualCue = isVideoCue || isImageCue;
+  const isPdfCue = slot.mediaType === 'pdf';
+  const isVisualCue = isVideoCue || isImageCue || isPdfCue;
   const isStreaming = slot.isStreaming;
   const isPlaying = slot.isPlaying;
 
@@ -156,9 +161,43 @@ export function SoundButton({ slotId }) {
     return () => { cancel = true; };
   }, [isVideoCue, isImageCue, slot.filePath, slot.startPoint]);
 
+  // Slides (PDF): mirall de la pàgina al tile. Mentre sona, mostra la pàgina que
+  // es projecta a la sortida (slot.currentPage); si no sona, la 1 com a portada.
+  // Reaprofita la cau de documents (passar de pàgina no rellegeix el PDF). De
+  // passada informa el recompte de pàgines perquè "x / N" surti també abans de GO.
+  useEffect(() => {
+    if (!isPdfCue || !slot.filePath) { return; }
+    const canvas = pdfCanvasRef.current;
+    if (!canvas) return;
+    let cancel = false;
+    const page = isPlaying ? (slot.currentPage || 1) : 1;
+    renderPdfPageToCanvas(slot.filePath, page, canvas)
+      .then((n) => {
+        if (cancel) return;
+        if (n && n !== slot.pageCount) setSlidePages(slotId, n); // idempotent
+      })
+      .catch(() => { /* fitxer no trobat o render cancel·lat: sense mirall */ });
+    return () => { cancel = true; };
+    // slot.pageCount s'omet expressament: només l'escrivim (evita re-render en bucle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPdfCue, slot.filePath, isPlaying, slot.currentPage, slotId]);
+
+  // P4-lite: estat "armant" (veu de maquinari disparada, telemetria encara no
+  // arribada). Només el mostrem si PERSISTEIX >300 ms: els cues sans confirmen en
+  // ~100 ms i van directes a blau (cap flaix ambre); si l'ambre apareix, és que la
+  // veu no ha arrencat de debò. El reconciliador el reseteja als 2 s.
+  useEffect(() => {
+    const arming = isPlaying && slot.arming && (slot.asioActive || slot.nativeActive);
+    if (!arming) { setShowArming(false); return; }
+    const t = setTimeout(() => setShowArming(true), 300);
+    return () => clearTimeout(t);
+  }, [isPlaying, slot.arming, slot.asioActive, slot.nativeActive]);
+
   // Temps/playhead estimat del cue de vídeo (es reprodueix a la sortida, així que
   // l'estimem localment des de l'instant de dispar; el vídeo no es pausa).
   useEffect(() => {
+    // Pausat: playhead congelat a la posició de pausa (no reiniciar a 0).
+    if (isVideoCue && slot.pausedAt != null) { setVidElapsed(Math.max(0, slot.pausedAt)); return; }
     if (!(isVideoCue && isPlaying)) { setVidElapsed(0); return; }
     let raf;
     const tick = () => {
@@ -169,7 +208,7 @@ export function SoundButton({ slotId }) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isVideoCue, isPlaying, segDur, slot.startedAt, slot.loop]);
+  }, [isVideoCue, isPlaying, slot.pausedAt, segDur, slot.startedAt, slot.loop]);
 
   // Arrossegar el playhead del tile de vídeo: seek en directe (sense aturar)
   const handleVideoPlayheadDown = (e) => {
@@ -262,7 +301,11 @@ export function SoundButton({ slotId }) {
   };
   const handlePlayVidTime = () => {
     const v = playVidRef.current;
-    if (!v) return;
+    if (!v || slot.pausedAt != null) return; // pausat: no re-alineïs (frame congelat)
+    // Re-alinea al rellotge de reproducció (vidElapsed) si deriva: el mirall és un
+    // decodificador independent del de la sortida i, sense això, es va desincronitzant.
+    const target = startSec + Math.max(0, vidElapsed || 0);
+    if (Math.abs(v.currentTime - target) > 0.3) { try { v.currentTime = target; } catch { /* res */ } }
     if (slot.stopPoint != null && v.currentTime >= stopSec) {
       if (slot.loop) { try { v.currentTime = startSec; } catch { /* res */ } }
     }
@@ -314,7 +357,7 @@ export function SoundButton({ slotId }) {
     try {
       const path = await open({
         multiple: false,
-        filters: [{ name: 'Media', extensions: ['mp3', 'mpeg', 'mpg', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }],
+        filters: [{ name: 'Media', extensions: ['mp3', 'mpeg', 'mpg', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'pdf', 'ppt', 'pptx'] }],
       });
       if (path) await loadFromPath(slotId, path);
     } catch (err) {
@@ -427,7 +470,7 @@ export function SoundButton({ slotId }) {
 
   // Tile de vídeo: temps i playhead estimats sobre el segment (in→out)
   const vidPlayheadPct = segDur > 0 ? Math.min(100, (vidElapsed / segDur) * 100) : 0;
-  const vidTimeLabel = fmtTime(isPlaying ? vidElapsed : segDur);
+  const vidTimeLabel = fmtTime((isPlaying || slot.pausedAt != null) ? vidElapsed : segDur);
 
   const occupied = hasAudio || Boolean(slot.label);
 
@@ -435,6 +478,7 @@ export function SoundButton({ slotId }) {
   if (hasAudio) stateClass = 'slot-loaded';
   if (paused) stateClass = 'slot-paused';
   if (isPlaying) stateClass = 'slot-playing';
+  if (showArming) stateClass = 'slot-arming'; // P4-lite: armant persistent (>300ms)
   // C2: el fitxer tenia ruta però no s'ha pogut localitzar en arrencar
   const isMissing = slot.missing && slot.filePath;
 
@@ -446,7 +490,7 @@ export function SoundButton({ slotId }) {
   return (
     <div
       ref={rootRef}
-      className={`sound-button ${stateClass} ${isMissing ? 'slot-missing' : ''} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''} ${isTileDragging ? 'tile-dragging' : ''} ${isTileDropTarget && !dropEdge ? 'tile-drop-target' : ''}`}
+      className={`sound-button ${stateClass} ${isMissing ? 'slot-missing' : ''} ${slot.error ? 'slot-error' : ''} ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''} ${(isSelected && hasAudio) ? 'slot-standby' : ''} ${(previewArmed && hasAudio) ? 'preview-armed' : ''} ${isPreviewing ? 'previewing' : ''} ${isTileDragging ? 'tile-dragging' : ''} ${isTileDropTarget && !dropEdge ? 'tile-drop-target' : ''}`}
       data-slot-id={slotId}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
@@ -466,6 +510,10 @@ export function SoundButton({ slotId }) {
 
       {/* Indicador de standby: cue que es dispararà amb el proper GO */}
       {isSelected && hasAudio && <span className="slot-standby-badge">NEXT</span>}
+
+      {/* Error de reproducció persistent (voice-failed): badge vermell; el missatge
+          complet al title (hover). Es neteja en tornar a disparar amb èxit o recarregar. */}
+      {slot.error && <span className="slot-error-badge" title={slot.error}>ERROR</span>}
 
       {/* Badges d'opcions (cantonada inferior esquerra):
           SO = stop others · AC = auto-continue · D = ducking · S = stop playlist */}
@@ -511,10 +559,12 @@ export function SoundButton({ slotId }) {
            a la finestra de sortida, no per Web Audio. Les imatges no tenen
            timeline, playhead, preview viu ni so. */
         <>
-          <div className={`slot-body slot-video ${thumb ? 'has-thumb' : ''}`} ref={vidBodyRef}>
+          <div className={`slot-body slot-video ${thumb || isPdfCue ? 'has-thumb' : ''}`} ref={vidBodyRef}>
             {thumb && (
               <div className="slot-video-thumb" style={{ backgroundImage: `url(${thumb})` }} />
             )}
+            {/* Slides: mirall de la pàgina projectada (monitor al tile) */}
+            {isPdfCue && <canvas ref={pdfCanvasRef} className="slot-pdf-canvas" />}
             {/* Preview in-tile (PFL): vídeo viu sobre la miniatura, un sol alhora */}
             {isVideoCue && isPreviewing && (
               <video
@@ -528,8 +578,9 @@ export function SoundButton({ slotId }) {
               />
             )}
             {/* Mirall de reproducció: vídeo MUT que reflecteix el que sona a la
-                sortida (l'àudio ja surt per la finestra/motor). El preview té prioritat. */}
-            {isVideoCue && isPlaying && !isPreviewing && (
+                sortida (l'àudio ja surt per la finestra/motor). Es manté en pausa
+                (frame congelat). El preview té prioritat. */}
+            {isVideoCue && (isPlaying || slot.pausedAt != null) && !isPreviewing && (
               <video
                 ref={playVidRef}
                 className="slot-video-preview"
@@ -541,16 +592,20 @@ export function SoundButton({ slotId }) {
                 autoPlay
               />
             )}
-            {/* Temps (només vídeo; les imatges no tenen durada) */}
-            {!isImageCue && <span className="slot-time">{vidTimeLabel}</span>}
+            {/* Temps (només vídeo; imatges i slides no tenen durada) */}
+            {isVideoCue && <span className="slot-time">{vidTimeLabel}</span>}
+            {/* Slides: indicador de pàgina actual/total mentre es projecta */}
+            {isPdfCue && isPlaying && (
+              <span className="slot-time">{slot.currentPage || 1}{slot.pageCount ? ` / ${slot.pageCount}` : ''}</span>
+            )}
             {/* Badge del cue visual (mateix estil que STREAM dels àudios llargs) */}
-            <span className="slot-stream-badge">{isImageCue ? 'IMAGE' : (isPreviewing ? 'PREVIEW' : 'VIDEO')}</span>
+            <span className="slot-stream-badge">{isPdfCue ? 'SLIDES' : isImageCue ? 'IMAGE' : (isPreviewing ? 'PREVIEW' : 'VIDEO')}</span>
             {/* Playhead del preview (vermell) mentre es previsualitza al tile (vídeo) */}
             {isVideoCue && isPreviewing && (
               <div className="slot-playhead preview" style={{ left: `${previewVidPct}%` }} />
             )}
-            {/* Playhead arrossegable mentre es reprodueix a la sortida (vídeo) */}
-            {isVideoCue && isPlaying && (
+            {/* Playhead arrossegable mentre es reprodueix o està pausat a la sortida */}
+            {isVideoCue && (isPlaying || slot.pausedAt != null) && (
               <div
                 className="slot-playhead"
                 style={{ left: `${vidPlayheadPct}%` }}
@@ -604,7 +659,7 @@ export function SoundButton({ slotId }) {
                   No es mostra si el tile encara té l'spinner de càrrega (slot.loading),
                   per no duplicar la rodoneta: en deixem només una per tile. */}
               {isStreaming && <span className="slot-stream-badge">STREAM</span>}
-              {isStreaming && !slot.peaks && !slot.loading && (
+              {isStreaming && !slot.peaks && !slot.peaksDone && !slot.loading && (
                 <span className="slot-wave-loading"><span className="slot-spinner small" /></span>
               )}
               {/* Playhead interactiu (mentre sona o en pausa) */}

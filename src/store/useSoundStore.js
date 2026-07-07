@@ -214,9 +214,10 @@ export const useSoundStore = create((set, get) => ({
   // Si la finestra de sortida de vídeo estava oberta en tancar l'app: es torna a
   // obrir automàticament a la pròxima arrencada (persistència de sessió).
   videoOutputOpen: savedGlobals.videoOutputOpen ?? false,
-  // 4c (opt-in, experimental): separa l'àudio del vídeo. Amb el motor natiu actiu,
-  // el vídeo sona pel motor (routing/fades/ducking/multicanal, també a Mac) i la
-  // imatge va silenciada a la sortida, sincronitzada per resync. Default APAGAT.
+  // 4c (opt-in): separa l'àudio del vídeo. Si el bus del cue routeja a un motor de
+  // maquinari (ASIO a Windows, natiu cpal a Mac), el vídeo sona pel motor
+  // (routing/fades/ducking/multicanal) i la imatge va muda a la sortida, sincronitzada
+  // per resync. Default APAGAT.
   separateVideoAudio: savedGlobals.separateVideoAudio ?? false,
 
   // ── Playlist (VLC) ──

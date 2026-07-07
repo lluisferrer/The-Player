@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
+import { pdfjsLib } from '../lib/pdfjs';
 import { ColorBars, TestCard } from './VideoTestPatterns';
 import './VideoOutput.css';
 
@@ -40,7 +41,15 @@ export function VideoOutput() {
   const stopTimerRef = useRef(null);       // timer del negre diferit després d'un stop amb fade
   const kindRef = useRef(null);            // tipus de mèdia mostrat ara: 'video' | 'image' | null (negre)
   const [src, setSrc] = useState(null);    // URL convertida del fitxer (o null = blackout)
-  const [mediaKind, setMediaKind] = useState('video'); // 'video' | 'image' (què renderitzem)
+  const [mediaKind, setMediaKind] = useState('video'); // 'video' | 'image' | 'pdf' (què renderitzem)
+  // ── Slides (PDF) ──
+  const canvasRef = useRef(null);          // canvas on es pinta la pàgina de PDF
+  const pdfDocRef = useRef(null);          // PDFDocumentProxy carregat (o null)
+  const pdfTaskRef = useRef(null);         // tasca de render en curs (per cancel·lar en canviar de pàgina)
+  const pdfSlotRef = useRef(null);         // slotId del PDF (per informar slide-pages)
+  const [pdfPath, setPdfPath] = useState(null); // ruta del PDF projectat (o null)
+  const [pdfPage, setPdfPage] = useState(1);    // pàgina actual (1-based)
+  const [pdfReady, setPdfReady] = useState(false); // document carregat i llest per renderitzar
   const [opacity, setOpacity] = useState(1); // opacitat del mèdia (fades visuals cap a negre)
   const [fadeDur, setFadeDur] = useState(0); // durada (s) de la transició d'opacitat actual
   const [idlePattern, setIdlePattern] = useState(readIdlePattern); // patró de blackout
@@ -49,6 +58,15 @@ export function VideoOutput() {
   const cancelFade = () => {
     if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     if (stopTimerRef.current != null) { clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
+  };
+
+  // Allibera el document PDF i la tasca de render en curs (slides)
+  const clearPdf = () => {
+    if (pdfTaskRef.current) { try { pdfTaskRef.current.cancel(); } catch { /* res */ } pdfTaskRef.current = null; }
+    if (pdfDocRef.current) { try { pdfDocRef.current.destroy(); } catch { /* res */ } pdfDocRef.current = null; }
+    pdfSlotRef.current = null;
+    setPdfReady(false);
+    setPdfPath(null);
   };
 
   // Rampa lineal del volum del <video> de from→to en dur segons, via rAF.
@@ -80,6 +98,7 @@ export function VideoOutput() {
       if (v) { try { v.pause(); } catch { /* res */ } }
       currentSlot.current = null;
       kindRef.current = null;
+      clearPdf();       // allibera el PDF si n'hi havia
       setFadeDur(0);   // restauració instantània (sense transició)
       setOpacity(1);   // restaura per al pròxim cue
       setSrc(null);
@@ -109,6 +128,31 @@ export function VideoOutput() {
         if (!p.filePath) return;
         cancelFade();
         fadingOut.current = false;
+
+        // Slides (PDF): no fem servir <video>/<img> ni convertFileSrc; el document
+        // es carrega des dels bytes (efecte de sota) i es pinta a un <canvas>. El
+        // fade és només d'opacitat (sense àudio), com la imatge.
+        if (p.mediaType === 'pdf') {
+          const v = videoRef.current;
+          if (v) { try { v.pause(); } catch { /* res */ } }
+          clearPdf();
+          currentSlot.current = p.slotId ?? null;
+          pdfSlotRef.current = p.slotId ?? null;
+          const fadeIn = Math.max(0, p.fadeIn || 0);
+          playInfo.current = { ...playInfo.current, fadeIn, fadeOut: Math.max(0, p.fadeOut || 0) };
+          kindRef.current = 'pdf';
+          setMediaKind('pdf');
+          setFadeDur(0);
+          setOpacity(fadeIn > 0 ? 0 : 1); // si hi ha fade in, comença invisible
+          setPdfPage(Math.max(1, p.page | 0) || 1);
+          setPdfPath(p.filePath);
+          setSrc(p.filePath); // truthy: activa el branc de render (el canvas ignora el valor)
+          return;
+        }
+
+        // Camí vídeo/imatge: si veníem d'un PDF (sense stop pel mig), allibera'l.
+        if (kindRef.current === 'pdf' || pdfDocRef.current) clearPdf();
+
         currentSlot.current = p.slotId ?? null;
         const startPoint = p.startPoint || 0;
         const stopPoint = p.stopPoint || 0;
@@ -142,6 +186,11 @@ export function VideoOutput() {
       }));
       unlisteners.push(await listen('video-stop', fadeStop));
       unlisteners.push(await listen('video-black', black));
+      // Slides: salta a una pàgina del PDF projectat (l'efecte de render reacciona)
+      unlisteners.push(await listen('slide-goto', (e) => {
+        const page = e.payload && e.payload.page;
+        if (page != null) setPdfPage(Math.max(1, page | 0) || 1);
+      }));
       // Canvi de volum en directe (slider del tile). Actualitza la base i, si no
       // s'està fent un fade ara mateix, aplica-ho immediatament.
       unlisteners.push(await listen('video-volume', (e) => {
@@ -158,6 +207,15 @@ export function VideoOutput() {
         const t = e.payload && e.payload.time;
         const v = videoRef.current;
         if (v && t != null) { try { v.currentTime = t; } catch { /* res */ } }
+      }));
+      // Pausa / resume del vídeo (congela sense amagar; NO passa a negre)
+      unlisteners.push(await listen('video-pause', () => {
+        const v = videoRef.current;
+        if (v) { try { v.pause(); } catch { /* res */ } }
+      }));
+      unlisteners.push(await listen('video-resume', () => {
+        const v = videoRef.current;
+        if (v) { v.play().catch(() => {}); }
       }));
       // Resync (4c separat): l'àudio del motor és el rellotge mestre. Corregim el
       // currentTime del vídeo NOMÉS si la deriva supera un llindar, per no fer
@@ -182,6 +240,68 @@ export function VideoOutput() {
       unlisteners.forEach((u) => { try { u(); } catch { /* res */ } });
     };
   }, []);
+
+  // Slides: carrega el document PDF des dels bytes del disc (via Tauri, no per
+  // URL: la CSP del WebView bloqueja fetch d'asset://). En tenir-lo, informa el
+  // nombre de pàgines a la finestra principal i marca'l llest per renderitzar.
+  useEffect(() => {
+    if (mediaKind !== 'pdf' || !pdfPath) return;
+    let cancelled = false;
+    setPdfReady(false);
+    (async () => {
+      try {
+        const bytes = await invoke('read_file_bytes', { path: pdfPath });
+        const data = new Uint8Array(bytes); // Response (ArrayBuffer) → bytes per pdf.js
+        const doc = await pdfjsLib.getDocument({ data }).promise;
+        if (cancelled) { try { doc.destroy(); } catch { /* res */ } return; }
+        pdfDocRef.current = doc;
+        emit('slide-pages', { slotId: pdfSlotRef.current, pages: doc.numPages }).catch(() => {});
+        setPdfReady(true);
+        // Un cop llest, dispara el fade in d'opacitat (el canvas es pinta a l'altre efecte)
+        const fadeIn = Math.max(0, playInfo.current.fadeIn || 0);
+        setFadeDur(fadeIn > 0 ? fadeIn : 0);
+        setOpacity(1);
+      } catch (e) {
+        console.warn('[output] error carregant PDF', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pdfPath, mediaKind]);
+
+  // Slides: pinta la pàgina actual al canvas. Reacciona a canvis de pàgina
+  // (slide-goto) i al document acabat de carregar. Escala la pàgina a una mida
+  // generosa i deixa que el CSS (object-fit: contain) l'encaixi dins el negre.
+  useEffect(() => {
+    if (!pdfReady || mediaKind !== 'pdf') return;
+    const doc = pdfDocRef.current;
+    const canvas = canvasRef.current;
+    if (!doc || !canvas) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const pageNum = Math.max(1, Math.min(pdfPage, doc.numPages));
+        const page = await doc.getPage(pageNum);
+        if (cancelled) return;
+        // Escala perquè la pàgina càpiga en ~2560×1440 (nitidesa sense malgastar RAM);
+        // el CSS l'ajusta després a la finestra mantenint la proporció.
+        const vp1 = page.getViewport({ scale: 1 });
+        const scale = Math.min(2560 / vp1.width, 1440 / vp1.height);
+        const vp = page.getViewport({ scale: scale > 0 ? scale : 1 });
+        canvas.width = Math.floor(vp.width);
+        canvas.height = Math.floor(vp.height);
+        const ctx = canvas.getContext('2d');
+        if (pdfTaskRef.current) { try { pdfTaskRef.current.cancel(); } catch { /* res */ } }
+        const task = page.render({ canvasContext: ctx, viewport: vp });
+        pdfTaskRef.current = task;
+        await task.promise;
+        pdfTaskRef.current = null;
+      } catch (e) {
+        if (e && e.name === 'RenderingCancelledException') return;
+        console.warn('[output] error renderitzant pàgina PDF', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pdfReady, pdfPage, mediaKind]);
 
   // En carregar el vídeo nou: aplica sortida (setSinkId), salta al punt d'inici,
   // arrenca i fa el fade in (volum + opacitat).
@@ -278,7 +398,13 @@ export function VideoOutput() {
   return (
     <div className="video-output">
       {src ? (
-        mediaKind === 'image' ? (
+        mediaKind === 'pdf' ? (
+          <canvas
+            ref={canvasRef}
+            className="video-output-el"
+            style={{ opacity, transition: `opacity ${fadeDur > 0 ? fadeDur : 0}s linear` }}
+          />
+        ) : mediaKind === 'image' ? (
           <img
             className="video-output-el"
             src={src}

@@ -15,13 +15,14 @@
 //   - createEmptySlot: plantilla d'un slot buit (usada a clearSlot i a initialSlots).
 
 import { invoke } from '@tauri-apps/api/core';
-import { hasClip, isVideo, isImage, isVisual, effFadeIn, effFadeOut, slotDuration } from '../../lib/slotAudio';
+import { hasClip, isVideo, isImage, isPdf, isVisual, effFadeIn, effFadeOut, slotDuration } from '../../lib/slotAudio';
 import { dispatchCue } from '../../lib/cueDispatch';
 import { isAsioTarget, resolveCueTargetStr, parseTarget, isHardwareEngineTarget } from '../../lib/outputTarget';
 import { clearAsioTelemetry, asioPosition } from '../../lib/asioTelemetry';
 import {
   emitVideoPlay, emitVideoStop, emitVideoBlack, emitVideoVolume,
-  startVideoResync, stopVideoResync,
+  emitSlideGoto, startVideoResync, stopVideoResync,
+  emitVideoPause, emitVideoResume,
 } from '../../lib/videoOutput';
 import {
   csPlay, csStop, csPause, csResume, csSeek, csSetVolume,
@@ -42,20 +43,25 @@ export const createEmptySlot = (id) => ({
   id,
   label: '',
   filePath: null,      // ruta absoluta del fitxer (per recarregar des de la Library)
-  mediaType: 'audio',  // 'audio' | 'video' (els cues de vídeo van a la finestra de sortida)
+  mediaType: 'audio',  // 'audio' | 'video' | 'image' | 'pdf' (els visuals van a la finestra de sortida)
+  currentPage: 1,      // (només PDF) pàgina projectada ara mateix
+  pageCount: 0,        // (només PDF) nombre total de pàgines (l'informa la sortida en carregar)
   loading: false,      // s'està llegint/descodificant
   audioUrl: null,
   audioBuffer: null,
   isStreaming: false,  // cue llarg (>60s): es reprodueix amb <audio> en streaming
   streamDuration: 0,   // durada (s) del fitxer en streaming (des de les metadades)
   peaks: null,         // pics min/max de la forma d'ona (streaming; generats en segon pla)
+  peaksDone: false,    // la generació de la forma d'ona ha acabat (èxit o fracàs) → atura l'spinner
   gainNode: null,
   fadeGainNode: null,  // node de guany dedicat als fades (independent del volum)
   analyserNode: null,
   sourceNode: null,
   isPlaying: false,
   asioActive: false,   // sona pel motor ASIO natiu (playhead/VU venen per telemetria)
-  nativeActive: false, // sona pel motor natiu cpal (Increment 3, experimental; playhead/VU per telemetria nativa)
+  nativeActive: false, // sona pel motor natiu cpal (WASAPI/CoreAudio; playhead/VU per telemetria nativa)
+  arming: false,       // P4-lite: veu de maquinari (asio/natiu) disparada però encara no confirmada per telemetria
+
   volume: 0.8,
   startedAt: 0,        // instant (audioContext.currentTime) en què va començar a sonar
   pausedAt: null,      // posició (s dins el segment) on s'ha pausat (null = no pausat)
@@ -75,6 +81,9 @@ export const createEmptySlot = (id) => ({
   // Estat de sessió: fitxer persistit però no localitzat en arrencar.
   // NO es desa a localStorage (es recalcula a cada boot).
   missing: false,
+  // Estat de sessió: la reproducció ha fallat en disparar-se (voice-failed). Missatge
+  // d'error o null. Persistent al tile fins a un nou dispar amb èxit o recàrrega.
+  error: null,
 });
 
 // Camps de CONTINGUT d'un slot (els que es mouen en reorganitzar tiles). Tota la
@@ -273,7 +282,7 @@ export function createCuesSlice(set, get) {
                 ...s,
                 label: cfg.label != null ? cfg.label : s.label,
                 filePath: cfg.filePath != null ? cfg.filePath : s.filePath,
-                mediaType: (cfg.mediaType === 'video' || cfg.mediaType === 'image') ? cfg.mediaType : s.mediaType,
+                mediaType: (cfg.mediaType === 'video' || cfg.mediaType === 'image' || cfg.mediaType === 'pdf') ? cfg.mediaType : s.mediaType,
                 volume: cfg.volume != null ? cfg.volume : s.volume,
                 startPoint: cfg.startPoint || 0,
                 stopPoint: cfg.stopPoint != null ? cfg.stopPoint : null,
@@ -329,7 +338,7 @@ export function createCuesSlice(set, get) {
       // Els nodes (gain/fade/analyser) es construeixen al Play, al context del
       // dispositiu segons el color del cue (routing per grup).
       const streaming = !!opts.streaming;
-      const mediaType = (opts.mediaType === 'video' || opts.mediaType === 'image') ? opts.mediaType : 'audio';
+      const mediaType = (opts.mediaType === 'video' || opts.mediaType === 'image' || opts.mediaType === 'pdf') ? opts.mediaType : 'audio';
       // Allibera el blob URL anterior d'aquest slot (si n'hi havia)
       const prev = get().slots.find((s) => s.id === slotId);
       // Si el slot previ sonava (o estava pausat), atura'l abans de reescriure'l:
@@ -355,6 +364,11 @@ export function createCuesSlice(set, get) {
                 // cues de vídeo (perquè slotDuration() i l'editor tinguin timeline).
                 streamDuration: (streaming || mediaType === 'video') ? (opts.duration || 0) : 0,
                 peaks: null,
+                peaksDone: false, // la generació de forma d'ona d'aquest fitxer encara no ha acabat
+                // Slides (PDF): un fitxer nou reinicia la pàgina projectada i el
+                // recompte (la sortida el reportarà en carregar el document).
+                currentPage: 1,
+                pageCount: 0,
                 gainNode: null,
                 fadeGainNode: null,
                 analyserNode: null,
@@ -372,8 +386,9 @@ export function createCuesSlice(set, get) {
                 // ...i les opcions de seqüència
                 preWait: 0,
                 continueMode: 'none',
-                // Fitxer carregat correctament: ja no és "missing"
+                // Fitxer carregat correctament: ja no és "missing" ni en error
                 missing: false,
+                error: null,
               }
             : s
         ),
@@ -390,6 +405,12 @@ export function createCuesSlice(set, get) {
       const { slots, globalFadeIn, globalFadeOut, colorOutputs } = get();
       const slot = slots.find((s) => s.id === slotId);
       if (!slot || !hasClip(slot)) return;
+
+      // Nou dispar: neteja optimista de l'estat d'error (si torna a fallar, el
+      // handler de voice-failed el tornarà a marcar).
+      if (slot.error) {
+        set((state) => ({ slots: state.slots.map((s) => (s.id === slotId ? { ...s, error: null } : s)) }));
+      }
 
       // Si ja sona, el togglam (atura amb fade out)
       if (slot.isPlaying) {
@@ -423,6 +444,13 @@ export function createCuesSlice(set, get) {
       // no està oberta, no passa res. Marquem isPlaying perquè el tile/transport
       // ho reflecteixin. Les imatges no tenen so ni timeline (es mantenen fins a stop).
       if (isVisual(slot)) {
+        // Un sol cue visual alhora a la sortida: atura qualsevol altre visual que
+        // s'estigui projectant (vídeo/imatge/slides). Silent = neteja el seu estat i
+        // efectes (ducking, àudio separat) sense emetre negre; el video-play de sota
+        // ja reemplaça la imatge, evitant el flaix.
+        slots.forEach((s) => {
+          if (s.id !== slotId && s.isPlaying && isVisual(s)) get().stopSlot(s.id, false, { silent: true });
+        });
         // Routing per color (com el camí d'àudio); per defecte, bus de Cues.
         // Els cues de VÍDEO surten per la finestra de sortida amb <video>.setSinkId,
         // que només entén deviceIds WASAPI. Si el color apunta a un target ASIO,
@@ -438,11 +466,12 @@ export function createCuesSlice(set, get) {
         // respecta la terra del crossfade entre cues (igual que els camins d'àudio).
         const effIn = Math.max(0, xFadeIn(slot));
         const effOut = Math.max(0, effFadeOut(slot, globalFadeOut));
-        // 4c (opt-in): separar l'àudio del vídeo. Si el bus del cue routeja al motor
-        // NATIU (target native:…) i és un cue de VÍDEO (no imatge), l'àudio surt pel
-        // motor (routing/fades/ducking/multicanal, també a Mac) i la imatge va
-        // silenciada a la sortida, sincronitzada per resync.
-        const separated = get().separateVideoAudio && cueTarget.kind === 'native' && isVideo(slot);
+        // 4c (opt-in): separar l'àudio del vídeo. Si el bus del cue routeja a un motor
+        // de MAQUINARI (ASIO a Windows, natiu cpal a Mac) i és un cue de VÍDEO (no
+        // imatge), l'àudio surt pel motor (routing/fades/ducking/multicanal) i la
+        // imatge va silenciada a la sortida, sincronitzada per resync.
+        const sepKind = (cueTarget.kind === 'asio' || cueTarget.kind === 'native') ? cueTarget.kind : null;
+        const separated = get().separateVideoAudio && !!sepKind && isVideo(slot);
         emitVideoPlay(slot.filePath, slot.startPoint || 0, slot.stopPoint || 0, slotId, {
           volume: slot.volume,
           fadeIn: effIn,
@@ -451,25 +480,47 @@ export function createCuesSlice(set, get) {
           loop: !!slot.loop,
           mediaType: slot.mediaType,
           muted: separated,
+          // Slides: sempre s'arrenca per la pàgina 1 (un cue és un punt fix).
+          page: 1,
         });
         if (separated) {
           const total = slotDuration(slot);
           const startPoint = Math.max(0, Math.min(slot.startPoint || 0, total || Infinity));
           const stopPoint = slot.stopPoint != null ? slot.stopPoint : 0;
           const segDur = Math.max(0.02, (stopPoint > 0 ? stopPoint : total) - startPoint);
-          invoke('native_play_cue', {
-            voiceId: slot.id,
-            deviceName: cueTarget.device || '',
-            filePath: slot.filePath,
-            gain: slot.volume ?? 0.8,
-            fadeIn: Math.max(0, Math.min(effIn, segDur)),
-            fadeOut: Math.max(0, Math.min(effOut, segDur)),
-            channels: cueTarget.channels || [],
-            loopOn: !!slot.loop,
-            startPoint,
-            stopPoint,
-            streaming: !!slot.isStreaming,
-          }).catch((e) => console.warn('[native] video-audio:', e));
+          const sepFadeIn = Math.max(0, Math.min(effIn, segDur));
+          const sepFadeOut = Math.max(0, Math.min(effOut, segDur));
+          if (sepKind === 'asio') {
+            // Windows: l'àudio del vídeo surt pel motor ASIO (multicanal) cap als
+            // canals del target; la imatge va muda a la sortida, sincronitzada per resync.
+            invoke('asio_play_voice', {
+              voiceId: slot.id,
+              driver: cueTarget.driver,
+              filePath: slot.filePath,
+              gain: slot.volume ?? 0.8,
+              fadeIn: sepFadeIn,
+              fadeOut: sepFadeOut,
+              channels: cueTarget.channels || [],
+              loopOn: !!slot.loop,
+              startPoint,
+              stopPoint,
+              streaming: !!slot.isStreaming,
+            }).catch((e) => console.warn('[asio] video-audio:', e));
+          } else {
+            invoke('native_play_cue', {
+              voiceId: slot.id,
+              deviceName: cueTarget.device || '',
+              filePath: slot.filePath,
+              gain: slot.volume ?? 0.8,
+              fadeIn: sepFadeIn,
+              fadeOut: sepFadeOut,
+              channels: cueTarget.channels || [],
+              loopOn: !!slot.loop,
+              startPoint,
+              stopPoint,
+              streaming: !!slot.isStreaming,
+            }).catch((e) => console.warn('[native] video-audio:', e));
+          }
           startVideoResync(slotId, startPoint);
         }
         // Ducking: si aquest cue de vídeo abaixa la playlist, incrementa el comptador
@@ -479,7 +530,7 @@ export function createCuesSlice(set, get) {
         set((state) => ({
           slots: state.slots.map((s) =>
             // startedAt en rellotge de paret (s) per estimar el playhead/temps al tile
-            s.id === slotId ? { ...s, isPlaying: true, pausedAt: null, startedAt: performance.now() / 1000, videoSeparated: separated } : s
+            s.id === slotId ? { ...s, isPlaying: true, pausedAt: null, startedAt: performance.now() / 1000, videoSeparated: separated ? sepKind : false, currentPage: 1 } : s
           ),
           activeSlot: slotId,
         }));
@@ -525,7 +576,7 @@ export function createCuesSlice(set, get) {
         set((state) => ({
           slots: state.slots.map((s) =>
             s.id === slotId
-              ? { ...s, isPlaying: true, asioActive: true, pausedAt: null, startedAt: performance.now() / 1000 }
+              ? { ...s, isPlaying: true, asioActive: true, arming: true, pausedAt: null, startedAt: performance.now() / 1000 }
               : s
           ),
           activeSlot: slotId,
@@ -533,7 +584,7 @@ export function createCuesSlice(set, get) {
         return;
       }
 
-      // ── Motor natiu cpal (Increment 3, experimental) ────────────────────────
+      // ── Motor natiu cpal (WASAPI/CoreAudio) ─────────────────────────────────
       // Si l'interruptor està actiu i el cue és WASAPI (decision.route === 'wasapi')
       // amb fitxer a disc i NO és visual, enruta'l pel motor natiu cpal en lloc de
       // Web Audio. Marca nativeActive i NO segueix el camí Web Audio (anti-duplicació).
@@ -562,7 +613,7 @@ export function createCuesSlice(set, get) {
         set((state) => ({
           slots: state.slots.map((s) =>
             s.id === slotId
-              ? { ...s, isPlaying: true, nativeActive: true, pausedAt: null, startedAt: performance.now() / 1000 }
+              ? { ...s, isPlaying: true, nativeActive: true, arming: true, pausedAt: null, startedAt: performance.now() / 1000 }
               : s
           ),
           activeSlot: slotId,
@@ -673,8 +724,25 @@ export function createCuesSlice(set, get) {
     pauseSlot: (slotId) => {
       const slot = get().slots.find((s) => s.id === slotId);
       if (!slot || !slot.isPlaying) return;
-      // Els cues visuals (vídeo/imatge) no es pausen: pausar equival a aturar
-      if (isVisual(slot)) { get().stopSlot(slotId); return; }
+      // Imatges: no tenen reproducció → pausar equival a aturar.
+      if (isImage(slot)) { get().stopSlot(slotId); return; }
+      // VÍDEO: pausa REAL. Congela la sortida, l'àudio separat (si n'hi ha) i el
+      // playhead; el mirall del tile es congela sol (via slot.pausedAt).
+      if (isVideo(slot)) {
+        const segDur = Math.max(0.02, (slot.stopPoint != null ? slot.stopPoint : (slot.streamDuration || 0)) - (slot.startPoint || 0));
+        const elapsed = Math.max(0, performance.now() / 1000 - (slot.startedAt || 0));
+        const pos = slot.loop && segDur > 0 ? (elapsed % segDur) : Math.min(elapsed, segDur);
+        emitVideoPause();
+        if (slot.duck) duckRemove(get, slotId);
+        if (slot.videoSeparated) {
+          const cmd = slot.videoSeparated === 'asio' ? 'asio_set_paused' : 'native_set_paused';
+          invoke(cmd, { voiceId: slotId, paused: true }).catch((e) => console.warn('[video pause]', e));
+        }
+        set((state) => ({
+          slots: state.slots.map((s) => (s.id === slotId ? { ...s, isPlaying: false, pausedAt: pos } : s)),
+        }));
+        return;
+      }
       // En pausar deixa de sonar → deixa de duckejar (es reincrementa al resume)
       if (slot.duck) duckRemove(get, slotId);
       // Cue ASIO: congela la veu nativa (no l'atura). La posició la guardem des de
@@ -729,7 +797,26 @@ export function createCuesSlice(set, get) {
     resumeSlot: (slotId) => {
       const slot = get().slots.find((s) => s.id === slotId);
       if (!slot || !hasClip(slot) || slot.pausedAt == null) return;
-      if (isVisual(slot)) return; // els cues visuals no tenen estat de pausa
+      if (isImage(slot)) return; // les imatges no tenen estat de pausa
+      // VÍDEO: reprèn. Restaura startedAt perquè el playhead continuï des de pausedAt;
+      // reprèn la sortida i l'àudio separat (si n'hi ha).
+      if (isVideo(slot)) {
+        emitVideoResume();
+        if (slot.duck) duckAdd(get, slotId);
+        if (slot.videoSeparated) {
+          const cmd = slot.videoSeparated === 'asio' ? 'asio_set_paused' : 'native_set_paused';
+          invoke(cmd, { voiceId: slotId, paused: false }).catch((e) => console.warn('[video resume]', e));
+        }
+        set((state) => ({
+          slots: state.slots.map((s) => (
+            s.id === slotId
+              ? { ...s, isPlaying: true, pausedAt: null, startedAt: performance.now() / 1000 - (s.pausedAt || 0) }
+              : s
+          )),
+          activeSlot: slotId,
+        }));
+        return;
+      }
       // Torna a sonar → torna a duckejar (si és un cue de duck)
       if (slot.duck) duckAdd(get, slotId);
       // Cue ASIO: reprèn la veu nativa des de la posició congelada (el motor l'ha
@@ -903,11 +990,53 @@ export function createCuesSlice(set, get) {
       }
       set((state) => ({
         slots: state.slots.map((s) =>
-          s.id === slotId ? { ...s, isPlaying: false, asioActive: false, nativeActive: false, sourceNode: null, videoSeparated: false } : s
+          s.id === slotId ? { ...s, isPlaying: false, asioActive: false, nativeActive: false, arming: false, sourceNode: null, videoSeparated: false } : s
         ),
         activeSlot: state.activeSlot === slotId ? null : state.activeSlot,
       }));
     },
+
+    // ── Slides (PDF) ───────────────────────────────────────────────────────────
+    // Navega les pàgines del cue de slides ACTIU a la sortida (delta ±1). El target
+    // és el PDF que ES VEU ara a la sortida, és a dir, el disparat MÉS RECENTMENT
+    // (per startedAt): si es fa GO a un segon slide sense aturar el primer, tots dos
+    // queden isPlaying, però a la sortida només hi ha el darrer i les tecles l'han de
+    // seguir. Si no en sona cap, no fa res (les tecles de pàgina són contextuals).
+    // Clampa a [1, pageCount] quan ja coneixem el recompte (l'informa la sortida).
+    slidePage: (delta) => {
+      const playing = get().slots.filter((s) => s.isPlaying && isPdf(s));
+      if (!playing.length) return;
+      const slot = playing.reduce((a, b) => ((b.startedAt || 0) > (a.startedAt || 0) ? b : a));
+      const count = slot.pageCount || 0;
+      let page = (slot.currentPage || 1) + delta;
+      page = Math.max(1, count ? Math.min(page, count) : page);
+      if (page === (slot.currentPage || 1)) return; // ja hi som (extrem)
+      set((state) => ({
+        slots: state.slots.map((s) => (s.id === slot.id ? { ...s, currentPage: page } : s)),
+      }));
+      emitSlideGoto(page);
+    },
+
+    // P4-lite — Confirma que unes veus de maquinari han arrencat de debò: en rebre
+    // la primera telemetria d'un cue en estat "armant", li treu l'arming (el tile
+    // passa d'"armant…" a "reproduint"). Ho crida el listener de telemetria amb els
+    // ids del lot; només toca l'estat si de veritat hi ha algun arming a confirmar.
+    confirmArming: (ids) => {
+      const list = Array.isArray(ids) ? ids : [ids];
+      if (!get().slots.some((s) => s.arming && list.includes(s.id))) return;
+      set((state) => ({
+        slots: state.slots.map((s) =>
+          s.arming && list.includes(s.id) ? { ...s, arming: false } : s
+        ),
+      }));
+    },
+
+    // La finestra de sortida informa el nombre total de pàgines d'un PDF en
+    // carregar-lo (per poder clampar la navegació i mostrar "3/24" al tile).
+    setSlidePages: (slotId, pages) =>
+      set((state) => ({
+        slots: state.slots.map((s) => (s.id === slotId ? { ...s, pageCount: Math.max(0, pages | 0) } : s)),
+      })),
 
     // Avança el standby al següent cue carregat (per id), travessant pàgines.
     // Si surt de la pàgina actual, fa auto-flip de currentPage perquè el standby
@@ -1109,10 +1238,86 @@ export function createCuesSlice(set, get) {
         slots: state.slots.map((s) => (s.id === slotId ? { ...s, missing } : s)),
       })),
 
+    // Marca un slot amb un error de reproducció (voice-failed): el fitxer hi és però
+    // el motor no ha pogut sonar-lo. Estat de sessió (no persistit); es neteja en
+    // tornar a disparar amb èxit o recarregar. message=null el treu.
+    setSlotError: (slotId, message) =>
+      set((state) => ({
+        slots: state.slots.map((s) => (s.id === slotId ? { ...s, error: message || null } : s)),
+      })),
+
+    // C2 — El motor natiu informa que un dispositiu de sortida ha desaparegut a
+    // mitja funció (deviceName buit = per defecte). Fa VISIBLE la pèrdua: atura i
+    // marca en error tots els cues que sonaven per aquest dispositiu (en lloc de
+    // quedar-se sense so en silenci) i treu un toast. Les seves veus ja són mortes
+    // al motor; només cal netejar l'estat i avisar l'operador.
+    handleNativeDeviceLost: (deviceName) => {
+      const dev = deviceName || '';
+      const label = dev || 'default';
+      const affected = get().slots.filter((s) => {
+        if (!s.nativeActive) return false;
+        const t = parseTarget(resolveCueTargetStr(get(), s));
+        return t.kind === 'native' && (t.device || '') === dev;
+      });
+      affected.forEach((s) => {
+        get().handleEnded(s.id); // reset del tile + duckRemove + neteja telemetria
+        get().setSlotError(s.id, `Output device lost: ${label}`);
+      });
+      get().pushNotification({
+        type: 'error',
+        message: affected.length
+          ? `Output device lost (${label}) — ${affected.length} cue(s) stopped`
+          : `Output device lost: ${label}`,
+      });
+    },
+
+    // C2 — El motor ASIO informa que el dispositiu ha desaparegut a mitja funció (el
+    // callback del driver s'ha congelat; típicament la interfície USB desendollada).
+    // Fa visible la pèrdua: atura i marca en error TOTS els cues que sonaven per ASIO
+    // (només hi ha un driver ASIO actiu alhora) i treu un toast.
+    handleAsioDeviceLost: (driver) => {
+      const affected = get().slots.filter((s) => s.asioActive);
+      affected.forEach((s) => {
+        get().handleEnded(s.id);
+        // Missatge instructiu (el driver ASIO no reviu sol; un GO el re-prepara).
+        get().setSlotError(s.id, 'ASIO device lost — reconnect and press GO');
+      });
+      get().pushNotification({
+        type: 'error',
+        message: affected.length
+          ? `ASIO device lost — ${affected.length} cue(s) stopped. Reconnect the device and press GO.`
+          : 'ASIO device lost. Reconnect the device and press GO.',
+      });
+    },
+
+    // C2 — El motor ASIO informa que el dispositiu ha TORNAT (el callback del driver
+    // reprèn). Neteja l'estat d'error dels cues routejats a ASIO (perquè l'operador no
+    // hagi de disparar per treure el vermell) i avisa. NO torna a sonar res sol.
+    handleAsioDeviceRecovered: () => {
+      const asioErr = get().slots.filter(
+        (s) => s.error && parseTarget(resolveCueTargetStr(get(), s)).kind === 'asio'
+      );
+      if (asioErr.length) {
+        const ids = new Set(asioErr.map((s) => s.id));
+        set((state) => ({
+          slots: state.slots.map((s) => (ids.has(s.id) ? { ...s, error: null } : s)),
+        }));
+      }
+      get().pushNotification({ type: 'info', message: 'ASIO device reconnected' });
+    },
+
     // Desa els pics de la forma d'ona d'un cue en streaming (generats en segon pla)
     setSlotPeaks: (slotId, peaks) =>
       set((state) => ({
-        slots: state.slots.map((s) => (s.id === slotId ? { ...s, peaks } : s)),
+        slots: state.slots.map((s) => (s.id === slotId ? { ...s, peaks, peaksDone: true } : s)),
+      })),
+
+    // Marca la generació de forma d'ona com a ACABADA (èxit o fracàs). L'usa
+    // buildPeaksBackground al final perquè, si els pics no es poden generar, l'spinner
+    // de la forma d'ona no giri indefinidament (mostra àrea buida en lloc de spinner).
+    setSlotPeaksDone: (slotId) =>
+      set((state) => ({
+        slots: state.slots.map((s) => (s.id === slotId ? { ...s, peaksDone: true } : s)),
       })),
 
     setColor: (slotId, color) => {
@@ -1134,7 +1339,11 @@ export function createCuesSlice(set, get) {
 
     // fade: false/undefined = tall sec · true = usa el fade-out efectiu del cue
     //       · número = fade d'aquests segons
-    stopSlot: (slotId, fade = false) => {
+    // opts.silent (només cues visuals): neteja l'estat i els efectes secundaris
+    // (ducking, àudio separat, resync) però NO emet el negre a la sortida. L'usa el
+    // relleu de visuals (un de sol alhora): el nou video-play ja reemplaça la imatge,
+    // així que emetre negre pel de sortida provocaria un flaix.
+    stopSlot: (slotId, fade = false, opts = {}) => {
       const { audioContext, globalFadeOut } = get();
       const slot = get().slots.find((s) => s.id === slotId);
       // Res a fer si ja està del tot aturat (sense source ni pausa)
@@ -1155,10 +1364,14 @@ export function createCuesSlice(set, get) {
             fadeSec = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));
           }
         } else if (typeof fade === 'number') fadeSec = Math.max(0, fade);
-        emitVideoStop(fadeSec);
-        // 4c separat: atura també l'àudio del vídeo (motor natiu) i el resync.
+        // En mode silent (relleu de visuals) no emetem negre: el nou video-play ja
+        // reemplaça la imatge i evitem el flaix.
+        if (!opts.silent) emitVideoStop(fadeSec);
+        // 4c separat: atura també l'àudio del vídeo, pel motor que el reprodueix
+        // (ASIO a Windows, natiu cpal a Mac), i para el resync.
         if (slot.videoSeparated) {
-          invoke('native_stop_voice', { voiceId: slot.id, fadeOut: fadeSec }).catch(() => {});
+          const cmd = slot.videoSeparated === 'asio' ? 'asio_stop_voice' : 'native_stop_voice';
+          invoke(cmd, { voiceId: slot.id, fadeOut: fadeSec }).catch(() => {});
           stopVideoResync();
           clearAsioTelemetry(slotId);
         }
@@ -1283,6 +1496,10 @@ export function createCuesSlice(set, get) {
       if (slot?.isStreaming) csSetVolume(get, slotId, volume);
       // Cue de vídeo en reproducció: aplica el volum a la finestra de sortida
       if (slot && isVideo(slot) && slot.isPlaying) emitVideoVolume(volume);
+      // Vídeo amb àudio separat: el so surt pel motor (imatge muda) → el volum ha
+      // d'anar al motor que el reprodueix, no al <video> (que està silenciat).
+      if (slot?.videoSeparated === 'asio') invoke('asio_set_gain', { voiceId: slotId, gain: volume }).catch(() => {});
+      else if (slot?.videoSeparated === 'native') invoke('native_set_gain', { voiceId: slotId, gain: volume }).catch(() => {});
       set((state) => ({
         slots: state.slots.map((s) =>
           s.id === slotId ? { ...s, volume } : s

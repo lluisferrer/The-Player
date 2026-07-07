@@ -15,9 +15,9 @@ import { Toast } from './components/Toast';
 import { slotForKey } from './lib/keyMap';
 import { getInitialTheme, applyTheme } from './lib/theme';
 import { hasClip, isVideo } from './lib/slotAudio';
-import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow } from './lib/videoOutput';
+import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow, resolveTargetMonitorName, monitorIsPresent, reassertOutputFullscreen } from './lib/videoOutput';
 import { listen } from '@tauri-apps/api/event';
-import { applyAsioTelemetry } from './lib/asioTelemetry';
+import { applyAsioTelemetry, asioPosition } from './lib/asioTelemetry';
 import { plaOnVoiceEnded } from './lib/playlistAsio';
 import { plnOnVoiceEnded } from './lib/playlistNative';
 import logo from './assets/ezyPlayerMinimalLogo.svg';
@@ -25,7 +25,14 @@ import './App.css';
 
 // Extensions acceptades pels cues: àudio, vídeo i imatge (vídeo i imatge van a
 // la finestra de sortida; vegeu useAudioEngine + videoOutput.js)
-const MEDIA_EXT = /\.(mp3|mpeg|mpg|m4a|aac|wav|ogg|flac|mp4|webm|m4v|mov|jpg|jpeg|png|webp|gif|bmp)$/i;
+const MEDIA_EXT = /\.(mp3|mpeg|mpg|m4a|aac|wav|ogg|flac|mp4|webm|m4v|mov|jpg|jpeg|png|webp|gif|bmp|pdf|ppt|pptx)$/i;
+
+// Guard perquè la restauració de cues a l'arrencada s'executi UNA sola vegada. En
+// dev, React.StrictMode munta l'efecte dues vegades → sense guard, cada cue es
+// carregava dos cops concurrentment i la cursa sobre `loading` deixava tiles amb
+// spinner encallat (sobretot els missing). Flag de mòdul (sobreviu el doble
+// muntatge de StrictMode; es reinicia en una recàrrega real de la pàgina).
+let bootRestoreRan = false;
 
 // Slot (data-slot-id) sota una posició física del drag&drop natiu
 function slotAtPosition(position) {
@@ -185,6 +192,37 @@ export default function App() {
     }
   };
 
+  // C2 (resiliència de vídeo): watchdog del monitor de sortida. Mentre la sortida
+  // és oberta i té un monitor de destí, vigila cada 2,5 s que segueixi connectat.
+  // Si desapareix (desendollat a mitja funció) → negre + avís (no la movem, per no
+  // fer aparèixer vídeo al monitor principal per sorpresa). Si segueix present,
+  // re-assegura el fullscreen (un canvi de resolució pot treure'l). Un sol monitor
+  // (dev) no té destí → no es vigila (la sortida és una finestra normal).
+  useEffect(() => {
+    if (!outputOpen) return;
+    let cancelled = false;
+    let timer = null;
+    let watchName = null;   // nom del monitor de destí a vigilar (null = no vigilar)
+    let lost = false;       // ja s'ha avisat de la pèrdua? (debounce; es rearma al tornar)
+    (async () => {
+      try { watchName = await resolveTargetMonitorName(useSoundStore.getState().videoMonitorName); }
+      catch { watchName = null; }
+      if (cancelled) return;
+      timer = setInterval(async () => {
+        if (!watchName) return;
+        const present = await monitorIsPresent(watchName);
+        if (cancelled) return;
+        if (!present) {
+          if (!lost) { lost = true; useSoundStore.getState().handleOutputMonitorLost(watchName); }
+        } else {
+          if (lost) lost = false; // el monitor ha tornat: rearma l'avís
+          reassertOutputFullscreen();
+        }
+      }, 2500);
+    })();
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+  }, [outputOpen]);
+
   // La finestra de sortida informa quan un vídeo acaba sol → reseteja el cue
   useEffect(() => {
     let un;
@@ -193,6 +231,21 @@ export default function App() {
         un = await listen('video-ended', (e) => {
           const id = e.payload && e.payload.slotId;
           if (id != null) useSoundStore.getState().handleVideoEnded(id);
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // La finestra de sortida informa el nombre de pàgines d'un PDF en carregar-lo
+  // (per clampar la navegació de slides i mostrar "3/24" al tile).
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('slide-pages', (e) => {
+          const { slotId, pages } = e.payload || {};
+          if (slotId != null) useSoundStore.getState().setSlidePages(slotId, pages);
         });
       } catch { /* fora de Tauri */ }
     })();
@@ -247,6 +300,10 @@ export default function App() {
           // avançar la playlist amb un id que no li pertoca.
           if (id === st.previewVoiceId) { st.previewEnded(); return; }
           st.handleEnded(id); // reset del tile + duckRemove + clearAsioTelemetry
+          // Marca visible i PERSISTENT al tile (no només el toast fugaç): un cue
+          // carregat que ha petat en disparar-se queda en vermell fins a un nou
+          // dispar amb èxit o recàrrega. Només si és un cue (no una pista de playlist).
+          if (failedSlot) st.setSlotError(id, p.message || 'Audio engine error (ASIO)');
           plaOnVoiceEnded(id); // la playlist avança/para si era una pista seva
         });
       } catch { /* fora de Tauri */ }
@@ -261,7 +318,13 @@ export default function App() {
     let un;
     (async () => {
       try {
-        un = await listen('asio-telemetry', (e) => applyAsioTelemetry(e.payload));
+        un = await listen('asio-telemetry', (e) => {
+          applyAsioTelemetry(e.payload);
+          // P4-lite: la 1a telemetria confirma que la veu ha arrencat → treu "armant"
+          if (Array.isArray(e.payload) && e.payload.length) {
+            useSoundStore.getState().confirmArming(e.payload.map((it) => it && it.id));
+          }
+        });
       } catch { /* fora de Tauri */ }
     })();
     return () => { if (un) un(); };
@@ -313,7 +376,54 @@ export default function App() {
           // amb un id que no li pertoca.
           if (id === st.previewVoiceId) { st.previewEnded(); return; }
           st.handleEnded(id); // reset del tile + duckRemove + clearAsioTelemetry
+          // Marca d'error PERSISTENT al tile (vegeu el handler ASIO). Només si és un cue.
+          if (failedSlot) st.setSlotError(id, p.message || 'Audio engine error (native)');
           plnOnVoiceEnded(id); // la playlist nativa avança/para si era una pista seva
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // C2: el motor natiu informa que un dispositiu de sortida ha desaparegut a mitja
+  // funció (interfície USB desendollada, default que marxa...). Fa visible la pèrdua
+  // en lloc de deixar el so mort en silenci.
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('native-device-lost', (e) => {
+          const dev = typeof e.payload === 'string' ? e.payload : '';
+          useSoundStore.getState().handleNativeDeviceLost(dev);
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // C2: el motor ASIO informa que el dispositiu s'ha perdut a mitja funció (callback
+  // del driver congelat, típicament USB desendollada). Fa visible la pèrdua.
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('asio-device-lost', (e) => {
+          const drv = typeof e.payload === 'string' ? e.payload : '';
+          useSoundStore.getState().handleAsioDeviceLost(drv);
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // C2: el motor ASIO informa que el dispositiu ha TORNAT (callback reprèn) → neteja
+  // l'estat d'error dels cues ASIO i avisa (sense tornar a sonar res sol).
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('asio-device-recovered', () => {
+          useSoundStore.getState().handleAsioDeviceRecovered();
         });
       } catch { /* fora de Tauri */ }
     })();
@@ -327,15 +437,57 @@ export default function App() {
     let un;
     (async () => {
       try {
-        un = await listen('native-telemetry', (e) => applyAsioTelemetry(e.payload));
+        un = await listen('native-telemetry', (e) => {
+          applyAsioTelemetry(e.payload);
+          // P4-lite: la 1a telemetria confirma que la veu ha arrencat → treu "armant"
+          if (Array.isArray(e.payload) && e.payload.length) {
+            useSoundStore.getState().confirmArming(e.payload.map((it) => it && it.id));
+          }
+        });
       } catch { /* fora de Tauri */ }
     })();
     return () => { if (un) un(); };
   }, []);
 
+  // P4-lite — Reconciliador de l'estat del motor (salvavides anti-deriva).
+  // Els cues ASIO/natiu marquen isPlaying de manera OPTIMISTA en disparar-se.
+  // Normalment el motor corregeix l'estat amb `*-voice-ended`/`*-voice-failed`,
+  // però si es perd un d'aquests events (o un play falla de manera silenciosa) el
+  // tile quedaria blau "reproduint" per sempre i la Playlist duckejada.
+  //
+  // Aquest watchdog corregeix la deriva: una veu SANA emet telemetria a ~30 Hz, així
+  // que si un cue actiu no rep telemetria fresca durant RECONCILE_MS —i NO està
+  // pausat (una veu pausada es congela a posta i deixa d'emetre)— el donem per
+  // acabat i l'aturem (stopSlot és un no-op al motor si la veu ja no existeix, o la
+  // mata si era un zombi). NOMÉS actua sobre deriva real; no toca el camí feliç.
+  useEffect(() => {
+    const RECONCILE_MS = 2000;
+    const lastSeen = new Map(); // id -> performance.now() de l'última telemetria fresca
+    const iv = setInterval(() => {
+      const st = useSoundStore.getState();
+      const now = performance.now();
+      for (const s of st.slots) {
+        if (!(s.asioActive || s.nativeActive)) { lastSeen.delete(s.id); continue; }
+        if (s.pausedAt != null) { lastSeen.set(s.id, now); continue; } // pausat: sense telemetria a posta
+        if (asioPosition(s.id) != null) { lastSeen.set(s.id, now); continue; } // veu sana
+        // Telemetria absent: arrenca el compte des de l'última dada fresca o, si no
+        // n'hi ha hagut mai, des de l'instant de dispar (startedAt, en segons).
+        if (!lastSeen.has(s.id)) lastSeen.set(s.id, s.startedAt ? s.startedAt * 1000 : now);
+        if (now - lastSeen.get(s.id) > RECONCILE_MS) {
+          console.warn('[reconcile] cue', s.id, `sense telemetria >${RECONCILE_MS}ms → reset`);
+          lastSeen.delete(s.id);
+          st.stopSlot(s.id, false);
+        }
+      }
+    }, 500);
+    return () => clearInterval(iv);
+  }, []);
+
   // En arrencar: recarrega els cues des de disc (per la ruta desada) i neteja
   // els fantasmes vells (nom sense ruta) perquè no quedin noms penjats.
   useEffect(() => {
+    if (bootRestoreRan) return; // no repetir amb el doble muntatge de StrictMode
+    bootRestoreRan = true;
     const slots = useSoundStore.getState().slots;
     (async () => {
       for (const s of slots) {
@@ -414,6 +566,12 @@ export default function App() {
       if (e.key === 'ArrowUp')    { e.preventDefault(); store.moveSelection('up');    return; }
       if (e.key === 'ArrowDown')  { e.preventDefault(); store.moveSelection('down');  return; }
 
+      // Slides (PDF): passa pàgina del cue de slides ACTIU a la sortida (si no sona
+      // cap PDF, no fan res). Tecles directes al teclat ES/CAT, sense AltGr.
+      // «.» = endarrere · «-» = endavant (acordat amb l'usuari).
+      if (e.key === '.') { e.preventDefault(); store.slidePage(-1); return; }
+      if (e.key === '-') { e.preventDefault(); store.slidePage(1);  return; }
+
       // Transport: espai = GO · enter = stop seleccionat · esc = stop tot
       if (e.key === ' ')      { e.preventDefault(); store.go(); return; }
       if (e.key === 'Enter')  { e.preventDefault(); store.stopSlot(store.selectedSlot, true); return; }
@@ -470,7 +628,16 @@ export default function App() {
             const pageEnd = (Math.floor((startSlot - 1) / 32) + 1) * 32; // no vessar de pàgina
             for (let i = 0; i < paths.length && startSlot + i <= pageEnd; i++) {
               try { await loadFromPath(startSlot + i, paths[i]); }
-              catch (err) { console.warn('Error carregant', paths[i], err); }
+              catch (err) {
+                console.warn('Error carregant', paths[i], err);
+                // Fes l'error visible (abans només anava a consola): en un show ningú
+                // mira la consola i un fitxer que no carrega passaria desapercebut.
+                const name = (paths[i] || '').split(/[\\/]/).pop() || paths[i];
+                useSoundStore.getState().pushNotification({
+                  type: 'error',
+                  message: `No s'ha pogut carregar «${name}»`,
+                });
+              }
             }
           } else {
             setDragOverSlot(null);

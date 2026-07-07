@@ -1,6 +1,5 @@
 import { SkipBack, SkipForward, Play, Square, MonitorOff } from 'lucide-react';
 import { useSoundStore } from '../store/useSoundStore';
-import { emitVideoBlack } from '../lib/videoOutput';
 
 // Hint que es mostra al camp Preview quan no hi ha res en preview
 const PREVIEW_HINT = 'Ctrl + Tile to preview';
@@ -16,7 +15,7 @@ export function CueTransport() {
   // Etiqueta del botó de blackout segons el patró seleccionat a Settings → Video.
   const blackoutLabel = idlePattern === 'bars' ? 'BARS' : idlePattern === 'testcard' ? 'CARD' : 'BLACK';
 
-  const { selectStep, go, stopSlot, stopAll } = useSoundStore.getState();
+  const { selectStep, go, stopSlot, stopAll, goToBlack } = useSoundStore.getState();
 
   const nameOf = (id) => {
     const s = slots.find((x) => x.id === id);
@@ -39,7 +38,7 @@ export function CueTransport() {
         <button className="cue-stop-all" onClick={() => stopAll()} title="Stop all (panic)">
           <Square size={16} fill="currentColor" /> ALL
         </button>
-        <button className="cue-black" onClick={() => emitVideoBlack()} title={`Blackout: cut the video output to the idle screen (${blackoutLabel})`}>
+        <button className="cue-black" onClick={() => goToBlack()} title={`Go to black: stop any playing video and show the idle screen (${blackoutLabel})`}>
           <MonitorOff size={16} /> {blackoutLabel}
         </button>
       </div>

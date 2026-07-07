@@ -580,7 +580,7 @@ export function SettingsModal({ onClose, readOnly = false }) {
                 pure black, no text. Applies instantly to the open window.
               </div>
 
-              <div className="settings-subtitle">Video audio (experimental)</div>
+              <div className="settings-subtitle">Video audio</div>
               <div className="editor-options">
                 <label className="editor-check">
                   <input
@@ -588,13 +588,13 @@ export function SettingsModal({ onClose, readOnly = false }) {
                     checked={separateVideoAudio}
                     onChange={(e) => setSeparateVideoAudio(e.target.checked)}
                   />
-                  Route video audio through the native engine
+                  Route video audio through the hardware engine
                 </label>
               </div>
               <div className="settings-note">
-                Plays the video’s sound through the native engine (routing, fades, ducking,
-                multichannel — also on macOS) while the output shows muted video, kept in sync.
-                Takes effect when the cue’s bus routes to a <b>Native</b> output. Off by default.
+                Plays the video’s sound through the hardware engine (routing, fades, ducking,
+                multichannel) while the output shows muted video, kept in sync. Takes effect
+                when the cue’s bus routes to an <b>ASIO</b> or <b>Native</b> output. Off by default.
               </div>
             </>
           )}

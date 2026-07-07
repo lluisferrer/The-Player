@@ -30,6 +30,7 @@ const ALLOWED_EXTENSIONS: &[&str] = &[
     "mp3", "mpeg", "mpg", "m4a", "aac", "wav", "ogg", "flac",
     "mp4", "webm", "m4v", "mov",
     "jpg", "jpeg", "png", "webp", "gif", "bmp",
+    "pdf",
 ];
 
 // Llegeix els bytes d'un fitxer de mèdia pel seu camí absolut (per carregar àudio
@@ -53,6 +54,175 @@ fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     std::fs::read(&path)
         .map(tauri::ipc::Response::new)
         .map_err(|e| format!("No s'ha pogut llegir {}: {}", path, e))
+}
+
+// Localitza l'executable de LibreOffice (`soffice`) per convertir presentacions a
+// PDF (slides, S2). Prova primer rutes d'instal·lació habituals per plataforma i
+// després el PATH. Retorna None si no es troba (l'app avisa l'usuari).
+fn find_soffice() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    // A Windows cal `soffice.com` (l'embolcall de consola que BLOQUEJA fins acabar);
+    // `soffice.exe` és un llançador que es desenganxa i retorna abans de convertir,
+    // fent que `.output()` vegi el PDF encara inexistent i doni la conversió per fallada.
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(PathBuf::from(r"C:\Program Files\LibreOffice\program\soffice.com"));
+        candidates.push(PathBuf::from(r"C:\Program Files (x86)\LibreOffice\program\soffice.com"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(PathBuf::from("/Applications/LibreOffice.app/Contents/MacOS/soffice"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        candidates.push(PathBuf::from("/usr/bin/soffice"));
+        candidates.push(PathBuf::from("/usr/local/bin/soffice"));
+        candidates.push(PathBuf::from("/snap/bin/libreoffice"));
+    }
+    for c in &candidates {
+        if c.exists() {
+            return Some(c.clone());
+        }
+    }
+    // Fallback: busca'l al PATH (a Windows, l'embolcall de consola soffice.com)
+    let name = if cfg!(target_os = "windows") { "soffice.com" } else { "soffice" };
+    if let Ok(path) = std::env::var("PATH") {
+        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+        for dir in path.split(sep) {
+            let p = std::path::PathBuf::from(dir).join(name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+// Converteix una presentació (.ppt/.pptx) a PDF amb LibreOffice headless i retorna
+// la ruta del PDF resultant (slides, S2). El PDF es desa a una cau persistent dins
+// el directori de cau de l'app (subcarpeta pel hash del camí d'origen), de manera
+// que reobrir el show no torna a convertir. Si el PDF ja existeix i és igual o més
+// nou que la presentació, es reutilitza. Si no es troba LibreOffice, retorna l'error
+// «LIBREOFFICE_NOT_FOUND» perquè el frontend mostri un avís específic.
+#[tauri::command]
+fn soffice_to_pdf(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    use std::hash::{Hash, Hasher};
+    use std::path::PathBuf;
+    use tauri::Manager;
+
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    if ext != "ppt" && ext != "pptx" {
+        return Err(format!("Extensió «{}» no és una presentació (.ppt/.pptx).", ext));
+    }
+    let src = PathBuf::from(&path);
+    if !src.exists() {
+        return Err(format!("No s'ha trobat el fitxer: {}", path));
+    }
+
+    // Cau: <app_cache>/slides/<hash del camí absolut>/<nom>.pdf
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let sub = format!("{:016x}", hasher.finish());
+    let base = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("Sense directori de cau: {}", e))?;
+    let outdir = base.join("slides").join(&sub);
+    std::fs::create_dir_all(&outdir).map_err(|e| format!("No s'ha pogut crear la cau: {}", e))?;
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("slides");
+    let pdf = outdir.join(format!("{}.pdf", stem));
+
+    // Si el PDF ja existeix i no és més antic que la presentació, reutilitza'l
+    if let (Ok(pm), Ok(sm)) = (std::fs::metadata(&pdf), std::fs::metadata(&src)) {
+        if let (Ok(pt), Ok(st)) = (pm.modified(), sm.modified()) {
+            if pt >= st {
+                return Ok(pdf.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    let soffice = find_soffice().ok_or_else(|| "LIBREOFFICE_NOT_FOUND".to_string())?;
+
+    // Perfil de LibreOffice COMPARTIT per a totes les conversions (no un per fitxer):
+    // construir un perfil nou és la part lenta (~30-60s), així que fer-ne un de sol i
+    // reutilitzar-lo fa que la 1a conversió sigui lenta i totes les següents ràpides.
+    // Les conversions s'encaminen seqüencialment des del frontend (bucle await), així
+    // que no hi ha concurrència sobre el perfil.
+    let profile_dir = base.join("slides").join("lo-profile");
+    std::fs::create_dir_all(&profile_dir)
+        .map_err(|e| format!("No s'ha pogut crear el perfil de LibreOffice: {}", e))?;
+    // Treu un bloqueig ranci d'una execució anterior interrompuda (evita que LibreOffice
+    // es quedi esperant indefinidament en obrir el perfil).
+    let _ = std::fs::remove_file(profile_dir.join(".lock"));
+
+    // IMPORTANT: és una URL file://, així que els ESPAIS del camí (p. ex. perfils
+    // d'usuari amb espais, "Lluis Ferrer Prats") s'han de codificar com %20; sense
+    // codificar, LibreOffice peta (0xC0000409) i no genera cap PDF.
+    let prof = profile_dir
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(' ', "%20");
+    let user_install = if cfg!(target_os = "windows") {
+        format!("-env:UserInstallation=file:///{}", prof)
+    } else {
+        format!("-env:UserInstallation=file://{}", prof)
+    };
+
+    let mut cmd = std::process::Command::new(&soffice);
+    cmd.arg("--headless")
+        .arg("--norestore")
+        .arg(&user_install)
+        .arg("--convert-to")
+        .arg("pdf")
+        .arg("--outdir")
+        .arg(&outdir)
+        .arg(&src)
+        // No necessitem la sortida (mirem si el PDF existeix); a null evitem qualsevol
+        // bloqueig per pipe plena i simplifiquem l'espera amb timeout.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // A Windows, evita que aparegui una finestra de consola
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("No s'ha pogut executar LibreOffice: {}", e))?;
+
+    // Espera amb timeout: la 1a conversió pot trigar (construcció del perfil), però si
+    // LibreOffice es penja no volem deixar el cue carregant per sempre. 180 s de marge.
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    return Err(
+                        "La conversió ha excedit el temps màxim: LibreOffice no ha respost.".to_string(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => return Err(format!("Error esperant LibreOffice: {}", e)),
+        }
+    }
+
+    if !pdf.exists() {
+        return Err(
+            "La conversió a PDF ha fallat: LibreOffice no ha generat el fitxer.".to_string(),
+        );
+    }
+    Ok(pdf.to_string_lossy().to_string())
 }
 
 #[derive(Serialize)]
@@ -1008,6 +1178,14 @@ fn asio_meter_slot() -> &'static std::sync::Mutex<Option<AsioMeterShared>> {
     ASIO_METER.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+// Heartbeat del callback ASIO (C2, resiliència). El callback `buffer_switch` corre
+// en CONTINU mentre el driver està arrencat (és el rellotge d'àudio), tant si sonen
+// veus com si no. Aquest comptador s'incrementa a cada crida; el fil de telemetria
+// detecta si es CONGELA (no avança) mentre el mix és actiu → el dispositiu s'ha perdut
+// (interfície USB desendollada). Increment atòmic barat, apte per al fil RT del driver.
+#[cfg(feature = "asio")]
+static ASIO_CB_HEARTBEAT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 // Arrenca els fils auxiliars que reenvien estat del motor ASIO a la UI:
 //   · `asio-notifier`  → final natural de veu (event `asio-voice-ended`).
 //   · `asio-telemetry` → playhead + nivell de cada veu (event `asio-telemetry`),
@@ -1051,11 +1229,48 @@ fn asio_start_notifier(app: tauri::AppHandle) {
         })
         .ok();
 
-    // Fil de telemetria (playhead + VU) a ~30 Hz.
+    // Fil de telemetria (playhead + VU) a ~30 Hz + watchdog de pèrdua de dispositiu.
     std::thread::Builder::new()
         .name("asio-telemetry".into())
-        .spawn(move || loop {
+        .spawn(move || {
+          // Estat del watchdog (C2): últim heartbeat vist, ticks consecutius sense
+          // avançar i si ja s'ha avisat (debounce, un sol avís per congelació).
+          let mut last_hb: u64 = 0;
+          let mut stall_ticks: u32 = 0;
+          let mut lost_reported = false;
+          loop {
             std::thread::sleep(std::time::Duration::from_millis(33));
+
+            // Watchdog de pèrdua de dispositiu ASIO: el callback buffer_switch corre en
+            // continu mentre el driver està arrencat. Si el mix és ACTIU però el heartbeat
+            // no avança durant ~500 ms (15 ticks), el callback s'ha congelat → el dispositiu
+            // s'ha perdut (USB desendollada). Avisa la UI un sol cop; es rearma quan el
+            // heartbeat torna a avançar o el mix es desmunta (stop normal, sense fals avís).
+            {
+                let mix_active = asio_meter_slot().lock().map(|g| g.is_some()).unwrap_or(false);
+                let hb = ASIO_CB_HEARTBEAT.load(std::sync::atomic::Ordering::Relaxed);
+                if mix_active && hb == last_hb {
+                    stall_ticks += 1;
+                    if stall_ticks >= 15 && !lost_reported {
+                        lost_reported = true;
+                        eprintln!("[asio] callback congelat ~500ms → dispositiu perdut (device-lost)");
+                        let _ = app.emit("asio-device-lost", "");
+                    }
+                } else {
+                    // El heartbeat avança (o el mix està inactiu). Si veníem d'una pèrdua
+                    // AVISADA i el mix segueix actiu (→ el callback ha REPRÈS), el dispositiu
+                    // ha tornat: avisa la UI de la recuperació (neteja errors + toast). Si el
+                    // mix és inactiu (stop/teardown normal) no és cap recuperació.
+                    if lost_reported && mix_active {
+                        eprintln!("[asio] callback reprèn → dispositiu recuperat (device-recovered)");
+                        let _ = app.emit("asio-device-recovered", "");
+                    }
+                    stall_ticks = 0;
+                    lost_reported = false;
+                }
+                last_hb = hb;
+            }
+
             // Snapshot curt sota lock: id, posició (s) i nivell de cada veu real.
             let items: Vec<TelemetryItem> = {
                 // Recuperació de poisoning: si el callback RT enverinés algun d'aquests
@@ -1104,6 +1319,7 @@ fn asio_start_notifier(app: tauri::AppHandle) {
             if !items.is_empty() {
                 let _ = app.emit("asio-telemetry", &items);
             }
+          } // fi del loop
         })
         .ok();
 }
@@ -1377,6 +1593,9 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
     //   3. escriu cada acumulador al buffer ASIO natiu (amb clip + conversió).
     // Locks curts (Mutex de veus i de streams), acceptable a aquesta escala.
     let callback_id = driver.add_callback(move |info: &asio_sys::CallbackInfo| {
+        // Heartbeat (C2): senyala que el callback segueix viu. Si es congela (dispositiu
+        // desconnectat), el fil de telemetria ho detecta. Atòmic barat, sense lock.
+        ASIO_CB_HEARTBEAT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let bi = info.buffer_index as usize;
         // Recuperació de poisoning: si un buffer anterior hagués fet panic amb algun
         // d'aquests locks agafat, `lock()` retornaria Err per sempre i el callback RT
@@ -2631,6 +2850,7 @@ pub fn run() {
             native_stop,
             compute_peaks,
             probe_duration,
+            soffice_to_pdf,
             write_text_file,
             read_text_file
         ])

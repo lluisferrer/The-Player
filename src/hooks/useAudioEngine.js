@@ -16,9 +16,27 @@ const VIDEO_EXT = /\.(mp4|webm|m4v|mov)$/i;
 // fins que s'atura. Sense àudio ni timeline (durada 0).
 const IMAGE_EXT = /\.(jpg|jpeg|png|webp|gif|bmp)$/i;
 
+// Extensions de slides: PDF (cue visual amb pàgina navegable). Es projecta a la
+// sortida i s'hi manté; sense àudio ni timeline.
+const PDF_EXT = /\.pdf$/i;
+
+// Presentacions: es converteixen a PDF amb LibreOffice (comanda Rust soffice_to_pdf)
+// i després es tracten com un cue de slides normal. Cal una ruta de disc (la
+// conversió la fa soffice sobre el fitxer), així que només via loadFromPath.
+const PPT_EXT = /\.pptx?$/i;
+
 // Nom de fitxer a partir d'una ruta (Windows o Unix)
 function basename(path) {
   return path.split(/[\\/]/).pop() || path;
+}
+
+// Envolta una promesa amb un temps màxim: si no es resol en `ms`, rebutja. Evita
+// que una crida penjada (p. ex. un decode/probe patològic) bloquegi un flux per sempre.
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms)),
+  ]);
 }
 
 // Llegeix només les metadades per saber la durada, sense descodificar res.
@@ -35,7 +53,19 @@ async function probeDuration(src, path) {
   return new Promise((resolve) => {
     const a = new Audio();
     a.preload = 'metadata';
-    const done = (d) => { a.removeAttribute('src'); resolve(d); };
+    let settled = false;
+    const done = (d) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      a.removeAttribute('src');
+      resolve(d);
+    };
+    // Marge de seguretat: si el fitxer no existeix o l'asset retorna una resposta
+    // que no dispara ni `loadedmetadata` ni `error`, sense això el <audio> es penjaria
+    // per sempre → el cue quedaria carregant (spinner encallat). Amb el timeout, es
+    // resol 0 i el flux continua fins a la fallada real (read_file_bytes) → missing.
+    const timer = setTimeout(() => done(0), 8000);
     a.addEventListener('loadedmetadata', () => done(a.duration), { once: true });
     a.addEventListener('error', () => done(0), { once: true });
     a.src = src;
@@ -71,6 +101,7 @@ export function useAudioEngine() {
   const loadAudio = useSoundStore((s) => s.loadAudio);
   const setSlotLoading = useSoundStore((s) => s.setSlotLoading);
   const setSlotPeaks = useSoundStore((s) => s.setSlotPeaks);
+  const setSlotPeaksDone = useSoundStore((s) => s.setSlotPeaksDone);
 
   // Genera (o recupera de la cau) els pics de la forma d'ona d'un cue en
   // streaming. Si hi ha pics desats per aquest fitxer i durada, s'estalvia la
@@ -87,41 +118,53 @@ export function useAudioEngine() {
   const PEAK_BUCKETS = 8000;
 
   const buildPeaksBackground = async (slotId, { path, url, duration, bytes }) => {
-    // Cau per fitxer (com els overviews dels DAWs)
-    if (path) {
-      const cached = getCachedPeaks(path, duration);
-      if (cached) { if (stillStreaming(slotId)) setSlotPeaks(slotId, cached); return; }
-    }
-    // Camí preferent per a cues amb ruta de disc: càlcul de pics a Rust
-    // (symphonia, STREAMING). Evita descodificar GB de PCM al WebView (A5).
-    // Retorna parells [min, max] intercalats, [-1, 1]: mateix format que
-    // computePeaks(). Un Vec<f32> arriba com a array JS → Float32Array.
-    if (path) {
-      try {
-        const arr = await invoke('compute_peaks', { path, buckets: PEAK_BUCKETS });
-        if (arr && arr.length) {
-          const peaks = new Float32Array(arr);
-          putCachedPeaks(path, duration, peaks);
-          if (stillStreaming(slotId)) setSlotPeaks(slotId, peaks);
-          return;
-        }
-      } catch { /* cau al camí JS de sota */ }
-    }
-    // Fallback JS (decodeAudioData): drag&drop web sense ruta, o si la comanda
-    // Rust falla. Descodifica tot el buffer → només apte per fitxers no gegants.
+    let ok = false;
     try {
-      const ctx = initAudioContext();
-      let arrayBuffer = bytes;
-      if (!arrayBuffer) {
-        if (path) arrayBuffer = await invoke('read_file_bytes', { path });
-        else if (url) arrayBuffer = await (await fetch(url)).arrayBuffer();
-        else return;
+      // Cau per fitxer (com els overviews dels DAWs)
+      if (path) {
+        const cached = getCachedPeaks(path, duration);
+        if (cached) { if (stillStreaming(slotId)) setSlotPeaks(slotId, cached); ok = true; return; }
       }
-      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-      const peaks = computePeaks(audioBuffer);
-      if (path) putCachedPeaks(path, duration, peaks);
-      if (stillStreaming(slotId)) setSlotPeaks(slotId, peaks);
-    } catch { /* sense forma d'ona */ }
+      // Camí preferent per a cues amb ruta de disc: càlcul de pics a Rust
+      // (symphonia, STREAMING). Evita descodificar GB de PCM al WebView (A5).
+      // Retorna parells [min, max] intercalats, [-1, 1]: mateix format que
+      // computePeaks(). Un Vec<f32> arriba com a array JS → Float32Array.
+      // Amb timeout: si compute_peaks es pengés per a un fitxer patològic, no volem
+      // que l'spinner de la forma d'ona giri per sempre; caiem al fallback / al finally.
+      if (path) {
+        try {
+          const arr = await withTimeout(invoke('compute_peaks', { path, buckets: PEAK_BUCKETS }), 30000);
+          if (arr && arr.length) {
+            const peaks = new Float32Array(arr);
+            putCachedPeaks(path, duration, peaks);
+            if (stillStreaming(slotId)) setSlotPeaks(slotId, peaks);
+            ok = true;
+            return;
+          }
+        } catch (e) { console.warn('[peaks] compute_peaks slot', slotId, '-', String(e)); }
+      }
+      // Fallback JS (decodeAudioData): drag&drop web sense ruta, o si la comanda
+      // Rust falla. Descodifica tot el buffer → només apte per fitxers no gegants.
+      try {
+        const ctx = initAudioContext();
+        let arrayBuffer = bytes;
+        if (!arrayBuffer) {
+          if (path) arrayBuffer = await invoke('read_file_bytes', { path });
+          else if (url) arrayBuffer = await (await fetch(url)).arrayBuffer();
+          else return;
+        }
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        const peaks = computePeaks(audioBuffer);
+        if (path) putCachedPeaks(path, duration, peaks);
+        if (stillStreaming(slotId)) setSlotPeaks(slotId, peaks);
+        ok = true;
+      } catch (e) { console.warn('[peaks] fallback JS slot', slotId, '-', String(e)); }
+    } finally {
+      // Passi el que passi, marca la generació com a acabada perquè l'spinner de la
+      // forma d'ona s'aturi (si no hi ha pics, es mostra àrea buida, no spinner etern).
+      if (!ok && stillStreaming(slotId)) console.warn('[peaks] slot', slotId, 'sense forma d\'ona (spinner aturat)');
+      setSlotPeaksDone(slotId);
+    }
   };
 
   // Càrrega des d'un objecte File (drag&drop web / input).
@@ -143,6 +186,14 @@ export function useAudioEngine() {
       if (IMAGE_EXT.test(file.name || '')) {
         const url = URL.createObjectURL(file);
         loadAudio(slotId, file, null, url, null, { mediaType: 'image', duration: 0 });
+        return;
+      }
+      // Cue de slides (PDF): sense àudio ni durada. La sortida el renderitza per
+      // pàgines amb pdf.js llegint els bytes del disc, per la qual cosa NOMÉS és
+      // servible amb ruta de disc (drag&drop natiu / selector); un File web sense
+      // ruta quedaria sense projectar (la finestra de sortida no veu els blob URL).
+      if (PDF_EXT.test(file.name || '')) {
+        loadAudio(slotId, file, null, null, null, { mediaType: 'pdf', duration: 0 });
         return;
       }
       const url = URL.createObjectURL(file);
@@ -183,6 +234,31 @@ export function useAudioEngine() {
       // Cue d'imatge fixa: es desa la ruta, mediaType 'image', sense durada.
       if (IMAGE_EXT.test(path)) {
         loadAudio(slotId, { name: basename(path) }, null, null, path, { mediaType: 'image', duration: 0 });
+        return;
+      }
+      // Cue de slides (PDF): es desa la ruta, mediaType 'pdf', sense durada. La
+      // finestra de sortida el renderitza per pàgines (pdf.js) llegint els bytes.
+      if (PDF_EXT.test(path)) {
+        loadAudio(slotId, { name: basename(path) }, null, null, path, { mediaType: 'pdf', duration: 0 });
+        return;
+      }
+      // Presentació (PPT/PPTX): converteix a PDF amb LibreOffice i carrega el PDF
+      // resultant com un cue de slides. El label es manté amb el nom de la
+      // presentació original. Si no hi ha LibreOffice, avisa i deixa el slot buit.
+      if (PPT_EXT.test(path)) {
+        try {
+          const pdfPath = await invoke('soffice_to_pdf', { path });
+          loadAudio(slotId, { name: basename(path) }, null, null, pdfPath, { mediaType: 'pdf', duration: 0 });
+        } catch (e) {
+          setSlotLoading(slotId, false);
+          const msg = String(e || '');
+          useSoundStore.getState().pushNotification({
+            type: 'error',
+            message: msg.includes('LIBREOFFICE_NOT_FOUND')
+              ? 'Per obrir presentacions (.ppt/.pptx) cal LibreOffice instal·lat. Instal·la\'l o exporta la presentació a PDF.'
+              : `No s'ha pogut convertir la presentació a PDF: ${msg}`,
+          });
+        }
         return;
       }
       const src = convertFileSrc(path);

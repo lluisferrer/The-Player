@@ -171,6 +171,14 @@ enum NativeCmd {
     // perquè ningú tornava a cridar el tancament. Fire-and-forget (sense reply): és
     // una neteja oportunista, no crítica per a la correcció de la reproducció.
     ReapIdle,
+    // C2 — Un dispositiu s'ha perdut (desconnectat a mitja funció): treu el seu
+    // backend del mapa perquè el proper GO el RECONSTRUEIXI (reobrint el dispositiu
+    // si ha tornat). Sense això, el backend mort es reutilitza i el cue no arrenca
+    // (queda blau sense so). La dispara el fil notificador de `native-device-lost`.
+    // Fire-and-forget: neteja de recuperació, no crítica per correcció immediata.
+    DropBackend {
+        device_name: String,
+    },
     // Tancament de l'app: atura els fils descodificadors i fa DROP de TOTS els
     // streams cpal en aquest fil (el propietari) perquè WASAPI/CoreAudio els
     // alliberin net i el procés pugui sortir sense penjar-se.
@@ -305,6 +313,33 @@ fn native_notify_failed(voice_id: u64, msg: String) {
     }
 }
 
+// ── Notificació de PÈRDUA de dispositiu (C2, resiliència) ─────────────────────
+//
+// El callback d'error del stream cpal salta quan el dispositiu de sortida deixa
+// d'estar disponible a mitja funció (interfície USB desendollada, dispositiu per
+// defecte que desapareix...). Sense això, el so es moriria EN SILENCI. Enviem el
+// nom del dispositiu (buit = per defecte) per un canal a un fil notificador que
+// emet `native-device-lost` a la UI, perquè l'operador ho vegi (tile en error +
+// toast) en lloc de quedar-se sense so sense saber-ho. Send barat, apte per al fil
+// d'àudio de cpal (com native_notify_ended).
+static NATIVE_DEVICE_LOST_TX: OnceLock<std::sync::mpsc::Sender<String>> = OnceLock::new();
+
+fn native_notify_device_lost(device_name: String) {
+    if let Some(tx) = NATIVE_DEVICE_LOST_TX.get() {
+        let _ = tx.send(device_name);
+    }
+}
+
+// Gestor de l'error del stream de sortida cpal (per dispositiu). Sempre deixa
+// traça; si l'error és una pèrdua de dispositiu, avisa la UI perquè ho faci visible.
+fn native_stream_error(device_name: &str, e: cpal::StreamError) {
+    let dev = if device_name.is_empty() { "default" } else { device_name };
+    eprintln!("[native] error stream de sortida ({}): {}", dev, e);
+    if matches!(e, cpal::StreamError::DeviceNotAvailable) {
+        native_notify_device_lost(device_name.to_string());
+    }
+}
+
 // ── Estat compartit per al fil de telemetria ─────────────────────────────────
 //
 // El fil de telemetria mostreja les llistes de veus actives (les mateixes que els
@@ -396,6 +431,26 @@ pub fn start_notifier(app: tauri::AppHandle) {
                     "native-voice-failed",
                     NativeVoiceFailed { voice_id, message },
                 );
+            }
+        })
+        .ok();
+
+    // Fil notificador de PÈRDUA de dispositiu (event `native-device-lost`, payload =
+    // nom del dispositiu; buit = per defecte). Perquè la UI faci visible que un
+    // dispositiu de sortida ha desaparegut a mitja funció (C2, resiliència).
+    let (lost_tx, lost_rx) = std::sync::mpsc::channel::<String>();
+    let _ = NATIVE_DEVICE_LOST_TX.set(lost_tx);
+    let app_lost = app.clone();
+    std::thread::Builder::new()
+        .name("native-notifier-devlost".into())
+        .spawn(move || {
+            while let Ok(device_name) = lost_rx.recv() {
+                let _ = app_lost.emit("native-device-lost", device_name.clone());
+                // Recuperació (C2.2): descarta el backend mort al fil del motor perquè
+                // el proper GO reobri el dispositiu si ha tornat. Fire-and-forget.
+                if let Some(tx) = native_tx_clone() {
+                    let _ = tx.send(NativeCmd::DropBackend { device_name });
+                }
             }
         })
         .ok();
@@ -601,6 +656,24 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
                     }));
                 }
             }
+            NativeCmd::DropBackend { device_name } => {
+                // Descarta el backend del dispositiu perdut. Primer atura els fils
+                // descodificadors de les seves veus en streaming (com a Shutdown) i
+                // després treu-lo del mapa → drop de la cpal::Stream en aquest fil (el
+                // propietari). El proper native_ensure_backend el reobrirà. Aïllat.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if let Some(b) = backends.get(&device_name) {
+                        if let Ok(svs) = b.stream_voices.lock() {
+                            for sv in svs.iter() {
+                                sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    if backends.remove(&device_name).is_some() {
+                        native_publish_meter(&backends);
+                    }
+                }));
+            }
             NativeCmd::Shutdown { reply } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     // Atura els fils descodificadors de les veus en streaming i,
@@ -706,51 +779,47 @@ fn native_resolve_device(host: &cpal::Host, device_name: &str) -> Result<cpal::D
         .ok_or_else(|| format!("Dispositiu de sortida no trobat: {}", device_name))
 }
 
-// Assegura que hi ha un backend cpal obert per al dispositiu `device_name` (buit =
-// per defecte): stream de sortida amb TOTS els canals + llista de veus + callback
-// de mescla. Idempotent: si el device ja és obert, el reutilitza. Retorna la
-// freqüència i el nombre de canals d'aquell dispositiu. En obrir-ne un de nou,
-// republica la taula de telemetria (un sol cop, fora del callback RT).
-fn native_ensure_backend(
-    backends: &mut NativeBackends,
+// Construeix i arrenca un cpal::Stream de sortida per a una CONFIG concreta d'un
+// dispositiu, amb el callback de mescla (fil RT) i el d'error (avisa la UI si perd
+// el dispositiu). Retorna (stream, sample_rate, canals). Aïllat per poder provar
+// diverses configs (multicanal → default) sense duplicar la construcció.
+fn native_build_backend_stream(
+    device: &cpal::Device,
+    supported: cpal::SupportedStreamConfig,
+    voices: &Arc<Mutex<Vec<Voice>>>,
+    stream_voices: &Arc<Mutex<Vec<StreamVoice>>>,
+    acc: &Arc<Mutex<Vec<Vec<f32>>>>,
     device_name: &str,
-) -> Result<(u32, usize), String> {
-    if let Some(b) = backends.get(device_name) {
-        return Ok((b.sample_rate, b.channels));
-    }
-
-    let host = cpal::default_host();
-    let device = native_resolve_device(&host, device_name)?;
-    // Config MULTICANAL: el màxim de canals del dispositiu (no la default estèreo).
-    let supported = native_pick_config(&device)?;
+) -> Result<(cpal::Stream, u32, usize), String> {
     let sample_format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
     let channels = config.channels as usize;
     let sample_rate = config.sample_rate.0;
 
-    // Llista de veus compartida amb el callback (fil RT de cpal).
-    let voices: Arc<Mutex<Vec<Voice>>> = Arc::new(Mutex::new(Vec::new()));
-    // Llista de veus en streaming (pistes llargues), separada de les de memòria.
-    let stream_voices: Arc<Mutex<Vec<StreamVoice>>> = Arc::new(Mutex::new(Vec::new()));
-    // Acumuladors pre-allocats (un Vec per canal): el callback els reutilitza
-    // zerant-los cada bloc, sense assignar memòria al fil d'àudio.
-    let acc: Arc<Mutex<Vec<Vec<f32>>>> = Arc::new(Mutex::new(Vec::new()));
+    // Comptador de crides al callback d'àudio: serveix per detectar un endpoint
+    // FANTASMA. Un dispositiu desconnectat però encara enumerat per WASAPI s'obre i
+    // "play" reïx SENSE error, però el seu callback MAI es crida (no hi ha rellotge
+    // d'àudio) → quedava cachejat i mut, bloquejant la recuperació. Comprovem que el
+    // callback arrenca de debò abans de donar el stream per bo.
+    let cb_calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    let err_fn = |e| eprintln!("[native] error stream de sortida: {}", e);
-
-    // Construeix el callback per al tipus de mostra del dispositiu. La mescla és
-    // SEMPRE en f32 (al nucli); aquí només convertim l'acumulador al format natiu.
+    // La mescla és SEMPRE en f32 (al nucli); aquí només convertim l'acumulador al
+    // format natiu. El callback d'ERROR captura el nom del dispositiu i, si el perd,
+    // avisa la UI (C2); cada branca en construeix el seu (el closure no és Copy).
     macro_rules! build {
         ($sample:ty, $to:expr) => {{
             let cb_voices = voices.clone();
             let cb_stream_voices = stream_voices.clone();
             let cb_acc = acc.clone();
+            let err_dev = device_name.to_string();
+            let cb_calls = cb_calls.clone();
             device.build_output_stream(
                 &config,
                 move |data: &mut [$sample], _: &cpal::OutputCallbackInfo| {
+                    cb_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     native_mix_callback(data, channels, &cb_voices, &cb_stream_voices, &cb_acc, &$to);
                 },
-                err_fn,
+                move |e| native_stream_error(&err_dev, e),
                 None,
             )
         }};
@@ -766,6 +835,72 @@ fn native_ensure_backend(
     .map_err(|e| format!("build_output_stream(): {}", e))?;
 
     stream.play().map_err(|e| format!("play(): {}", e))?;
+
+    // Verifica que el dispositiu ARRENCA de debò: espera fins a ~300 ms que el callback
+    // d'àudio es cridi almenys un cop. Un endpoint sa el crida en pocs ms; un fantasma
+    // (desconnectat però encara enumerat) no el crida mai → el descartem i retornem
+    // error, de manera que NO es quedi cachejat mut i la recuperació pugui reintentar
+    // (quan el dispositiu torni de debò, el callback sí que arrencarà). Aquesta espera
+    // és al fil del motor (no RT) i només es paga en OBRIR un dispositiu (no cada GO).
+    {
+        let start = std::time::Instant::now();
+        while cb_calls.load(std::sync::atomic::Ordering::Relaxed) == 0
+            && start.elapsed() < std::time::Duration::from_millis(300)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if cb_calls.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            eprintln!("[native] '{}' obert però el callback no arrenca (endpoint fantasma) → descartat", device_name);
+            // Drop explícit del stream fantasma abans de retornar (allibera l'endpoint).
+            drop(stream);
+            return Err("el dispositiu no ha arrencat (endpoint fantasma o desconnectat)".to_string());
+        }
+    }
+
+    Ok((stream, sample_rate, channels))
+}
+
+// Assegura que hi ha un backend cpal obert per al dispositiu `device_name` (buit =
+// per defecte): stream de sortida + llista de veus + callback de mescla. Idempotent:
+// si el device ja és obert, el reutilitza. Retorna la freqüència i el nombre de
+// canals d'aquell dispositiu. En obrir-ne un de nou, republica la telemetria.
+fn native_ensure_backend(
+    backends: &mut NativeBackends,
+    device_name: &str,
+) -> Result<(u32, usize), String> {
+    let dev_label = if device_name.is_empty() { "default" } else { device_name };
+    if let Some(b) = backends.get(device_name) {
+        return Ok((b.sample_rate, b.channels));
+    }
+
+    let host = cpal::default_host();
+    let device = native_resolve_device(&host, device_name)?;
+
+    // Llistes compartides amb el callback (fil RT de cpal).
+    let voices: Arc<Mutex<Vec<Voice>>> = Arc::new(Mutex::new(Vec::new()));
+    let stream_voices: Arc<Mutex<Vec<StreamVoice>>> = Arc::new(Mutex::new(Vec::new()));
+    let acc: Arc<Mutex<Vec<Vec<f32>>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // Prova primer la config MULTICANAL (màxim de canals). Molts aparells (p. ex.
+    // interfícies com la MixPre) en WASAPI mode COMPARTIT NOMÉS accepten el seu
+    // format de mescla (sovint estèreo): obrir amb tots els canals falla i, abans,
+    // el dispositiu es quedava mut. Si falla, caiem a la config PER DEFECTE del
+    // dispositiu (estèreo, mode compartit) → almenys sona en estèreo. El multicanal
+    // real d'un aparell així és per ASIO.
+    let (stream, sample_rate, channels) = {
+        let picked = native_pick_config(&device)?;
+        match native_build_backend_stream(&device, picked, &voices, &stream_voices, &acc, device_name) {
+            Ok(v) => v,
+            Err(e_multi) => {
+                eprintln!("[native] '{}' amb config multicanal ha fallat ({}); provo la per defecte", dev_label, e_multi);
+                let def = device
+                    .default_output_config()
+                    .map_err(|e| format!("default_output_config(): {}", e))?;
+                native_build_backend_stream(&device, def, &voices, &stream_voices, &acc, device_name)
+                    .map_err(|e_def| format!("no s'ha pogut obrir «{}» (multicanal: {} · default: {})", dev_label, e_multi, e_def))?
+            }
+        }
+    };
 
     backends.insert(
         device_name.to_string(),

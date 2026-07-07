@@ -5,7 +5,12 @@
 // cue visual (vídeo o imatge: es reprodueix a la finestra de sortida, sense
 // buffer d'àudio).
 export function hasClip(slot) {
-  return !!(slot && (slot.audioBuffer || slot.isStreaming || slot.mediaType === 'video' || slot.mediaType === 'image'));
+  // Un cue "missing" (fitxer persistit però no localitzat en arrencar) NO té clip
+  // utilitzable, encara que la persistència hagi restaurat isStreaming/mediaType: no
+  // s'ha de poder disparar ni pintar com a carregat (mostraria l'spinner de forma
+  // d'ona etern). Es tracta com a buit fins que es recarrega des del disc.
+  if (!slot || slot.missing) return false;
+  return !!(slot.audioBuffer || slot.isStreaming || slot.mediaType === 'video' || slot.mediaType === 'image' || slot.mediaType === 'pdf');
 }
 
 // Un slot és un cue de vídeo (es dispara a la finestra de sortida)
@@ -18,10 +23,18 @@ export function isImage(slot) {
   return !!(slot && slot.mediaType === 'image');
 }
 
-// Cue visual: vídeo o imatge. Tots dos van a la finestra de sortida (no pel
-// motor d'àudio) i comparteixen el camí de play/stop/fade cap a <VideoOutput/>.
+// Un slot és un cue de slides (PDF): es projecta a la sortida i s'hi manté,
+// però amb estat de pàgina actual (navegable amb les tecles de pàgina). Com la
+// imatge: sense àudio ni timeline.
+export function isPdf(slot) {
+  return !!(slot && slot.mediaType === 'pdf');
+}
+
+// Cue visual: vídeo, imatge o slides (PDF). Tots van a la finestra de sortida
+// (no pel motor d'àudio) i comparteixen el camí de play/stop/fade cap a
+// <VideoOutput/>. PDF i imatge no tenen àudio ni timeline.
 export function isVisual(slot) {
-  return isVideo(slot) || isImage(slot);
+  return isVideo(slot) || isImage(slot) || isPdf(slot);
 }
 
 // Durada total del fitxer (segons), vingui del buffer o de les metadades
