@@ -365,7 +365,7 @@ export function SoundButton({ slotId }) {
     try {
       const path = await open({
         multiple: false,
-        filters: [{ name: 'Media', extensions: ['mp3', 'mpeg', 'mpg', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'pdf', 'ppt', 'pptx'] }],
+        filters: [{ name: 'Media', extensions: ['mp3', 'mpeg', 'mpg', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'pdf'] }],
       });
       if (path) await loadFromPath(slotId, path);
     } catch (err) {

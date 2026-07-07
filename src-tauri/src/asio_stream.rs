@@ -153,6 +153,51 @@ fn interleave_into(decoded: &AudioBufferRef, out: &mut Vec<f32>, channels: usize
     }
 }
 
+// Fade-in dels primers frames d'un flux (interleaved) DESPRÉS d'una volta de loop,
+// per no sentir el salt a la costura. `left` són els frames de rampa que queden
+// (es decrementa a mesura que s'apliquen); `d_total` és la llargada total de la
+// rampa. Ramp gain 0→1. Quan `left` arriba a 0, no toca res.
+fn apply_loop_fade_in(scratch: &mut [f32], channels: usize, left: &mut usize, d_total: usize) {
+    if channels == 0 || d_total == 0 || *left == 0 {
+        return;
+    }
+    let frames = scratch.len() / channels;
+    for f in 0..frames {
+        if *left == 0 {
+            break;
+        }
+        let pos = d_total - *left; // 0 (silenci) → d_total-1 (quasi 1)
+        let g = pos as f32 / d_total as f32;
+        for c in 0..channels {
+            scratch[f * channels + c] *= g;
+        }
+        *left -= 1;
+    }
+}
+
+// Fade-out (retroactiu) dels últims `d` frames ja encuats al ring, just abans de fer
+// la volta del loop: així la mostra final del segment baixa a ~0 i, amb el fade-in de
+// la nova volta, la costura queda declickejada. Segur sota el mateix Mutex que llegeix
+// el callback RT: només toca la CUA del ring (lluny del cap de lectura, amb el
+// backpressure de ~4 s de marge) i no reallota res.
+fn declick_ring_tail(r: &mut StreamRing, d: usize) {
+    let ch = r.channels;
+    if ch == 0 || d == 0 {
+        return;
+    }
+    let total = r.samples.len() / ch;
+    let n = d.min(total);
+    for k in 0..n {
+        let f = total - n + k;
+        let g = (n - 1 - k) as f32 / n as f32; // ~1 al principi de la cua → 0 a l'últim frame
+        for c in 0..ch {
+            if let Some(s) = r.samples.get_mut(f * ch + c) {
+                *s *= g;
+            }
+        }
+    }
+}
+
 // Bucle del fil descodificador.
 fn decoder_main(
     path: String,
@@ -211,6 +256,10 @@ fn decoder_main(
     let mut scratch: Vec<f32> = Vec::new();
     // Posició (frames de FONT) dins el tram de loop des del darrer inici.
     let mut seg_pos: usize = 0;
+    // Frames de rampa de fade-in que queden després d'una volta de loop (0 = cap).
+    // Declickeja la costura junt amb el fade-out retroactiu de la cua (vegeu més avall).
+    let mut fade_in_left: usize = 0;
+    let declick = crate::LOOP_DECLICK_FRAMES;
 
     loop {
         if ctrl.stop.load(Ordering::Relaxed) {
@@ -257,6 +306,10 @@ fn decoder_main(
                 // Final del fitxer. Si fem LOOP (de tot el fitxer), torna a l'inici
                 // sense buidar el ring → flux continu, sense tall.
                 if loop_on {
+                    // Declick de la costura: fade-out retroactiu de la cua encuada i
+                    // fade-in dels primers frames de la nova volta.
+                    if let Ok(mut r) = ring.lock() { declick_ring_tail(&mut r, declick); }
+                    fade_in_left = declick;
                     let _ = format.seek(
                         SeekMode::Coarse,
                         SeekTo::Time { time: Time::from(start_secs), track_id: Some(track_id) },
@@ -307,6 +360,9 @@ fn decoder_main(
                     }
                 }
 
+                // Fade-in dels primers frames després d'una volta (declick de costura).
+                apply_loop_fade_in(&mut scratch, channels, &mut fade_in_left, declick);
+
                 if let Ok(mut r) = ring.lock() {
                     if r.channels == 0 {
                         r.channels = channels;
@@ -327,6 +383,10 @@ fn decoder_main(
                 seg_pos += frames;
 
                 if wrap {
+                    // Declick de la costura de l'out-point: fade-out retroactiu de la
+                    // cua (els últims frames del tram, ja encuats) i fade-in de la volta.
+                    if let Ok(mut r) = ring.lock() { declick_ring_tail(&mut r, declick); }
+                    fade_in_left = declick;
                     let _ = format.seek(
                         SeekMode::Coarse,
                         SeekTo::Time { time: Time::from(start_secs), track_id: Some(track_id) },

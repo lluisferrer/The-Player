@@ -56,175 +56,6 @@ fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
         .map_err(|e| format!("No s'ha pogut llegir {}: {}", path, e))
 }
 
-// Localitza l'executable de LibreOffice (`soffice`) per convertir presentacions a
-// PDF (slides, S2). Prova primer rutes d'instal·lació habituals per plataforma i
-// després el PATH. Retorna None si no es troba (l'app avisa l'usuari).
-fn find_soffice() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    // A Windows cal `soffice.com` (l'embolcall de consola que BLOQUEJA fins acabar);
-    // `soffice.exe` és un llançador que es desenganxa i retorna abans de convertir,
-    // fent que `.output()` vegi el PDF encara inexistent i doni la conversió per fallada.
-    #[cfg(target_os = "windows")]
-    {
-        candidates.push(PathBuf::from(r"C:\Program Files\LibreOffice\program\soffice.com"));
-        candidates.push(PathBuf::from(r"C:\Program Files (x86)\LibreOffice\program\soffice.com"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        candidates.push(PathBuf::from("/Applications/LibreOffice.app/Contents/MacOS/soffice"));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        candidates.push(PathBuf::from("/usr/bin/soffice"));
-        candidates.push(PathBuf::from("/usr/local/bin/soffice"));
-        candidates.push(PathBuf::from("/snap/bin/libreoffice"));
-    }
-    for c in &candidates {
-        if c.exists() {
-            return Some(c.clone());
-        }
-    }
-    // Fallback: busca'l al PATH (a Windows, l'embolcall de consola soffice.com)
-    let name = if cfg!(target_os = "windows") { "soffice.com" } else { "soffice" };
-    if let Ok(path) = std::env::var("PATH") {
-        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
-        for dir in path.split(sep) {
-            let p = std::path::PathBuf::from(dir).join(name);
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-// Converteix una presentació (.ppt/.pptx) a PDF amb LibreOffice headless i retorna
-// la ruta del PDF resultant (slides, S2). El PDF es desa a una cau persistent dins
-// el directori de cau de l'app (subcarpeta pel hash del camí d'origen), de manera
-// que reobrir el show no torna a convertir. Si el PDF ja existeix i és igual o més
-// nou que la presentació, es reutilitza. Si no es troba LibreOffice, retorna l'error
-// «LIBREOFFICE_NOT_FOUND» perquè el frontend mostri un avís específic.
-#[tauri::command]
-fn soffice_to_pdf(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    use std::hash::{Hash, Hasher};
-    use std::path::PathBuf;
-    use tauri::Manager;
-
-    let ext = std::path::Path::new(&path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
-    if ext != "ppt" && ext != "pptx" {
-        return Err(format!("Extensió «{}» no és una presentació (.ppt/.pptx).", ext));
-    }
-    let src = PathBuf::from(&path);
-    if !src.exists() {
-        return Err(format!("No s'ha trobat el fitxer: {}", path));
-    }
-
-    // Cau: <app_cache>/slides/<hash del camí absolut>/<nom>.pdf
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    let sub = format!("{:016x}", hasher.finish());
-    let base = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| format!("Sense directori de cau: {}", e))?;
-    let outdir = base.join("slides").join(&sub);
-    std::fs::create_dir_all(&outdir).map_err(|e| format!("No s'ha pogut crear la cau: {}", e))?;
-    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("slides");
-    let pdf = outdir.join(format!("{}.pdf", stem));
-
-    // Si el PDF ja existeix i no és més antic que la presentació, reutilitza'l
-    if let (Ok(pm), Ok(sm)) = (std::fs::metadata(&pdf), std::fs::metadata(&src)) {
-        if let (Ok(pt), Ok(st)) = (pm.modified(), sm.modified()) {
-            if pt >= st {
-                return Ok(pdf.to_string_lossy().to_string());
-            }
-        }
-    }
-
-    let soffice = find_soffice().ok_or_else(|| "LIBREOFFICE_NOT_FOUND".to_string())?;
-
-    // Perfil de LibreOffice COMPARTIT per a totes les conversions (no un per fitxer):
-    // construir un perfil nou és la part lenta (~30-60s), així que fer-ne un de sol i
-    // reutilitzar-lo fa que la 1a conversió sigui lenta i totes les següents ràpides.
-    // Les conversions s'encaminen seqüencialment des del frontend (bucle await), així
-    // que no hi ha concurrència sobre el perfil.
-    let profile_dir = base.join("slides").join("lo-profile");
-    std::fs::create_dir_all(&profile_dir)
-        .map_err(|e| format!("No s'ha pogut crear el perfil de LibreOffice: {}", e))?;
-    // Treu un bloqueig ranci d'una execució anterior interrompuda (evita que LibreOffice
-    // es quedi esperant indefinidament en obrir el perfil).
-    let _ = std::fs::remove_file(profile_dir.join(".lock"));
-
-    // IMPORTANT: és una URL file://, així que els ESPAIS del camí (p. ex. perfils
-    // d'usuari amb espais, "Lluis Ferrer Prats") s'han de codificar com %20; sense
-    // codificar, LibreOffice peta (0xC0000409) i no genera cap PDF.
-    let prof = profile_dir
-        .to_string_lossy()
-        .replace('\\', "/")
-        .replace(' ', "%20");
-    let user_install = if cfg!(target_os = "windows") {
-        format!("-env:UserInstallation=file:///{}", prof)
-    } else {
-        format!("-env:UserInstallation=file://{}", prof)
-    };
-
-    let mut cmd = std::process::Command::new(&soffice);
-    cmd.arg("--headless")
-        .arg("--norestore")
-        .arg(&user_install)
-        .arg("--convert-to")
-        .arg("pdf")
-        .arg("--outdir")
-        .arg(&outdir)
-        .arg(&src)
-        // No necessitem la sortida (mirem si el PDF existeix); a null evitem qualsevol
-        // bloqueig per pipe plena i simplifiquem l'espera amb timeout.
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    // A Windows, evita que aparegui una finestra de consola
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("No s'ha pogut executar LibreOffice: {}", e))?;
-
-    // Espera amb timeout: la 1a conversió pot trigar (construcció del perfil), però si
-    // LibreOffice es penja no volem deixar el cue carregant per sempre. 180 s de marge.
-    use std::time::{Duration, Instant};
-    let deadline = Instant::now() + Duration::from_secs(180);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {
-                if Instant::now() > deadline {
-                    let _ = child.kill();
-                    return Err(
-                        "La conversió ha excedit el temps màxim: LibreOffice no ha respost.".to_string(),
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            Err(e) => return Err(format!("Error esperant LibreOffice: {}", e)),
-        }
-    }
-
-    if !pdf.exists() {
-        return Err(
-            "La conversió a PDF ha fallat: LibreOffice no ha generat el fitxer.".to_string(),
-        );
-    }
-    Ok(pdf.to_string_lossy().to_string())
-}
-
 #[derive(Serialize)]
 struct AudioOutput {
     host: String, // "WASAPI" o "ASIO" — el backend que exposa el dispositiu
@@ -508,6 +339,15 @@ fn play_test_tone(
 // timing però suficient per eliminar la discontinuïtat. El comparteixen el camí
 // ASIO (lib.rs) i el backend cpal (native_output.rs) via `crate::DECLICK_MS`.
 pub(crate) const DECLICK_MS: f32 = 5.0;
+
+// Declick de la VOLTA del loop: a cada volta, la mostra final del segment i la
+// inicial gairebé mai coincideixen → salt = clic audible a cada volta. Hi apliquem
+// una micro-osca (fade-out els últims N frames + fade-in els primers N) al voltant
+// de la costura. En FRAMES fixos (no ms) perquè el nucli de mescla no ha de conèixer
+// la freqüència; ~192 frames són ~4 ms a 44,1/48 kHz: inaudible però suficient per
+// eliminar la discontinuïtat. El comparteixen el camí en memòria (`asio_mix_voice`)
+// i el descodificador en streaming (`asio_stream`, costura gapless).
+pub(crate) const LOOP_DECLICK_FRAMES: usize = 192;
 
 // NUCLI reutilitzable (feature `native`): tant el callback ASIO com el backend
 // cpal mesclen aquestes veus amb `asio_mix_voice`. Els camps i la semàntica són
@@ -1735,6 +1575,20 @@ fn asio_mix_voice(voice: &mut Voice, acc: &mut [Vec<f32>], buffer_size: usize) {
                 env *= 1.0 - (into as f32 / voice.fade_out_len as f32).min(1.0);
             }
         }
+        // Declick de la volta del loop: micro fade-out als últims frames del segment i
+        // fade-in als primers de cada nova volta, per no sentir el salt a la costura.
+        // El fade-in NO s'aplica al primer arranc (played_total == seg_pos): allà la
+        // veu ja surt de silenci (o del fade-in del cue). Vegeu `LOOP_DECLICK_FRAMES`.
+        if voice.loop_on {
+            let d = crate::LOOP_DECLICK_FRAMES.min(seg_len / 2);
+            if d > 0 {
+                if seg_pos >= seg_len - d {
+                    env *= (seg_len - seg_pos) as f32 / d as f32;
+                } else if seg_pos < d && voice.played_total != seg_pos {
+                    env *= seg_pos as f32 / d as f32;
+                }
+            }
+        }
         // Release (stop amb fade en calent): rampa addicional cap a 0.
         if let Some(rfrom) = voice.release_from {
             if seg_pos >= rfrom {
@@ -2597,6 +2451,24 @@ fn native_set_master_gain(gain: f32) -> Result<(), String> {
     }
 }
 
+// Fixa la mida de buffer (frames per callback) del motor natiu cpal. 0 = Auto
+// (període del driver). Un buffer més gran dona marge davant pics de CPU i sol
+// eliminar els clics/microtalls per underrun, a canvi d'una mica més de latència.
+// Reobre els dispositius ociosos perquè agafin la mida nova al proper GO.
+#[tauri::command]
+fn native_set_buffer_size(frames: u32) -> Result<(), String> {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = frames;
+        Ok(())
+    }
+    #[cfg(feature = "native")]
+    {
+        native_output::set_buffer_size(frames);
+        Ok(())
+    }
+}
+
 // Allibera els dispositius natius oberts que no estiguin a `keep` i no sonin
 // (en canviar de dispositiu de sortida, perquè el vell quedi lliure).
 #[tauri::command]
@@ -2844,13 +2716,13 @@ pub fn run() {
             native_stop_voice,
             native_set_gain,
             native_set_master_gain,
+            native_set_buffer_size,
             native_close_unused,
             native_seek,
             native_set_paused,
             native_stop,
             compute_peaks,
             probe_duration,
-            soffice_to_pdf,
             write_text_file,
             read_text_file
         ])

@@ -20,11 +20,6 @@ const IMAGE_EXT = /\.(jpg|jpeg|png|webp|gif|bmp)$/i;
 // sortida i s'hi manté; sense àudio ni timeline.
 const PDF_EXT = /\.pdf$/i;
 
-// Presentacions: es converteixen a PDF amb LibreOffice (comanda Rust soffice_to_pdf)
-// i després es tracten com un cue de slides normal. Cal una ruta de disc (la
-// conversió la fa soffice sobre el fitxer), així que només via loadFromPath.
-const PPT_EXT = /\.pptx?$/i;
-
 // Nom de fitxer a partir d'una ruta (Windows o Unix)
 function basename(path) {
   return path.split(/[\\/]/).pop() || path;
@@ -240,25 +235,6 @@ export function useAudioEngine() {
       // finestra de sortida el renderitza per pàgines (pdf.js) llegint els bytes.
       if (PDF_EXT.test(path)) {
         loadAudio(slotId, { name: basename(path) }, null, null, path, { mediaType: 'pdf', duration: 0 });
-        return;
-      }
-      // Presentació (PPT/PPTX): converteix a PDF amb LibreOffice i carrega el PDF
-      // resultant com un cue de slides. El label es manté amb el nom de la
-      // presentació original. Si no hi ha LibreOffice, avisa i deixa el slot buit.
-      if (PPT_EXT.test(path)) {
-        try {
-          const pdfPath = await invoke('soffice_to_pdf', { path });
-          loadAudio(slotId, { name: basename(path) }, null, null, pdfPath, { mediaType: 'pdf', duration: 0 });
-        } catch (e) {
-          setSlotLoading(slotId, false);
-          const msg = String(e || '');
-          useSoundStore.getState().pushNotification({
-            type: 'error',
-            message: msg.includes('LIBREOFFICE_NOT_FOUND')
-              ? 'Per obrir presentacions (.ppt/.pptx) cal LibreOffice instal·lat. Instal·la\'l o exporta la presentació a PDF.'
-              : `No s'ha pogut convertir la presentació a PDF: ${msg}`,
-          });
-        }
         return;
       }
       const src = convertFileSrc(path);

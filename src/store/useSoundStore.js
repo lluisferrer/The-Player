@@ -188,6 +188,9 @@ export const useSoundStore = create((set, get) => ({
   playlistDeviceId: savedGlobals.playlistDeviceId ?? 'default',
   previewDeviceId: savedGlobals.previewDeviceId ?? 'default',
   asioMasterGain: savedGlobals.asioMasterGain ?? 1,  // gain mestre del bus ASIO (0..1)
+  // Mida de buffer del motor natiu cpal (frames per callback). 0 = Auto (període del
+  // driver). Puja-la si hi ha clics/microtalls per underrun sota càrrega de CPU.
+  nativeBufferSize: savedGlobals.nativeBufferSize ?? 0,
   // Dispositius WASAPI marcats com a "Usar" (curats a Dispositius). El Routing
   // només n'ofereix aquests; llista BUIDA = mostra'ls tots (compatibilitat).
   enabledOutputs: Array.isArray(savedGlobals.enabledOutputs) ? savedGlobals.enabledOutputs : [],
@@ -310,6 +313,7 @@ export const useSoundStore = create((set, get) => ({
       duckRelease: state.duckRelease,
       duckHold: state.duckHold,
       asioMasterGain: state.asioMasterGain,
+      nativeBufferSize: state.nativeBufferSize,
       enabledOutputs: state.enabledOutputs,
       videoMonitorName: state.videoMonitorName,
       videoIdlePattern: state.videoIdlePattern,
@@ -362,6 +366,7 @@ export const useSoundStore = create((set, get) => ({
       duckRelease: globals.duckRelease ?? 1.0,
       duckHold: globals.duckHold ?? 0.5,
       asioMasterGain: globals.asioMasterGain ?? 1.0,
+      nativeBufferSize: globals.nativeBufferSize ?? 0,
       enabledOutputs: Array.isArray(globals.enabledOutputs) ? globals.enabledOutputs : [],
       videoMonitorName: globals.videoMonitorName ?? null,
       videoIdlePattern: globals.videoIdlePattern ?? 'black',

@@ -4,7 +4,7 @@ import { useSoundStore } from '../store/useSoundStore';
 import { drawWavePathRange } from '../lib/waveformDraw';
 import { observeResize } from '../lib/resizeObserver';
 import { CUE_COLORS } from '../lib/colors';
-import { hasClip, isVideo, isImage, slotDuration } from '../lib/slotAudio';
+import { hasClip, isVideo, isImage, isPdf, slotDuration } from '../lib/slotAudio';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
 
@@ -55,20 +55,25 @@ export function SlotEditor() {
   const hasAudio = hasClip(slot);
   const isVid    = isVideo(slot);
   const isImg    = isImage(slot);
+  // Visual SENSE durada (imatge o PDF/slides): no té timeline ni segment, però SÍ
+  // que pot fer fade in/out (d'opacitat a la sortida). Es tracta igual per als fades.
+  const noDur    = isImg || isPdf(slot);
   const total    = hasAudio ? slotDuration(slot) : 0;
   const start    = hasAudio ? Math.max(0, slot.startPoint || 0) : 0;
   const stop     = hasAudio ? (slot.stopPoint ?? total) : 0;
-  // Override propi del fade (null = segueix el global). Distingim null de 0
-  // perquè es pugui forçar un tall sec (0 s) encara que el global no sigui 0.
-  const fadeInOv  = hasAudio ? (slot.fadeIn ?? null) : null;
-  const fadeOutOv = hasAudio ? (slot.fadeOut ?? null) : null;
+  // Override propi del fade (null = segueix el global). Distingim null de 0 perquè
+  // es pugui forçar un tall sec (0 s) encara que el global no sigui 0. Disponible per
+  // a àudio/vídeo i també per als visuals sense durada (imatge/PDF), que també faden.
+  const fadeInOv  = (hasAudio || noDur) ? (slot.fadeIn ?? null) : null;
+  const fadeOutOv = (hasAudio || noDur) ? (slot.fadeOut ?? null) : null;
   // Valor efectiu: el propi si està definit, si no el global
   const fadeIn   = fadeInOv  != null ? fadeInOv  : globalFadeIn;
   const fadeOut  = fadeOutOv != null ? fadeOutOv : globalFadeOut;
   const segDur   = Math.max(0, stop - start);
-  // Límit dels fades: el segment per a àudio/vídeo; per a imatge (sense durada)
-  // no hi ha segment, així que es permet fins a FADE_MAX.
-  const fadeCap  = isImg ? FADE_MAX : segDur;
+  // Límit dels fades: el segment per a àudio/vídeo; per als visuals sense durada
+  // (imatge/PDF) no hi ha segment, així que es permet fins a FADE_MAX. Sense això el
+  // PDF tenia fadeCap=0 → slider bloquejat (max=0) i camp numèric clampat a 0.
+  const fadeCap  = noDur ? FADE_MAX : segDur;
 
   // Finestra visible (en ratis del fitxer sencer)
   const span     = Math.min(1, 1 / zoom);

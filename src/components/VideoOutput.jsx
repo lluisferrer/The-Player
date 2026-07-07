@@ -43,10 +43,13 @@ export function VideoOutput() {
   const [src, setSrc] = useState(null);    // URL convertida del fitxer (o null = blackout)
   const [mediaKind, setMediaKind] = useState('video'); // 'video' | 'image' | 'pdf' (què renderitzem)
   // ── Slides (PDF) ──
-  const canvasRef = useRef(null);          // canvas on es pinta la pàgina de PDF
+  const canvasRef = useRef(null);          // canvas VISIBLE on es fa el swap de la pàgina
   const pdfDocRef = useRef(null);          // PDFDocumentProxy carregat (o null)
-  const pdfTaskRef = useRef(null);         // tasca de render en curs (per cancel·lar en canviar de pàgina)
+  const pdfTasksRef = useRef(new Set());   // tasques de render en vol (per cancel·lar-les en netejar)
+  const pdfCacheRef = useRef(new Map());   // cau pàgina→canvas ja renderitzat (evita el blanc en passar pàgina)
+  const pdfPrefetchRef = useRef(new Set());// pàgines amb prefetch en vol (per no duplicar feina)
   const pdfSlotRef = useRef(null);         // slotId del PDF (per informar slide-pages)
+  const pdfFadeInPending = useRef(false);  // revelar (fade/tall) quan la 1a pàgina del cue nou ja s'ha pintat
   const [pdfPath, setPdfPath] = useState(null); // ruta del PDF projectat (o null)
   const [pdfPage, setPdfPage] = useState(1);    // pàgina actual (1-based)
   const [pdfReady, setPdfReady] = useState(false); // document carregat i llest per renderitzar
@@ -60,9 +63,13 @@ export function VideoOutput() {
     if (stopTimerRef.current != null) { clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
   };
 
-  // Allibera el document PDF i la tasca de render en curs (slides)
+  // Allibera el document PDF, les tasques de render en vol i la cau de pàgines (slides)
   const clearPdf = () => {
-    if (pdfTaskRef.current) { try { pdfTaskRef.current.cancel(); } catch { /* res */ } pdfTaskRef.current = null; }
+    pdfTasksRef.current.forEach((t) => { try { t.cancel(); } catch { /* res */ } });
+    pdfTasksRef.current.clear();
+    pdfPrefetchRef.current.clear();
+    pdfCacheRef.current.clear();
+    pdfFadeInPending.current = false;
     if (pdfDocRef.current) { try { pdfDocRef.current.destroy(); } catch { /* res */ } pdfDocRef.current = null; }
     pdfSlotRef.current = null;
     setPdfReady(false);
@@ -142,8 +149,15 @@ export function VideoOutput() {
           playInfo.current = { ...playInfo.current, fadeIn, fadeOut: Math.max(0, p.fadeOut || 0) };
           kindRef.current = 'pdf';
           setMediaKind('pdf');
+          // Neteja el canvas visible: així NO es veu la pàgina del PDF ANTERIOR mentre
+          // es carrega/renderitza el nou. Comença invisible i la revelació (fade in o
+          // tall) es dispara quan la 1a pàgina nova ja s'ha pintat (pdfFadeInPending,
+          // a l'efecte de render), no ara que el canvas encara és el vell.
+          const c = canvasRef.current;
+          if (c) { try { c.getContext('2d').clearRect(0, 0, c.width, c.height); } catch { /* res */ } }
+          pdfFadeInPending.current = true;
           setFadeDur(0);
-          setOpacity(fadeIn > 0 ? 0 : 1); // si hi ha fade in, comença invisible
+          setOpacity(0);
           setPdfPage(Math.max(1, p.page | 0) || 1);
           setPdfPath(p.filePath);
           setSrc(p.filePath); // truthy: activa el branc de render (el canvas ignora el valor)
@@ -262,10 +276,9 @@ export function VideoOutput() {
         pdfDocRef.current = doc;
         emit('slide-pages', { slotId: pdfSlotRef.current, pages: doc.numPages }).catch(() => {});
         setPdfReady(true);
-        // Un cop llest, dispara el fade in d'opacitat (el canvas es pinta a l'altre efecte)
-        const fadeIn = Math.max(0, playInfo.current.fadeIn || 0);
-        setFadeDur(fadeIn > 0 ? fadeIn : 0);
-        setOpacity(1);
+        // La revelació (fade in o tall) NO es dispara aquí: es fa quan la 1a pàgina ja
+        // està pintada al canvas visible (efecte de render, via pdfFadeInPending), per
+        // no revelar un canvas encara buit o amb la pàgina del PDF anterior.
       } catch (e) {
         console.warn('[output] error carregant PDF', e);
       }
@@ -273,38 +286,94 @@ export function VideoOutput() {
     return () => { cancelled = true; };
   }, [pdfPath, mediaKind]);
 
-  // Slides: pinta la pàgina actual al canvas. Reacciona a canvis de pàgina
-  // (slide-goto) i al document acabat de carregar. Escala la pàgina a una mida
-  // generosa i deixa que el CSS (object-fit: contain) l'encaixi dins el negre.
+  // Slides: pinta la pàgina actual al canvas VISIBLE, evitant el blanc en passar
+  // pàgina. Estratègia: renderitzem cada pàgina a un canvas FORA de pantalla (cau)
+  // i, quan està llest, el "bolquem" al canvas visible d'un sol cop (síncron) → mai
+  // es veu el canvas buit mentre pdf.js renderitza. A més, prefetch de les pàgines
+  // veïnes perquè el pas endavant/endarrere sigui instantani, i podem de la cau a
+  // una finestra de ±2 pàgines (nitidesa sense malgastar RAM).
   useEffect(() => {
     if (!pdfReady || mediaKind !== 'pdf') return;
     const doc = pdfDocRef.current;
     const canvas = canvasRef.current;
     if (!doc || !canvas) return;
     let cancelled = false;
+
+    // Renderitza una pàgina a un canvas nou fora de pantalla i el retorna (o null).
+    const renderPageOffscreen = async (num) => {
+      const page = await doc.getPage(num);
+      // Escala perquè la pàgina càpiga en ~2560×1440 (nitidesa sense malgastar RAM);
+      // el CSS l'ajusta després a la finestra mantenint la proporció.
+      const vp1 = page.getViewport({ scale: 1 });
+      const scale = Math.min(2560 / vp1.width, 1440 / vp1.height);
+      const vp = page.getViewport({ scale: scale > 0 ? scale : 1 });
+      const off = document.createElement('canvas');
+      off.width = Math.floor(vp.width);
+      off.height = Math.floor(vp.height);
+      const task = page.render({ canvasContext: off.getContext('2d'), viewport: vp });
+      pdfTasksRef.current.add(task);
+      try { await task.promise; }
+      finally { pdfTasksRef.current.delete(task); }
+      return off;
+    };
+
+    // Obté el canvas d'una pàgina de la cau o el renderitza i el desa (una sola
+    // feina per pàgina alhora, compartida entre visible i prefetch).
+    const getPageCanvas = async (num) => {
+      const cache = pdfCacheRef.current;
+      if (cache.has(num)) return cache.get(num);
+      const off = await renderPageOffscreen(num);
+      cache.set(num, off);
+      return off;
+    };
+
+    // Prefetch en segon pla (no bloqueja; ignora errors i cancel·lacions).
+    const prefetch = (num) => {
+      if (num < 1 || num > doc.numPages) return;
+      const cache = pdfCacheRef.current;
+      const inflight = pdfPrefetchRef.current;
+      if (cache.has(num) || inflight.has(num)) return;
+      inflight.add(num);
+      getPageCanvas(num).catch(() => {}).finally(() => inflight.delete(num));
+    };
+
+    // Descarta de la cau les pàgines fora de la finestra ±2 al voltant de l'actual.
+    const prune = (center) => {
+      const cache = pdfCacheRef.current;
+      for (const key of cache.keys()) {
+        if (Math.abs(key - center) > 2) cache.delete(key);
+      }
+    };
+
     (async () => {
-      try {
-        const pageNum = Math.max(1, Math.min(pdfPage, doc.numPages));
-        const page = await doc.getPage(pageNum);
-        if (cancelled) return;
-        // Escala perquè la pàgina càpiga en ~2560×1440 (nitidesa sense malgastar RAM);
-        // el CSS l'ajusta després a la finestra mantenint la proporció.
-        const vp1 = page.getViewport({ scale: 1 });
-        const scale = Math.min(2560 / vp1.width, 1440 / vp1.height);
-        const vp = page.getViewport({ scale: scale > 0 ? scale : 1 });
-        canvas.width = Math.floor(vp.width);
-        canvas.height = Math.floor(vp.height);
-        const ctx = canvas.getContext('2d');
-        if (pdfTaskRef.current) { try { pdfTaskRef.current.cancel(); } catch { /* res */ } }
-        const task = page.render({ canvasContext: ctx, viewport: vp });
-        pdfTaskRef.current = task;
-        await task.promise;
-        pdfTaskRef.current = null;
-      } catch (e) {
+      const pageNum = Math.max(1, Math.min(pdfPage, doc.numPages));
+      let off;
+      try { off = await getPageCanvas(pageNum); }
+      catch (e) {
         if (e && e.name === 'RenderingCancelledException') return;
         console.warn('[output] error renderitzant pàgina PDF', e);
+        return;
       }
+      if (cancelled || !off) return;
+      // Swap síncron: redimensiona i pinta d'un sol cop (sense frame en blanc).
+      canvas.width = off.width;
+      canvas.height = off.height;
+      canvas.getContext('2d').drawImage(off, 0, 0);
+      // 1a pàgina d'un cue nou ja pintada: revela-la (fade in si n'hi ha, o tall). Els
+      // canvis de pàgina (slide-goto) NO toquen l'opacitat: ja és visible i no volem
+      // re-fade a cada pas de pàgina.
+      if (pdfFadeInPending.current) {
+        pdfFadeInPending.current = false;
+        const fadeIn = Math.max(0, playInfo.current.fadeIn || 0);
+        setFadeDur(fadeIn > 0 ? fadeIn : 0);
+        setOpacity(1);
+      }
+      // Anticipa la següent i l'anterior; poda la resta.
+      prefetch(pageNum + 1);
+      prefetch(pageNum - 1);
+      prune(pageNum);
     })();
+
     return () => { cancelled = true; };
   }, [pdfReady, pdfPage, mediaKind]);
 

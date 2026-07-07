@@ -171,6 +171,11 @@ enum NativeCmd {
     // perquè ningú tornava a cridar el tancament. Fire-and-forget (sense reply): és
     // una neteja oportunista, no crítica per a la correcció de la reproducció.
     ReapIdle,
+    // La mida de buffer del motor (Settings → Devices) ha canviat: tanca els
+    // dispositius OCIOSOS perquè el proper GO els reobri amb la nova mida. Els que
+    // encara sonen es mantenen (no tallem so a mitja funció); agafaran la mida nova
+    // quan les seves veus acabin i es reobrin. Fire-and-forget (neteja, no crítica).
+    ReopenIdle,
     // C2 — Un dispositiu s'ha perdut (desconnectat a mitja funció): treu el seu
     // backend del mapa perquè el proper GO el RECONSTRUEIXI (reobrint el dispositiu
     // si ha tornat). Sense això, el backend mort es reutilitza i el cue no arrenca
@@ -202,6 +207,36 @@ pub fn set_master_gain(gain: f32) {
     // Clamp a [0, 1.5]: harmonitza amb el límit de la UI (setAsioMasterGain). Sense
     // el màxim, una crida directa o un valor corrupte podria rebentar el bus.
     NATIVE_MASTER_GAIN.store(gain.max(0.0).min(1.5).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+// Mida de buffer (frames per callback) DEMANADA per l'usuari des de Settings →
+// Devices. 0 = Auto (deixem `BufferSize::Default`, el període per defecte del
+// driver — el que teníem fins ara). Un valor > 0 demana `BufferSize::Fixed(n)`:
+// un buffer més gran dona MÉS marge davant pics de CPU (WebView descodificant
+// vídeo, render de PDF…) a canvi d'una mica més de latència, i sol eliminar els
+// clics/microtalls per underrun del callback. Es llegeix en OBRIR un dispositiu
+// (no al callback RT); canviar-la reobre els dispositius ociosos (vegeu
+// `set_buffer_size`). WASAPI en mode compartit pot IGNORAR `Fixed`; per això
+// `native_build_backend_stream` reintenta amb `Default` si el driver la rebutja.
+static NATIVE_BUFFER_SIZE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn native_buffer_size() -> u32 {
+    NATIVE_BUFFER_SIZE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+// Fixa la mida de buffer del motor natiu (frames) i reobre els dispositius OCIOSOS
+// perquè agafin la nova mida al proper GO. 0 = Auto (període per defecte del driver).
+// Els valors > 0 s'acoten a [64, 8192] frames (per sota no té sentit i per sobre la
+// latència ja seria excessiva). Els dispositius que ESTAN sonant conserven la mida
+// vella fins que les seves veus acaben (no tallem so a mitja funció); els ociosos es
+// tanquen ara i es reobren amb la mida nova. L'àtom es fixa aquí mateix (barat); la
+// reobertura va al fil del motor via `ReopenIdle` (fire-and-forget).
+pub fn set_buffer_size(frames: u32) {
+    let v = if frames == 0 { 0 } else { frames.clamp(64, 8192) };
+    NATIVE_BUFFER_SIZE.store(v, std::sync::atomic::Ordering::Relaxed);
+    if let Some(tx) = native_tx_clone() {
+        let _ = tx.send(NativeCmd::ReopenIdle);
+    }
 }
 
 // Sender únic cap al fil natiu. S'inicialitza mandrós el primer cop que cal.
@@ -656,6 +691,16 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
                     }));
                 }
             }
+            NativeCmd::ReopenIdle => {
+                // La mida de buffer ha canviat: tanca els dispositius que ara mateix
+                // NO sonen (keep buit) perquè el proper GO els reobri amb la nova mida.
+                // Els que sonen es queden fins que quedin ociosos (no tallem so). No
+                // toca `last_keep` (això és una reobertura per canvi de buffer, no una
+                // política de routing). Aïllat per prudència; sense reply.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    native_close_idle(&mut backends, &[]);
+                }));
+            }
             NativeCmd::DropBackend { device_name } => {
                 // Descarta el backend del dispositiu perdut. Primer atura els fils
                 // descodificadors de les seves veus en streaming (com a Shutdown) i
@@ -792,7 +837,7 @@ fn native_build_backend_stream(
     device_name: &str,
 ) -> Result<(cpal::Stream, u32, usize), String> {
     let sample_format = supported.sample_format();
-    let config: cpal::StreamConfig = supported.into();
+    let mut config: cpal::StreamConfig = supported.into();
     let channels = config.channels as usize;
     let sample_rate = config.sample_rate.0;
 
@@ -825,14 +870,41 @@ fn native_build_backend_stream(
         }};
     }
 
-    let stream = match sample_format {
-        cpal::SampleFormat::F32 => build!(f32, |x: f32| x),
-        cpal::SampleFormat::I16 => build!(i16, |x: f32| (x * i16::MAX as f32) as i16),
-        cpal::SampleFormat::U16 => build!(u16, |x: f32| ((x * 0.5 + 0.5) * u16::MAX as f32) as u16),
-        cpal::SampleFormat::U8 => build!(u8, |x: f32| ((x * 0.5 + 0.5) * u8::MAX as f32) as u8),
-        other => return Err(format!("Format de mostra no suportat: {:?}", other)),
+    // Mida de buffer demanada per l'usuari (Settings → Devices). 0 = Auto → deixem
+    // `Default` (període del driver, com sempre). Amb un valor fix, provem PRIMER
+    // `Fixed(n)` i, si el driver el rebutja (WASAPI en mode compartit sovint ho fa),
+    // caiem a `Default`: així mai ens quedem sense stream per demanar una mida que el
+    // dispositiu no accepta.
+    let want = native_buffer_size();
+    let attempts: Vec<cpal::BufferSize> = if want > 0 {
+        vec![cpal::BufferSize::Fixed(want), cpal::BufferSize::Default]
+    } else {
+        vec![cpal::BufferSize::Default]
+    };
+
+    let mut built: Option<cpal::Stream> = None;
+    let mut last_err = String::from("build_output_stream(): cap intent");
+    for bs in attempts {
+        let is_fixed = matches!(bs, cpal::BufferSize::Fixed(_));
+        config.buffer_size = bs;
+        let res = match sample_format {
+            cpal::SampleFormat::F32 => build!(f32, |x: f32| x),
+            cpal::SampleFormat::I16 => build!(i16, |x: f32| (x * i16::MAX as f32) as i16),
+            cpal::SampleFormat::U16 => build!(u16, |x: f32| ((x * 0.5 + 0.5) * u16::MAX as f32) as u16),
+            cpal::SampleFormat::U8 => build!(u8, |x: f32| ((x * 0.5 + 0.5) * u8::MAX as f32) as u8),
+            other => return Err(format!("Format de mostra no suportat: {:?}", other)),
+        };
+        match res {
+            Ok(s) => { built = Some(s); break; }
+            Err(e) => {
+                if is_fixed {
+                    eprintln!("[native] '{}' rebutja buffer fix de {} frames ({}); provo Default", device_name, want, e);
+                }
+                last_err = format!("build_output_stream(): {}", e);
+            }
+        }
     }
-    .map_err(|e| format!("build_output_stream(): {}", e))?;
+    let stream = built.ok_or(last_err)?;
 
     stream.play().map_err(|e| format!("play(): {}", e))?;
 

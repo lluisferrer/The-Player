@@ -236,6 +236,19 @@ export function createRoutingSlice(set, get) {
       const gain = get().asioMasterGain ?? 1;
       invoke('asio_set_master_gain', { gain }).catch(() => { /* res */ });
       invoke('native_set_master_gain', { gain }).catch(() => { /* res */ });
+      // Reaplica també la mida de buffer desada del motor natiu (frames per callback).
+      invoke('native_set_buffer_size', { frames: get().nativeBufferSize ?? 0 }).catch(() => { /* sense motor natiu */ });
+    },
+
+    // Mida de buffer del motor natiu cpal (frames per callback; 0 = Auto). Un buffer
+    // més gran dona marge davant pics de CPU i sol eliminar els clics/microtalls per
+    // underrun, a canvi d'una mica més de latència. El motor reobre els dispositius
+    // ociosos amb la mida nova; els que sonen l'agafen quan les seves veus acaben.
+    setNativeBufferSize: (frames) => {
+      const n = Number.isFinite(frames) ? Math.max(0, Math.floor(frames)) : 0;
+      set({ nativeBufferSize: n });
+      invoke('native_set_buffer_size', { frames: n }).catch(() => { /* sense motor natiu */ });
+      get().persistGlobals();
     },
 
     // Info dels drivers ASIO carregats ara (per a les opcions de routing). Es manté

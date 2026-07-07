@@ -1357,8 +1357,10 @@ export function createCuesSlice(set, get) {
         if (slot.duck) duckRemove(get, slotId);
         let fadeSec = 0;
         if (fade === true) {
-          // Les imatges no tenen durada: no es clampa el fade. El vídeo sí (al segment).
-          if (isImage(slot)) fadeSec = Math.max(0, effFadeOut(slot, globalFadeOut));
+          // Imatges i PDF (slides) no tenen durada: no es clampa el fade. El vídeo sí
+          // (al segment). Sense això, el PDF clampava a segDur≈0.02s → tall pràcticament
+          // sec en lloc de fade out.
+          if (isImage(slot) || isPdf(slot)) fadeSec = Math.max(0, effFadeOut(slot, globalFadeOut));
           else {
             const segDur = Math.max(0.02, (slot.stopPoint ?? (slot.streamDuration || 0)) - Math.max(0, slot.startPoint || 0));
             fadeSec = Math.max(0, Math.min(effFadeOut(slot, globalFadeOut), segDur));

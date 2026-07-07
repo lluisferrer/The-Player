@@ -175,6 +175,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
   const outputChannels   = useSoundStore((s) => s.outputChannels);
   const asioMasterGain   = useSoundStore((s) => s.asioMasterGain);
   const setAsioMasterGain = useSoundStore((s) => s.setAsioMasterGain);
+  const nativeBufferSize = useSoundStore((s) => s.nativeBufferSize);
+  const setNativeBufferSize = useSoundStore((s) => s.setNativeBufferSize);
   const enabledOutputs   = useSoundStore((s) => s.enabledOutputs);
   const toggleEnabledOutput = useSoundStore((s) => s.toggleEnabledOutput);
 
@@ -445,6 +447,31 @@ export function SettingsModal({ onClose, readOnly = false }) {
               <div className="settings-note">
                 Global level of the ASIO bus (before soft clip). Lower it if it clips when
                 summing many voices; above 100% is pre-amplification.
+              </div>
+
+              <div className="settings-subtitle">Native engine buffer size</div>
+              <div className="settings-row">
+                <label htmlFor="native-buffer">Buffer</label>
+                <select
+                  id="native-buffer"
+                  value={nativeBufferSize ?? 0}
+                  onChange={(e) => setNativeBufferSize(parseInt(e.target.value, 10) || 0)}
+                  style={{ flex: 1 }}
+                >
+                  <option value={0}>Auto (driver default)</option>
+                  <option value={256}>256 frames (~5 ms @ 48 kHz)</option>
+                  <option value={512}>512 frames (~11 ms @ 48 kHz)</option>
+                  <option value={1024}>1024 frames (~21 ms @ 48 kHz)</option>
+                  <option value={2048}>2048 frames (~43 ms @ 48 kHz)</option>
+                  <option value={4096}>4096 frames (~85 ms @ 48 kHz)</option>
+                </select>
+              </div>
+              <div className="settings-note">
+                Buffer for the native (WASAPI/CoreAudio) engine. If playback clicks or
+                stutters under load (video output, PDF slides), raise it — a bigger buffer
+                is more robust at the cost of a little latency. <b>Auto</b> uses the driver's
+                default. Some shared-mode drivers ignore a fixed size and keep their own.
+                Applies when a device reopens (idle now, playing ones on their next cue).
               </div>
 
               <div className="settings-subtitle">Native diagnostics (per-channel test tone)</div>

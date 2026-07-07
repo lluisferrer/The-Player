@@ -26,7 +26,7 @@ import './App.css';
 
 // Extensions acceptades pels cues: àudio, vídeo i imatge (vídeo i imatge van a
 // la finestra de sortida; vegeu useAudioEngine + videoOutput.js)
-const MEDIA_EXT = /\.(mp3|mpeg|mpg|m4a|aac|wav|ogg|flac|mp4|webm|m4v|mov|jpg|jpeg|png|webp|gif|bmp|pdf|ppt|pptx)$/i;
+const MEDIA_EXT = /\.(mp3|mpeg|mpg|m4a|aac|wav|ogg|flac|mp4|webm|m4v|mov|jpg|jpeg|png|webp|gif|bmp|pdf)$/i;
 
 // Guard perquè la restauració de cues a l'arrencada s'executi UNA sola vegada. En
 // dev, React.StrictMode munta l'efecte dues vegades → sense guard, cada cue es
