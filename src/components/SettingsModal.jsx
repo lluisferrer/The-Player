@@ -228,6 +228,33 @@ export function SettingsModal({ onClose, readOnly = false }) {
   // Nom del fitxer de la imatge de fons (per mostrar-lo, sense la ruta sencera).
   const idleImageName = videoIdleImage ? videoIdleImage.replace(/^.*[\\/]/, '') : null;
 
+  // ── Llicència (L1) ──
+  const licenseState = useSoundStore((s) => s.licenseState);
+  const activateLicense = useSoundStore((s) => s.activateLicense);
+  const deactivateLicense = useSoundStore((s) => s.deactivateLicense);
+  const pushNotification = useSoundStore((s) => s.pushNotification);
+  const [licenseKeyInput, setLicenseKeyInput] = useState('');
+  const [licenseBusy, setLicenseBusy] = useState(false);
+
+  const doActivate = async () => {
+    if (!licenseKeyInput.trim()) return;
+    setLicenseBusy(true);
+    const status = await activateLicense(licenseKeyInput.trim());
+    setLicenseBusy(false);
+    if (status?.state === 'valid') {
+      setLicenseKeyInput('');
+      pushNotification({ type: 'info', message: 'License activated. Thank you!' });
+    } else {
+      pushNotification({ type: 'error', message: status?.message || 'Invalid license key.' });
+    }
+  };
+  const doDeactivate = async () => {
+    setLicenseBusy(true);
+    await deactivateLicense();
+    setLicenseBusy(false);
+    pushNotification({ type: 'info', message: 'License removed — back to demo mode.' });
+  };
+
   const duckEnabled = useSoundStore((s) => s.duckEnabled);
   const duckAmount  = useSoundStore((s) => s.duckAmount);
   const duckAttack  = useSoundStore((s) => s.duckAttack);
@@ -380,6 +407,7 @@ export function SettingsModal({ onClose, readOnly = false }) {
           <button className={`settings-tab ${tab === 'video' ? 'active' : ''}`} onClick={() => setTab('video')}>Video</button>
           <button className={`settings-tab ${tab === 'cues' ? 'active' : ''}`} onClick={() => setTab('cues')}>Cues</button>
           <button className={`settings-tab ${tab === 'playlist' ? 'active' : ''}`} onClick={() => setTab('playlist')}>Playlist</button>
+          <button className={`settings-tab ${tab === 'license' ? 'active' : ''}`} onClick={() => setTab('license')}>License</button>
         </div>
 
         <div className="settings-content">
@@ -788,6 +816,69 @@ export function SettingsModal({ onClose, readOnly = false }) {
                 </span>
               </label>
               <div className="settings-note">Enable ducking per cue in its editor (✎). The playlist drops to the set volume while any ducking cue plays and recovers once none remain.</div>
+            </>
+          )}
+
+          {tab === 'license' && (
+            <>
+              {licenseState?.state === 'valid' ? (
+                <>
+                  <div className="settings-subtitle">License active</div>
+                  <div className="settings-note">
+                    Thanks for supporting ezyPlayer. Your license runs fully offline —
+                    no internet needed to start a show.
+                  </div>
+                  <div style={DIAG_LIST_STYLE}>
+                    {licenseState.name && <div><b>Licensed to:</b> {licenseState.name}</div>}
+                    {licenseState.email && <div><b>Email:</b> {licenseState.email}</div>}
+                    {licenseState.tier && <div><b>Tier:</b> {licenseState.tier}</div>}
+                    {licenseState.covers && <div><b>Covers version:</b> {licenseState.covers}</div>}
+                  </div>
+                  <div className="settings-row" style={{ marginTop: 12 }}>
+                    <button className="editor-btn" disabled={licenseBusy} onClick={doDeactivate}>
+                      Remove license from this computer
+                    </button>
+                  </div>
+                  <div className="settings-note">
+                    Removing the license returns the app to demo mode on this machine (use
+                    it to move the license to another computer).
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="settings-subtitle">Demo mode</div>
+                  <div className="settings-note">
+                    The app is fully functional in demo mode, with an occasional short mute
+                    and a watermark on the video output. Paste your license key below to
+                    activate — it's stored locally and works offline afterwards.
+                  </div>
+                  <textarea
+                    className="license-key-input"
+                    placeholder="Paste your license key here…"
+                    value={licenseKeyInput}
+                    onChange={(e) => setLicenseKeyInput(e.target.value)}
+                    rows={4}
+                    style={{
+                      width: '100%', resize: 'vertical', marginTop: 8,
+                      fontFamily: 'inherit', fontSize: 12, padding: 8,
+                      background: 'var(--bg-button)', color: 'var(--text-primary)',
+                      border: '1px solid var(--border)', borderRadius: 6,
+                    }}
+                  />
+                  <div className="settings-row" style={{ marginTop: 8 }}>
+                    <button
+                      className="editor-btn"
+                      disabled={licenseBusy || !licenseKeyInput.trim()}
+                      onClick={doActivate}
+                    >
+                      {licenseBusy ? 'Activating…' : 'Activate'}
+                    </button>
+                  </div>
+                  {licenseState?.message && (
+                    <div className="diag-error">⚠ {licenseState.message}</div>
+                  )}
+                </>
+              )}
             </>
           )}
           </fieldset>

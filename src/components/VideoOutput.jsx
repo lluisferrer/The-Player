@@ -56,6 +56,24 @@ export function VideoOutput() {
   const pdfPrefetchRef = useRef(new Set());// pàgines amb prefetch en vol (per no duplicar feina)
   const pdfSlotRef = useRef(null);         // slotId del PDF (per informar slide-pages)
   const pdfFadeInPending = useRef(false);  // revelar (fade/tall) quan la 1a pàgina del cue nou ja s'ha pintat
+  // Marca d'aigua demo: la finestra de sortida té el seu propi context JS/store,
+  // així que consulta la llicència directament al Rust (font de veritat valid/demo).
+  const [isDemo, setIsDemo] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    // Consulta inicial (cobreix el cas d'obrir la sortida després que la principal
+    // ja hagi difós l'estat).
+    invoke('license_status')
+      .then((s) => { if (alive) setIsDemo(s?.state !== 'valid'); })
+      .catch(() => { if (alive) setIsDemo(true); });
+    // I es manté en sync amb la finestra principal (arrencada + activar/desactivar),
+    // encara que aquesta finestra ja estigués oberta i no es torni a muntar.
+    let un;
+    listen('license-demo', (e) => { if (alive) setIsDemo(!!e.payload); })
+      .then((f) => { un = f; });
+    return () => { alive = false; if (un) un(); };
+  }, []);
+
   const [pdfPath, setPdfPath] = useState(null); // ruta del PDF projectat (o null)
   const [pdfPage, setPdfPage] = useState(1);    // pàgina actual (1-based)
   const [pdfReady, setPdfReady] = useState(false); // document carregat i llest per renderitzar
@@ -536,6 +554,9 @@ export function VideoOutput() {
           )
           : null
       )}
+
+      {/* Marca d'aigua discreta en mode demo (cantonada inferior dreta). */}
+      {isDemo && <div className="demo-watermark">ezyPlayer · DEMO</div>}
     </div>
   );
 }

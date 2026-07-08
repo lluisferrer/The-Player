@@ -28,3 +28,21 @@
   height: 100%;
   display: block;
 }
+
+/* Marca d'aigua del mode demo (llicència L1). Discreta però visible: cantonada
+   inferior dreta, sempre per sobre del vídeo/imatge. */
+.demo-watermark {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  z-index: 10;
+  padding: 4px 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.62);
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 4px;
+  pointer-events: none;
+  user-select: none;
+}

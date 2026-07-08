@@ -8,6 +8,7 @@ import { createPreviewSlice } from './slices/preview';
 import { createRoutingSlice } from './slices/routing';
 import { createPlaylistSlice, savedPlaylist, consumePlNextId } from './slices/playlist';
 import { createCuesSlice, createEmptySlot, NUM_PAGES, NUM_SLOTS } from './slices/cues';
+import { createLicenseSlice } from './slices/license';
 // AudioCtx → mogut al slice de routing (P5); ja no cal aquí
 // duckAdd/duckRemove/duckReset/duckRefresh → moguts al slice de cues (P5)
 // csPlay/csStop/csPause/csResume/csSeek/csSetVolume → moguts al slice de cues (P5)
@@ -133,6 +134,8 @@ export const useSoundStore = create((set, get) => ({
   // stopAll/handleEnded/advanceStandby/go/_goStep/seekSlot/clearSlot/setSlotLoading/
   // setSlotMissing/setSlotPeaks/setColor/setLoop/stopSlot/setVolume).
   ...createCuesSlice(set, get),
+  // Slice de llicència L1 (licenseState/refreshLicense/activateLicense/deactivateLicense).
+  ...createLicenseSlice(set, get),
   slots: initialSlots,
 
   // ── Notificacions efímeres (P1: contracte d'errors motor→UI) ──

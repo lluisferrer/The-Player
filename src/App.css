@@ -84,6 +84,33 @@ body {
   flex-shrink: 0;
 }
 
+/* ─── Banner de mode demo (llicència L1) ─── */
+.demo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 7px 16px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: linear-gradient(90deg, rgba(234, 179, 8, 0.14), rgba(234, 179, 8, 0.08));
+  border-bottom: 1px solid rgba(234, 179, 8, 0.35);
+  flex-shrink: 0;
+}
+.demo-banner b { color: var(--vu-yellow); }
+.demo-banner-btn {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.demo-banner-btn:hover { filter: brightness(1.12); }
+
 /* ─── BRAND LOGO (ezyPlayer, idèntic a ezyRider) ─── */
 
 .app-brand {

@@ -16,7 +16,7 @@ import { slotForKey } from './lib/keyMap';
 import { getInitialTheme, applyTheme } from './lib/theme';
 import { hasClip, isVideo } from './lib/slotAudio';
 import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow, resolveTargetMonitorName, monitorIsPresent, reassertOutputFullscreen } from './lib/videoOutput';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { applyAsioTelemetry, asioPosition } from './lib/asioTelemetry';
 import { setMirrorTime } from './lib/videoMirror';
 import { plaOnVoiceEnded } from './lib/playlistAsio';
@@ -109,6 +109,19 @@ export default function App() {
 
   // Aplica el gain mestre ASIO desat al motor natiu en arrencar.
   useEffect(() => { useSoundStore.getState().initAsioMaster(); }, []);
+
+  // Llicència (L1): consulta l'estat real al Rust en arrencar (OFFLINE). El Rust és
+  // la font de veritat valid/demo; aquí només el pintem (banner + Settings).
+  const licenseState = useSoundStore((s) => s.licenseState);
+  useEffect(() => { useSoundStore.getState().refreshLicense(); }, []);
+  const openLicenseSettings = () => setShowSettings(true);
+
+  // Difon l'estat demo cap a la finestra de sortida de vídeo (context/store a part):
+  // el seu watermark s'actualitza en viu en arrencar i en activar/desactivar, encara
+  // que la sortida ja estigui oberta (no depèn de tornar-la a muntar).
+  useEffect(() => {
+    emit('license-demo', licenseState?.state !== 'valid').catch(() => {});
+  }, [licenseState?.state]);
 
   // Persistència de sessió: si la sortida de vídeo estava oberta en tancar l'app,
   // es torna a obrir en arrencar. També en sincronitzem l'estat inicial del botó.
@@ -727,6 +740,19 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Banner demo suau: només quan el Rust reporta demo. No bloqueja res. */}
+      {licenseState?.state === 'demo' && (
+        <div className="demo-banner">
+          <span>
+            <b>Demo mode</b> — fully functional, with an occasional short mute and a
+            video-output watermark.
+          </span>
+          <button className="demo-banner-btn" onClick={openLicenseSettings}>
+            Activate license
+          </button>
+        </div>
+      )}
 
       <main className="app-main">
         {viewMode === 'list' ? (
