@@ -25,3 +25,7 @@ dist-ssr
 
 # Permisos personals de Claude Code (no versionar)
 .claude/settings.local.json
+
+# Clau privada de llicències (MAI al repo) i qualsevol fitxer .key
+private.key
+*.key

@@ -1,6 +1,11 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 
+// Sistema de llicències L1 (offline, Ed25519). Sempre compilat (no depèn de cap
+// feature d'àudio): l'app ha de poder verificar la llicència en qualsevol build.
+// `pub` perquè el bin ezykeygen en comparteixi la canonicalització.
+pub mod license;
+
 // Descodificació d'àudio a Rust per al render natiu de cues. Part del nucli
 // reutilitzable: disponible amb `native` (i, per implicació, amb `asio`).
 #[cfg(feature = "native")]
@@ -1484,7 +1489,9 @@ fn asio_ensure_mix(loaded: &mut Option<AsioLoaded>, driver_name: &str) -> Result
         }
 
         // Bolca els acumuladors als buffers ASIO natius (gain mestre + soft clip).
-        let master = asio_master_gain();
+        // El multiplicador demo (1.0 amb llicència vàlida) aplica el silenci
+        // intermitent del mode demo aquí, al motor, no al JS (difícil de parxejar).
+        let master = asio_master_gain() * license::demo_master_multiplier();
         unsafe {
             for ch in 0..num {
                 let ptr = stream.buffer_infos[ch].buffers[bi];
@@ -2686,6 +2693,9 @@ pub fn run() {
                 // Arrenca maximitzada (ocupa tota la pantalla, sense retalls)
                 let _ = win.maximize();
             }
+            // Carrega i verifica la llicència guardada (OFFLINE) a l'arrencada.
+            // Fixa l'estat global valid/demo que consulta la degradació demo.
+            license::load_on_startup(app.handle());
             // Fil notificador de finals de veu ASIO → events Tauri cap a la UI.
             #[cfg(feature = "asio")]
             asio_start_notifier(app.handle().clone());
@@ -2724,7 +2734,11 @@ pub fn run() {
             compute_peaks,
             probe_duration,
             write_text_file,
-            read_text_file
+            read_text_file,
+            license::license_status,
+            license::license_info,
+            license::activate_license,
+            license::deactivate_license
         ])
         // Tancament fiable: en tancar la finestra PRINCIPAL, aturem el motor natiu
         // net (drop dels streams cpal al seu fil → WASAPI/CoreAudio no penja) i

@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "ezyPlayer — professional live-event audio player"
 authors = ["ezyRider"]
 edition = "2021"
+# Amb dos binaris al crate (l'app + l'eina ezykeygen), `cargo run` sol (el que fa
+# servir `tauri dev`) no sap quin triar. Fixem l'app com a binari per defecte.
+default-run = "tauri-app"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -66,6 +69,14 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Llicències offline (L1): verificació Ed25519 de la clau + base64 de l'envelope.
+# La clau pública va incrustada al binari; la privada mai hi entra.
+# `rand_core`: habilita SigningKey::generate (només el fa servir ezykeygen).
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+base64 = "0.22"
+# Només el generador de claus (bin ezykeygen) el fa servir per crear la parella
+# amb OsRng. És minúscul; l'app no en depèn per verificar.
+rand_core = { version = "0.6", features = ["getrandom"] }
 cpal = "0.15"
 # Accés directe a l'API ASIO de baix nivell (mateixa versió que usa cpal). Ens
 # cal per llistar els drivers SENSE carregar-los (driver_names) i per carregar

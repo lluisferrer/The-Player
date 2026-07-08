@@ -1061,7 +1061,9 @@ fn native_mix_callback<S>(
 
     // Entrellaça aplicant el guany mestre abans del soft-clip:
     // data[frame*channels + ch] = clip(master * acc[ch][frame]).
-    let master = native_master_gain();
+    // El multiplicador demo (1.0 amb llicència vàlida) aplica el silenci intermitent
+    // del mode demo aquí, al motor natiu (no al JS: difícil de parxejar).
+    let master = native_master_gain() * crate::license::demo_master_multiplier();
     for f in 0..frames {
         for ch in 0..channels {
             let s = asio_soft_clip(acc_guard[ch][f] * master);
