@@ -63,8 +63,9 @@ fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
 
 #[derive(Serialize)]
 struct AudioOutput {
-    host: String, // "WASAPI" o "ASIO" — el backend que exposa el dispositiu
-    name: String,
+    host: String, // "WASAPI", "CoreAudio", "ALSA" o "ASIO" — el backend que exposa el dispositiu
+    name: String, // nom intern de cpal (és el que s'usa per tornar-lo a obrir)
+    label: String, // nom llegible per a la UI (a Linux, el de la targeta en comptes de "hw:CARD=…")
     max_channels: u16,
     default_channels: u16,
     default_sample_rate: u32,
@@ -95,8 +96,34 @@ struct AsioLoadedInfo {
 #[derive(Serialize, Clone)]
 struct AsioLoadedInfo;
 
+// Plataforma d'àudio, perquè la UI anomeni bé els backends (a Linux no hi ha
+// WASAPI ni ASIO: el Web Audio va per PulseAudio i el motor natiu per ALSA).
+#[derive(Serialize)]
+struct AudioPlatform {
+    os: &'static str,
+    native_host: &'static str,
+    asio: bool,
+}
+
+#[tauri::command]
+fn audio_platform() -> AudioPlatform {
+    let native_host = match std::env::consts::OS {
+        "windows" => "WASAPI",
+        "macos" => "CoreAudio",
+        "linux" => "ALSA",
+        other => other,
+    };
+    AudioPlatform {
+        os: std::env::consts::OS,
+        native_host,
+        asio: cfg!(feature = "asio"),
+    }
+}
+
 // Recull els dispositius de sortida d'un host concret i els afegeix a `out`,
 // etiquetats amb el nom del backend (host_label). No falla si el host no en té.
+// (A Linux NO s'usa: vegeu `collect_alsa_outputs`.)
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn collect_outputs(host: &cpal::Host, host_label: &str, out: &mut Vec<AudioOutput>) {
     let default_name = host.default_output_device().and_then(|d| d.name().ok());
     let devices = match host.output_devices() {
@@ -120,6 +147,7 @@ fn collect_outputs(host: &cpal::Host, host_label: &str, out: &mut Vec<AudioOutpu
         let is_default = default_name.as_deref() == Some(name.as_str());
         out.push(AudioOutput {
             host: host_label.to_string(),
+            label: name.clone(),
             name,
             max_channels,
             default_channels,
@@ -127,6 +155,156 @@ fn collect_outputs(host: &cpal::Host, host_label: &str, out: &mut Vec<AudioOutpu
             is_default,
         });
     }
+}
+
+// PCM que ALSA defineix de sèrie (connectors de conversió, mescladors, ponts a
+// servidors…): no són sortides per si mateixos, així que no els mostrem.
+#[cfg(target_os = "linux")]
+const ALSA_BUILTIN_PCMS: &[&str] = &[
+    "null", "lavrate", "samplerate", "speexrate", "speex", "upmix", "vdownmix",
+    "jack", "oss", "pulse", "pipewire",
+];
+
+// Llista les sortides ALSA SENSE obrir-les amb cpal. L'enumeració de cpal 0.15
+// obre tots els PCM, i un `dmix` sobre una targeta ocupada es penja ~25 s; aquí
+// llegim els noms dels hints (instantani) i només sondegem els que mostrem, en
+// mode no bloquejant (una targeta ocupada torna EBUSY a l'acte).
+//
+// Què mostrem:
+//   - `default` (el mesclador del sistema).
+//   - Els PCM definits per l'usuari o un driver amb descripció (p. ex. `aes67` i
+//     `ravenna_out` de /etc/alsa/conf.d/60-aes67-driver.conf, fixats a 48 kHz).
+//   - L'accés directe a cada targeta (`hw:CARD=X,DEV=N`), llevat de RAVENNA: el
+//     driver segueix la freqüència amb què s'obre i obrir-lo a ≠48 kHz fa que el
+//     dimoni AES67 publiqui un SDP incorrecte; per a RAVENNA només els PCM de 48 kHz.
+#[cfg(target_os = "linux")]
+fn collect_alsa_outputs(out: &mut Vec<AudioOutput>) {
+    let hints = match alsa::device_name::HintIter::new_str(None, "pcm") {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    for hint in hints {
+        let Some(name) = hint.name else { continue };
+        if hint.direction == Some(alsa::Direction::Capture) {
+            continue;
+        }
+        // Primera línia de la descripció (la segona sol ser un detall tècnic).
+        let desc = hint
+            .desc
+            .as_deref()
+            .and_then(|d| d.lines().next())
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty());
+
+        let label = if name == "default" {
+            "System default".to_string()
+        } else if let Some(rest) = name.strip_prefix("hw:CARD=") {
+            let (card, dev) = rest.split_once(",DEV=").unwrap_or((rest, "0"));
+            if card == "RAVENNA" {
+                continue;
+            }
+            alsa_friendly_name(card, dev).unwrap_or_else(|| name.clone())
+        } else if name.contains(':') || ALSA_BUILTIN_PCMS.contains(&name.as_str()) {
+            // plughw:, dmix:, sysdefault:, surround51:… són variants del maquinari.
+            continue;
+        } else {
+            match desc.as_deref() {
+                // PCM només de captura (p. ex. "AES67 Driver (input 48 kHz)").
+                Some(d) if d.to_lowercase().contains("(input") => continue,
+                Some(d) => d.to_string(),
+                None => name.clone(),
+            }
+        };
+
+        let (probed_channels, rate) = probe_alsa_output(&name);
+        // Un PCM `plug` accepta qualsevol nombre de canals (en reporta milers), i
+        // una targeta ocupada no es pot sondejar: en aquests casos manen els canals
+        // que declara la descripció ("48 ch", "stereo").
+        // El `default` sol ser PulseAudio: estèreo, encara que en reporti més.
+        let channels = if name == "default" {
+            2
+        } else {
+            channels_from_desc(desc.as_deref())
+                .filter(|_| probed_channels == 0 || probed_channels > 64)
+                .unwrap_or(probed_channels.min(64))
+        };
+
+        out.push(AudioOutput {
+            host: "ALSA".to_string(),
+            is_default: name == "default",
+            label,
+            name,
+            max_channels: channels,
+            default_channels: channels.min(2),
+            default_sample_rate: rate,
+        });
+    }
+}
+
+// Obre el PCM en mode no bloquejant i en llegeix els canals màxims i la
+// freqüència (48 kHz si l'admet). (0, 0) si està ocupat o no es pot obrir.
+#[cfg(target_os = "linux")]
+fn probe_alsa_output(name: &str) -> (u16, u32) {
+    let Ok(pcm) = alsa::pcm::PCM::new(name, alsa::Direction::Playback, true) else {
+        return (0, 0);
+    };
+    let Ok(hwp) = alsa::pcm::HwParams::any(&pcm) else {
+        return (0, 0);
+    };
+    let channels = hwp.get_channels_max().unwrap_or(0).min(u16::MAX as u32) as u16;
+    let rate = if hwp.test_rate(48000).is_ok() {
+        48000
+    } else {
+        hwp.get_rate_max().unwrap_or(0)
+    };
+    (channels, rate)
+}
+
+// Canals declarats a la descripció d'un PCM: "(48 ch)" → 48, "stereo" → 2.
+#[cfg(target_os = "linux")]
+fn channels_from_desc(desc: Option<&str>) -> Option<u16> {
+    let d = desc?.to_lowercase();
+    let words: Vec<&str> = d
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    for pair in words.windows(2) {
+        if pair[1] == "ch" || pair[1] == "channels" {
+            if let Ok(n) = pair[0].parse::<u16>() {
+                return Some(n);
+            }
+        }
+    }
+    if d.contains("stereo") {
+        return Some(2);
+    }
+    None
+}
+
+// Nom llegible d'una sortida ALSA a partir de /proc/asound: el nom de la
+// targeta ("HDA Intel PCH") i, si és diferent, el del PCM ("CS4206 Analog").
+#[cfg(target_os = "linux")]
+fn alsa_friendly_name(card: &str, dev: &str) -> Option<String> {
+    // /proc/asound/cards: " 1 [PCH            ]: HDA-Intel - HDA Intel PCH"
+    let cards = std::fs::read_to_string("/proc/asound/cards").ok()?;
+    let card_name = cards.lines().find_map(|l| {
+        let (id, tail) = l.split_once('[')?.1.split_once(']')?;
+        if id.trim() != card {
+            return None;
+        }
+        Some(tail.split_once(" - ")?.1.trim().to_string())
+    })?;
+    // /proc/asound/<ID> és un enllaç a cardN; pcm<dev>p/info porta "name: …".
+    let pcm_name = std::fs::read_to_string(format!("/proc/asound/{}/pcm{}p/info", card, dev))
+        .ok()
+        .and_then(|info| {
+            info.lines()
+                .find_map(|l| l.strip_prefix("name: ").map(|n| n.trim().to_string()))
+        });
+    Some(match pcm_name {
+        Some(p) if !p.is_empty() && p != card_name => format!("{} · {}", card_name, p),
+        _ => card_name,
+    })
 }
 
 // Selecciona el host de cpal pel seu nom ("ASIO" → backend ASIO; qualsevol
@@ -155,15 +333,20 @@ fn list_audio_outputs() -> Result<Vec<AudioOutput>, String> {
     std::thread::spawn(move || {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut out = Vec::new();
-            let default = cpal::default_host();
-            collect_outputs(&default, default.id().name(), &mut out);
+            #[cfg(target_os = "linux")]
+            collect_alsa_outputs(&mut out);
+            #[cfg(not(target_os = "linux"))]
+            {
+                let default = cpal::default_host();
+                collect_outputs(&default, default.id().name(), &mut out);
+            }
             out
         }))
-        .map_err(|_| "Pànic enumerant dispositius WASAPI.".to_string());
+        .map_err(|_| "Pànic enumerant els dispositius d'àudio.".to_string());
         let _ = tx.send(res);
     });
     rx.recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| "Temps esgotat enumerant dispositius WASAPI.".to_string())?
+        .map_err(|_| "Temps esgotat enumerant els dispositius d'àudio.".to_string())?
 }
 
 // Llista els NOMS dels drivers ASIO registrats al sistema. Usa
@@ -197,6 +380,7 @@ fn detect_asio() -> Result<Vec<AudioOutput>, String> {
                 .into_iter()
                 .map(|name| AudioOutput {
                     host: "ASIO".to_string(),
+                    label: name.clone(),
                     name,
                     max_channels: 0, // desconegut fins a carregar el driver
                     default_channels: 0,
@@ -2708,6 +2892,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_file_bytes,
             list_audio_outputs,
+            audio_platform,
             detect_asio,
             play_test_tone,
             asio_test_tone,

@@ -811,7 +811,9 @@ fn native_pick_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConf
 // defecte del host. Si el nom no es troba, retorna error (no recau silenciosament
 // al per defecte, per no enviar so a un dispositiu equivocat).
 fn native_resolve_device(host: &cpal::Host, device_name: &str) -> Result<cpal::Device, String> {
-    if device_name.is_empty() {
+    // A ALSA el dispositiu per defecte es diu "default" i cpal el pot crear sense
+    // enumerar (l'enumeració obre tots els PCM i es pot penjar si n'hi ha d'ocupats).
+    if device_name.is_empty() || (cfg!(target_os = "linux") && device_name == "default") {
         return host
             .default_output_device()
             .ok_or_else(|| "No hi ha cap dispositiu de sortida per defecte.".to_string());

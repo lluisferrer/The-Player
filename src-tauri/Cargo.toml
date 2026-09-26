@@ -93,3 +93,9 @@ symphonia = { version = "0.5", optional = true, default-features = false, featur
     "aac",
 ] }
 
+# Linux: accés directe a ALSA (mateixa versió que usa cpal) per LLISTAR els
+# dispositius sense obrir-los. L'enumeració de cpal 0.15 obre cada PCM, i un
+# `dmix` sobre una targeta ocupada es penja ~25 s (la llista trigava 50 s).
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.9"
+

@@ -6,6 +6,7 @@ import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
 import { makeAsioTargetStr, makeNativeTargetStr, isAsioTarget, isNativeTarget, targetLabel } from '../lib/outputTarget';
+import { getAudioPlatform, webAudioLabel } from '../lib/audioPlatform';
 
 // A partir de la info dels drivers ASIO carregats ({ [name]: {outs, sample_rate} }),
 // construeix opcions de routing en PARELLS de canals estèreo (1-2, 3-4, …).
@@ -38,7 +39,7 @@ function nativeStereoOptions(nativeOutputs) {
   const opts = [];
   for (const d of nativeOutputs || []) {
     const name = d.name || '';
-    const label = d.name || 'System default';
+    const label = d.label || d.name || 'System default';
     const outs = d.max_channels || 2;
     for (let c = 0; c + 1 < outs; c += 2) {
       opts.push({ value: makeNativeTargetStr(name, [c, c + 1]), label: `${label} · ch ${c + 1}-${c + 2}` });
@@ -53,9 +54,10 @@ function nativeStereoOptions(nativeOutputs) {
   return opts;
 }
 
-// Selector de sortida reutilitzable: dispositius WASAPI + (opcional) targets ASIO.
-// `extraDefault` és l'opció de capçalera (p. ex. "Bus Cues (per defecte)").
-function OutputSelect({ id, value, onChange, audioDevices, asioOptions, nativeOptions = [], defaultValue, defaultLabel }) {
+// Selector de sortida reutilitzable: dispositius Web Audio + natius + (opcional) targets ASIO.
+// `defaultLabel` és l'opció de capçalera (p. ex. "Bus Cues (per defecte)").
+// `webLabel`/`nativeLabel` són els noms dels backends segons el SO.
+function OutputSelect({ id, value, onChange, audioDevices, asioOptions, nativeOptions = [], defaultValue, defaultLabel, webLabel, nativeLabel }) {
   // Si el valor desat és un target ASIO/natiu que no surt a les opcions (driver no
   // carregat o dispositiu absent en aquesta sessió), l'afegim com a opció "fantasma"
   // perquè el select el mostri i no es perdi en re-renderitzar (React deixaria el
@@ -72,13 +74,15 @@ function OutputSelect({ id, value, onChange, audioDevices, asioOptions, nativeOp
   return (
     <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
       <option value={defaultValue}>{defaultLabel}</option>
-      <optgroup label="WASAPI (Web Audio · stereo)">
-        {audioDevices.map((d) => (
-          <option key={d.deviceId} value={d.deviceId}>{d.label || `Device ${d.deviceId.slice(0, 8)}`}</option>
-        ))}
-      </optgroup>
+      {audioDevices.length > 0 && (
+        <optgroup label={`${webLabel} (Web Audio · stereo)`}>
+          {audioDevices.map((d) => (
+            <option key={d.deviceId} value={d.deviceId}>{d.label || `Device ${d.deviceId.slice(0, 8)}`}</option>
+          ))}
+        </optgroup>
+      )}
       {(nativeOptions.length > 0 || orphanNative) && (
-        <optgroup label="Native (multichannel)">
+        <optgroup label={`${nativeLabel} (native · multichannel)`}>
           {nativeOptions.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
@@ -125,7 +129,7 @@ function DiagRow({ o, onTone, info }) {
             background: isAsio ? 'var(--accent)' : 'var(--bg-button-hover)',
             color: isAsio ? '#fff' : 'var(--text-secondary)',
           }}>{o.host}</span>
-          {o.name}{o.is_default ? '  (default)' : ''}
+          {o.label || o.name}{o.is_default ? '  (default)' : ''}
         </span>
         {o.max_channels > 0 && (
           <span style={{
@@ -262,6 +266,14 @@ export function SettingsModal({ onClose, readOnly = false }) {
   const duckHold    = useSoundStore((s) => s.duckHold);
   const setDuckSettings = useSoundStore((s) => s.setDuckSettings);
 
+  // Plataforma d'àudio: noms dels backends i si hi ha ASIO (null fins que arriba).
+  const [platform, setPlatform] = useState(null);
+  useEffect(() => { getAudioPlatform().then(setPlatform); }, []);
+  const webLabel = webAudioLabel(platform);
+  const nativeLabel = platform?.native_host || 'Native';
+  const hasAsio = !!platform?.asio;
+  const isLinux = platform?.os === 'linux';
+
   const [outputs, setOutputs] = useState(null);
   // Increment 4: dispositius natius (noms de cpal) per al selector del motor natiu.
   const [nativeOutputs, setNativeOutputs] = useState(null);
@@ -374,10 +386,11 @@ export function SettingsModal({ onClose, readOnly = false }) {
 
   // En obrir la pestanya Dispositius, detecta els ASIO automàticament (llegeix els
   // noms del registre, sense carregar cap driver: ràpid i segur).
+  // Només si la build porta ASIO (a Mac/Linux, o Windows sense `asio`, no n'hi ha).
   useEffect(() => {
-    if (tab === 'dispositius' && asioOut === null) detectAsio();
+    if (tab === 'dispositius' && hasAsio && asioOut === null) detectAsio();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [tab, hasAsio]);
 
   // Pool de dispositius WASAPI per al Routing: els marcats "Usar" (llista buida =
   // tots). `devicesFor` hi afegeix el valor actual encara que no estigui marcat,
@@ -418,12 +431,27 @@ export function SettingsModal({ onClose, readOnly = false }) {
           {tab === 'dispositius' && (
             <>
               <div className="settings-note">
-                Pick the hardware you'll use — only enabled devices appear in <b>Routing</b>.
-                WASAPI is always available; an <b>ASIO</b> driver gives low latency and real
-                channels, but only <b>one</b> can be active at a time (exclusive access).
+                {hasAsio ? (
+                  <>
+                    Pick the hardware you'll use — only enabled devices appear in <b>Routing</b>.
+                    {` ${webLabel}`} is always available; an <b>ASIO</b> driver gives low latency and real
+                    channels, but only <b>one</b> can be active at a time (exclusive access).
+                  </>
+                ) : isLinux ? (
+                  <>
+                    <b>PulseAudio</b> is the system mixer (stereo, shared with other apps).
+                    <b> ALSA</b> opens a sound card directly with all its channels — exclusive
+                    access while ezyPlayer uses it, like a DAW.
+                  </>
+                ) : (
+                  <>
+                    Pick the hardware you'll use — only enabled devices appear in <b>Routing</b>.
+                    The <b>{nativeLabel}</b> engine gives real multichannel routing.
+                  </>
+                )}
               </div>
 
-              <div className="settings-subtitle">WASAPI outputs</div>
+              <div className="settings-subtitle">{webLabel} outputs (Web Audio · stereo)</div>
               <div style={DIAG_LIST_STYLE}>
                 {audioDevices.map((d) => (
                   <label key={d.deviceId} className="editor-check" style={{
@@ -438,9 +466,16 @@ export function SettingsModal({ onClose, readOnly = false }) {
                     {d.label || `Device ${d.deviceId.slice(0, 8)}`}
                   </label>
                 ))}
-                {audioDevices.length === 0 && <div className="library-empty">No WASAPI devices.</div>}
+                {audioDevices.length === 0 && (
+                  <div className="library-empty">
+                    {isLinux
+                      ? 'Web Audio plays through the system default output (PulseAudio) — change it in the system sound settings. For a specific card or multichannel, use ALSA below.'
+                      : `No ${webLabel} devices.`}
+                  </div>
+                )}
               </div>
 
+              {hasAsio && (<>
               <div className="settings-subtitle">ASIO driver (low latency)</div>
               <div className="settings-note">
                 Only <b>one</b> ASIO driver can be active at a time (exclusive access).
@@ -501,6 +536,7 @@ export function SettingsModal({ onClose, readOnly = false }) {
                 Global level of the ASIO bus (before soft clip). Lower it if it clips when
                 summing many voices; above 100% is pre-amplification.
               </div>
+              </>)}
 
               <div className="settings-subtitle">Native engine buffer size</div>
               <div className="settings-row">
@@ -520,14 +556,14 @@ export function SettingsModal({ onClose, readOnly = false }) {
                 </select>
               </div>
               <div className="settings-note">
-                Buffer for the native (WASAPI/CoreAudio) engine. If playback clicks or
+                Buffer for the native ({nativeLabel}) engine. If playback clicks or
                 stutters under load (video output, PDF slides), raise it — a bigger buffer
                 is more robust at the cost of a little latency. <b>Auto</b> uses the driver's
                 default. Some shared-mode drivers ignore a fixed size and keep their own.
                 Applies when a device reopens (idle now, playing ones on their next cue).
               </div>
 
-              <div className="settings-subtitle">Native diagnostics (per-channel test tone)</div>
+              <div className="settings-subtitle">{nativeLabel} outputs · native (per-channel test tone)</div>
               <div className="settings-note">Send a tone to check which physical output each channel maps to.</div>
               {diagError && <div className="diag-error">⚠ {diagError}</div>}
               {!outputs && !diagError && <div className="library-empty">Loading devices…</div>}
@@ -543,9 +579,9 @@ export function SettingsModal({ onClose, readOnly = false }) {
             <>
               <div className="settings-subtitle">Outputs per bus</div>
               <div className="settings-note">
-                One output per bus. <b>WASAPI</b> is stereo via Web Audio; <b>Native</b>
-                and <b>ASIO</b> give real multichannel routing. Native/ASIO devices come
-                from <b>Devices</b> (connect an ASIO driver there to see its channels).
+                One output per bus. <b>{webLabel}</b> is stereo via Web Audio; <b>{nativeLabel}</b>
+                {hasAsio ? <> and <b>ASIO</b> give</> : ' gives'} real multichannel routing.
+                {hasAsio && ' Connect an ASIO driver in Devices to see its channels.'}
               </div>
 
               <div className="settings-row">
@@ -557,6 +593,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   audioDevices={devicesFor(cuesDeviceId)}
                   asioOptions={asioOptions}
                   nativeOptions={nativeOptions}
+                  webLabel={webLabel}
+                  nativeLabel={nativeLabel}
                   defaultValue="default"
                   defaultLabel="Default"
                 />
@@ -571,6 +609,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   audioDevices={devicesFor(playlistDeviceId)}
                   asioOptions={asioOptions}
                   nativeOptions={nativeOptions}
+                  webLabel={webLabel}
+                  nativeLabel={nativeLabel}
                   defaultValue="default"
                   defaultLabel="Default"
                 />
@@ -585,6 +625,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   audioDevices={devicesFor(previewDeviceId)}
                   asioOptions={asioOptions}
                   nativeOptions={nativeOptions}
+                  webLabel={webLabel}
+                  nativeLabel={nativeLabel}
                   defaultValue="default"
                   defaultLabel="Default"
                 />
@@ -606,6 +648,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
                     audioDevices={devicesFor(colorOutputs[c.value])}
                     asioOptions={asioOptions}
                     nativeOptions={nativeOptions}
+                  webLabel={webLabel}
+                  nativeLabel={nativeLabel}
                     defaultValue="cues"
                     defaultLabel="Cues bus (default)"
                   />
