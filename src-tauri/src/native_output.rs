@@ -184,6 +184,11 @@ enum NativeCmd {
     DropBackend {
         device_name: String,
     },
+    // C2.3 — El dispositiu PER DEFECTE del sistema ha canviat (Windows/Mac). El
+    // backend "" queda lligat a l'endpoint que era el per defecte quan es va obrir;
+    // cal descartar-lo perquè el proper GO obri el nou. Si està sonant NO es talla:
+    // es marca i es descarta quan quedi ociós (ReapIdle). Fire-and-forget.
+    DefaultChanged,
     // Tancament de l'app: atura els fils descodificadors i fa DROP de TOTS els
     // streams cpal en aquest fil (el propietari) perquè WASAPI/CoreAudio els
     // alliberin net i el procés pugui sortir sense penjar-se.
@@ -490,6 +495,39 @@ pub fn start_notifier(app: tauri::AppHandle) {
         })
         .ok();
 
+    // C2.3 — Vigilant del dispositiu PER DEFECTE del sistema (Windows/Mac). A Linux
+    // no cal: el PCM `default` d'ALSA ja segueix PulseAudio sol. Consulta cada 2 s
+    // (barat: GetDefaultAudioEndpoint / kAudioHardwarePropertyDefaultOutputDevice) en
+    // un fil propi (a Windows, COM MTA de cpal; mai el fil STA de Tauri). En canviar,
+    // avisa la UI (`native-default-changed`, payload = nom nou) i el motor.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let app_def = app.clone();
+        std::thread::Builder::new()
+            .name("native-default-watch".into())
+            .spawn(move || {
+                let current = || {
+                    cpal::default_host()
+                        .default_output_device()
+                        .and_then(|d| d.name().ok())
+                };
+                let mut last = current();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let now = current();
+                    if now != last {
+                        log::info!("[native] sortida per defecte: {:?} → {:?}", last, now);
+                        last = now.clone();
+                        let _ = app_def.emit("native-default-changed", now.unwrap_or_default());
+                        if let Some(tx) = native_tx_clone() {
+                            let _ = tx.send(NativeCmd::DefaultChanged);
+                        }
+                    }
+                }
+            })
+            .ok();
+    }
+
     // Fil de telemetria (playhead + VU) a ~30 Hz.
     std::thread::Builder::new()
         .name("native-telemetry".into())
@@ -569,6 +607,25 @@ fn native_close_idle(backends: &mut NativeBackends, keep: &[String]) {
     }
 }
 
+// C2.3: descarta el backend del dispositiu per defecte ("") si no sona res.
+// Retorna true si ja no queda cap backend per defecte obert (descartat o inexistent).
+fn native_drop_default_if_idle(backends: &mut NativeBackends) -> bool {
+    let idle = match backends.get("") {
+        None => return true,
+        Some(b) => {
+            let v = b.voices.lock().map(|v| v.is_empty()).unwrap_or(false);
+            let sv = b.stream_voices.lock().map(|s| s.is_empty()).unwrap_or(false);
+            v && sv
+        }
+    };
+    if idle {
+        backends.remove("");
+        native_publish_meter(backends);
+        log::info!("[native] sortida per defecte canviada → es reobrirà al proper GO");
+    }
+    idle
+}
+
 fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
     // Mapa de dispositius oberts: buit fins al primer cue, després es mantenen
     // oberts (un stream cpal viu per device usat).
@@ -587,6 +644,9 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
     // ex. canvi de dispositiu, o motor natiu apagat amb keep=[]) → aleshores sí que
     // reapem els dispositius ociosos fora de `keep`.
     let mut last_keep: Option<Vec<String>> = None;
+    // C2.3: el dispositiu per defecte ha canviat mentre el backend "" sonava; es
+    // descartarà quan quedi ociós.
+    let mut default_stale = false;
     while let Ok(cmd) = rx.recv() {
         match cmd {
             NativeCmd::PlayCue { voice_id, device_name, file_path, gain, fade_in, fade_out, channels, loop_on, start_point, stop_point, streaming, reply } => {
@@ -689,6 +749,21 @@ fn native_thread_main(rx: std::sync::mpsc::Receiver<NativeCmd>) {
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         native_close_idle(&mut backends, &keep);
                     }));
+                }
+                if default_stale {
+                    default_stale = !std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        native_drop_default_if_idle(&mut backends)
+                    }))
+                    .unwrap_or(false);
+                }
+            }
+            NativeCmd::DefaultChanged => {
+                default_stale = !std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    native_drop_default_if_idle(&mut backends)
+                }))
+                .unwrap_or(false);
+                if default_stale {
+                    log::info!("[native] sortida per defecte canviada però sonant → es canviarà en acabar");
                 }
             }
             NativeCmd::ReopenIdle => {

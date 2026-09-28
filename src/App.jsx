@@ -4,7 +4,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Maximize, Minimize, Sun, Moon } from 'lucide-react';
 import { useSoundStore } from './store/useSoundStore';
-import { IS_LINUX } from './lib/outputTarget';
+import { IS_LINUX, parseTarget } from './lib/outputTarget';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { SoundBoard } from './components/SoundBoard';
 import { CueTransport } from './components/CueTransport';
@@ -442,6 +442,30 @@ export default function App() {
         un = await listen('native-device-lost', (e) => {
           const dev = typeof e.payload === 'string' ? e.payload : '';
           useSoundStore.getState().handleNativeDeviceLost(dev);
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // C2.3: la sortida PER DEFECTE del sistema ha canviat (Windows/Mac). El motor natiu
+  // ja reobrirà el nou dispositiu al proper GO (o quan acabi el que sona); aquí només
+  // avisem l'operador, i només si algun bus fa servir el natiu "per defecte".
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('native-default-changed', (e) => {
+          const st = useSoundStore.getState();
+          const buses = [st.selectedDeviceId, st.playlistDeviceId, st.previewDeviceId,
+            ...Object.values(st.colorOutputs || {})];
+          const usesDefault = buses.some((v) => {
+            const t = parseTarget(v);
+            return t.kind === 'native' && !t.device;
+          });
+          if (!usesDefault) return;
+          const name = typeof e.payload === 'string' && e.payload ? e.payload : 'none';
+          st.pushNotification({ type: 'info', message: `System default output is now: ${name}` });
         });
       } catch { /* fora de Tauri */ }
     })();
