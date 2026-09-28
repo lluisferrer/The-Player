@@ -1,4 +1,5 @@
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
+import { mediaSrc } from '../lib/mediaSrc';
 import { useSoundStore } from '../store/useSoundStore';
 import { computePeaks } from '../lib/waveformPeaks';
 import { getCachedPeaks, putCachedPeaks } from '../lib/peakCache';
@@ -219,7 +220,7 @@ export function useAudioEngine() {
       // sortida. Es desa la ruta, es marca mediaType 'video' i es llegeix la
       // durada amb un <video> temporal (perquè l'editor tingui timeline).
       if (VIDEO_EXT.test(path)) {
-        const vsrc = convertFileSrc(path);
+        const vsrc = mediaSrc(path);
         const vdur = await probeVideoDuration(vsrc);
         loadAudio(slotId, { name: basename(path) }, null, null, path, {
           mediaType: 'video',
@@ -238,9 +239,11 @@ export function useAudioEngine() {
         loadAudio(slotId, { name: basename(path) }, null, null, path, { mediaType: 'pdf', duration: 0 });
         return;
       }
-      const src = convertFileSrc(path);
+      const src = mediaSrc(path);
       const dur = await probeDuration(src, path);
-      if (isFinite(dur) && dur > STREAM_THRESHOLD) {
+      // Carrega en mode STREAMING: no es descodifica sencer al WebView; la forma
+      // d'ona i la durada les calcula Rust. Per a cues llargs i com a pla B.
+      const loadStreaming = async () => {
         // Streaming: llegeix els bytes (ràpid) i en fa un Blob de mateix origen
         // perquè Web Audio el pugui analitzar (picòmetre). NO es descodifica.
         // El Blob rep una còpia independent perquè la descodificació dels pics
@@ -249,12 +252,25 @@ export function useAudioEngine() {
         const blobUrl = URL.createObjectURL(new Blob([bytes.slice(0)]));
         loadAudio(slotId, { name: basename(path) }, null, blobUrl, path, { streaming: true, duration: dur });
         buildPeaksBackground(slotId, { path, duration: dur, bytes }); // forma d'ona en segon pla
+      };
+      if (isFinite(dur) && dur > STREAM_THRESHOLD) {
+        await loadStreaming();
         return;
       }
       // Cue curt: descodifica a AudioBuffer (precís)
       const ctx = decodeContext();
       const buffer = await invoke('read_file_bytes', { path }); // ArrayBuffer
-      const audioBuffer = await ctx.decodeAudioData(buffer);
+      let audioBuffer;
+      try {
+        audioBuffer = await ctx.decodeAudioData(buffer);
+      } catch (decErr) {
+        // El WebView no el sap descodificar (p. ex. WebKitGTK amb WAV multicanal:
+        // "Decoding failed"), però el motor natiu sí: el carreguem en streaming en
+        // lloc de marcar-lo com a fitxer perdut.
+        console.warn('[load] decodeAudioData ha fallat; el carrego en streaming:', path, String(decErr));
+        await loadStreaming();
+        return;
+      }
       loadAudio(slotId, { name: basename(path) }, audioBuffer, null, path);
     } catch (e) {
       setSlotLoading(slotId, false);

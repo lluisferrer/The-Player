@@ -20,7 +20,7 @@
 // retorna també la posició de les veus natives.
 
 import { invoke } from '@tauri-apps/api/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { mediaSrc } from './mediaSrc';
 import { asioPosition } from './asioTelemetry';
 import { nextIndex, prevIndex } from './playlistSeq';
 import { currentDuckGain, setNativeDuckListener } from './playlistEngine';
@@ -88,7 +88,7 @@ const durCache = new Map();
 function resolveDurationMedia(filePath) {
   return new Promise((resolve) => {
     try {
-      const a = new Audio(convertFileSrc(filePath));
+      const a = new Audio(mediaSrc(filePath));
       a.preload = 'metadata';
       const done = (d) => {
         try { a.removeAttribute('src'); a.load(); } catch { /* res */ }

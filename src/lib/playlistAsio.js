@@ -17,7 +17,7 @@
 // ASIO carregat alhora implica que cues i playlist han de compartir driver.
 
 import { invoke } from '@tauri-apps/api/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { mediaSrc } from './mediaSrc';
 import { parseTarget } from './outputTarget';
 import { asioPosition } from './asioTelemetry';
 import { nextIndex, prevIndex } from './playlistSeq';
@@ -70,7 +70,7 @@ const durCache = new Map();
 function resolveDurationMedia(filePath) {
   return new Promise((resolve) => {
     try {
-      const a = new Audio(convertFileSrc(filePath));
+      const a = new Audio(mediaSrc(filePath));
       a.preload = 'metadata';
       const done = (d) => {
         try { a.removeAttribute('src'); a.load(); } catch { /* res */ }

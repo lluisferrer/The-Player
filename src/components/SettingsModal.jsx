@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { mediaSrc } from '../lib/mediaSrc';
+import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { availableMonitors } from '@tauri-apps/api/window';
 import { useSoundStore } from '../store/useSoundStore';
@@ -759,7 +760,7 @@ export function SettingsModal({ onClose, readOnly = false }) {
                     <label>Background image</label>
                     <div className="settings-idle-image">
                       {videoIdleImage && (
-                        <img className="settings-idle-thumb" src={convertFileSrc(videoIdleImage)} alt="" />
+                        <img className="settings-idle-thumb" src={mediaSrc(videoIdleImage)} alt="" />
                       )}
                       <button type="button" onClick={pickIdleImage}>
                         {idleImageName ? 'Change…' : 'Choose…'}

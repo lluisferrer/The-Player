@@ -2897,7 +2897,57 @@ fn open_log_dir(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+// Linux: desactiva la descodificació de vídeo per MAQUINARI (VA-API) de GStreamer
+// quan la GPU és una Intel antiga (anterior a Broadwell, id PCI < 0x1600: Sandy/Ivy
+// Bridge, Haswell, Bay Trail), que només funciona amb el driver `i965`. Amb aquest
+// driver, WebKitGTK rebia fotogrames corruptes en llegir-los (miniatures amb soroll)
+// i l'assert d'i965 feia petar el gst-plugin-scanner. Per CPU van bé.
+// Override: EZYPLAYER_VIDEO_HWDEC=on (no tocar) / off (desactivar sempre). Si
+// l'usuari ja ha definit GST_PLUGIN_FEATURE_RANK, es respecta. S'ha de fer ABANS
+// de crear el WebView (GStreamer llegeix la variable en inicialitzar-se).
+#[cfg(target_os = "linux")]
+fn linux_configure_video_decoding() {
+    if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_some() {
+        return;
+    }
+    let mode = std::env::var("EZYPLAYER_VIDEO_HWDEC").unwrap_or_default().to_lowercase();
+    let legacy_intel = || {
+        std::fs::read_dir("/sys/class/drm").ok().map_or(false, |dir| {
+            dir.flatten().any(|e| {
+                let dev = e.path().join("device");
+                let read = |f: &str| {
+                    std::fs::read_to_string(dev.join(f)).ok().and_then(|v| {
+                        u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok()
+                    })
+                };
+                read("vendor") == Some(0x8086) && read("device").map_or(false, |d| d < 0x1600)
+            })
+        })
+    };
+    let disable = match mode.as_str() {
+        "on" => false,
+        "off" => true,
+        _ => legacy_intel(),
+    };
+    if disable {
+        // Noms dels descodificadors VA (plugins `va` i `vaapi`); els que no existeixin
+        // s'ignoren. Rang 0 = GStreamer no els tria mai → descodificació per CPU.
+        const VA_DECODERS: &[&str] = &[
+            "vah264dec", "vah265dec", "vavp8dec", "vavp9dec", "vaav1dec", "vampeg2dec", "vajpegdec", "vavc1dec",
+            "vaapih264dec", "vaapih265dec", "vaapivp8dec", "vaapivp9dec", "vaapiav1dec", "vaapimpeg2dec",
+            "vaapijpegdec", "vaapivc1dec", "vaapidecodebin",
+        ];
+        let rank = VA_DECODERS.iter().map(|d| format!("{d}:0")).collect::<Vec<_>>().join(",");
+        std::env::set_var("GST_PLUGIN_FEATURE_RANK", rank);
+        eprintln!("[video] GPU Intel antiga (i965): descodificació de vídeo per CPU");
+    }
+}
+
 pub fn run() {
+    // Abans de res (el WebView/GStreamer llegeixen l'entorn en inicialitzar-se).
+    #[cfg(target_os = "linux")]
+    linux_configure_video_decoding();
+
     // Panic hook amb log a fitxer. Un panic en un fil de treball (decode, motor,
     // callbacks auxiliars) només sortiria per stderr, invisible en producció (l'app
     // empaquetada no té consola). Encadenem el hook per defecte (manté el

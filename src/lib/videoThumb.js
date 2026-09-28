@@ -7,9 +7,13 @@
 // d'entrades (FIFO) i, davant de quota plena, es buida la cau i es reintenta.
 import { mediaSrc } from './mediaSrc';
 
-const KEY = 'the-player-thumbs';
+// v2: a Linux amb el driver VA i965 es van desar miniatures corruptes; la clau
+// nova les descarta i es regeneren.
+const KEY = 'the-player-thumbs-v2';
 const MAX_ENTRIES = 32;   // sostre d'entrades a la cau (evita inflar localStorage)
 const THUMB_WIDTH = 240;  // amplada de la miniatura (mantenint aspecte)
+
+try { localStorage.removeItem('the-player-thumbs'); } catch { /* res */ }
 
 function readCache() {
   try { return JSON.parse(localStorage.getItem(KEY)) || {}; }
