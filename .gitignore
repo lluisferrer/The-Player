@@ -29,3 +29,6 @@ dist-ssr
 # Clau privada de llicències (MAI al repo) i qualsevol fitxer .key
 private.key
 *.key
+
+# Instal·ladors generats per tools/release/release.ps1
+releases/
