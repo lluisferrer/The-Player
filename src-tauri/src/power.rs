@@ -49,6 +49,43 @@ fn release(g: Option<keepawake::KeepAwake>) {
     }
 }
 
+/// Pla B de PANTALLA a Linux/X11: si l'escriptori no ofereix el servei D-Bus
+/// org.freedesktop.ScreenSaver (p. ex. XFCE sense xfce4-screensaver), reiniciem
+/// el comptador d'inactivitat de X cada 30 s amb `xset s reset` (el mateix que
+/// fan mpv/VLC amb XResetScreenSaver): ni salvapantalles ni DPMS s'activen.
+/// Retorna la bandera que l'atura. A Wayland `xset` no fa res (sense efecte).
+#[cfg(target_os = "linux")]
+fn linux_x11_heartbeat() -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    if std::env::var_os("DISPLAY").is_none() {
+        return None;
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let spawned = std::thread::Builder::new()
+        .name("power-x11-heartbeat".into())
+        .spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                let _ = std::process::Command::new("xset").args(["s", "reset"]).status();
+                // Dorm 30 s en trossos d'1 s perquè l'aturada sigui ràpida.
+                for _ in 0..30 {
+                    if flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        });
+    match spawned {
+        Ok(_) => {
+            log::info!("[power] pantalla: pla B X11 (xset s reset cada 30 s)");
+            Some(stop)
+        }
+        Err(_) => None,
+    }
+}
+
 /// Arrenca el fil propietari de les inhibicions i activa la de SISTEMA.
 pub fn start() {
     let (tx, rx) = channel::<bool>();
@@ -61,12 +98,29 @@ pub fn start() {
             // Guard de sistema: viu tota la vida del fil (= de l'app).
             let _system = guard(false);
             let mut display: Option<keepawake::KeepAwake> = None;
+            // Estat demanat per la UI (independent de si el guard ha reeixit), perquè
+            // un guard que falla no es reintenti (ni torni a avisar) a cada missatge.
+            let mut display_on = false;
+            #[cfg(target_os = "linux")]
+            let mut x11_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
             for on in rx {
-                if on && display.is_none() {
+                if on == display_on {
+                    continue;
+                }
+                display_on = on;
+                if on {
                     display = guard(true);
-                } else if !on {
+                    #[cfg(target_os = "linux")]
+                    if display.is_none() {
+                        x11_stop = linux_x11_heartbeat();
+                    }
+                } else {
                     // Ordre LIFO: el guard de pantalla restaura l'estat del de sistema.
                     release(display.take());
+                    #[cfg(target_os = "linux")]
+                    if let Some(stop) = x11_stop.take() {
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
             release(display.take());
