@@ -128,12 +128,9 @@ function startTrackA(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
     if (curA && curA.voiceId === voiceId && d > 0) curA.duration = d;
   });
 
-  // Pre-descodifica la pista següent per encadenar fluid.
-  const ni = nextIndex(get, index, true);
-  if (ni != null && ni !== index) {
-    const nt = st.playlist[ni];
-    if (nt && nt.filePath) invoke('asio_preload', { driver: tgt.driver, filePath: nt.filePath }).catch(() => {});
-  }
+  // (Abans es pre-descodificava aquí la pista següent: inútil, perquè la playlist
+  // sempre va en streaming i no usa la cau, i perillós amb pistes llargues — un
+  // drone d'1 h es descodificava sencer a memòria, ~2,5 GB.)
 
   scheduleTransitionA(myToken);
 }

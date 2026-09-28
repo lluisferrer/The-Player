@@ -145,13 +145,9 @@ function startTrackN(get, set, index, { fadeIn = 0, offset = 0 } = {}) {
     if (curN && curN.voiceId === voiceId && d > 0) curN.duration = d;
   });
 
-  // Pre-descodifica la pista següent per encadenar fluid. (El camí streaming no
-  // passa per la cau, però native_preload és un no-op innocu per a pistes llargues.)
-  const ni = nextIndex(get, index, true);
-  if (ni != null && ni !== index) {
-    const nt = st.playlist[ni];
-    if (nt && nt.filePath) invoke('native_preload', { deviceName: tgt.deviceName, filePath: nt.filePath }).catch(() => {});
-  }
+  // (Abans es pre-descodificava aquí la pista següent: inútil, perquè la playlist
+  // sempre va en streaming i no usa la cau, i perillós amb pistes llargues — un
+  // drone d'1 h es descodificava sencer a memòria, ~2,5 GB.)
 
   scheduleTransitionN(myToken);
 }

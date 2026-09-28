@@ -2423,6 +2423,9 @@ fn asio_preload(driver: String, file_path: String) -> Result<(), String> {
     }
     #[cfg(feature = "asio")]
     {
+        if !preload_allowed(&file_path) {
+            return Ok(()); // massa llarg per a la cau (vegeu preload_allowed)
+        }
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         asio_sender()
             .send(AsioCmd::Preload { driver_name: driver, file_path, reply: reply_tx })
@@ -2782,7 +2785,27 @@ fn native_preload(device_name: String, file_path: String) -> Result<(), String> 
     }
     #[cfg(feature = "native")]
     {
+        if !preload_allowed(&file_path) {
+            return Ok(()); // massa llarg per a la cau: es reproduirà en streaming
+        }
         native_output::preload(device_name, file_path)
+    }
+}
+
+// Pre-descodificar (preload) posa el fitxer SENCER a la cau de PCM (f32). Per a
+// fitxers llargs no té sentit (es reprodueixen en streaming, que no usa la cau) i
+// és perillós: 1 h d'estèreo ≈ 1,4 GB; un set de 3 h faria petar la memòria. Es va
+// veure a la prova de càrrega: la playlist pre-descodificava la pista següent (un
+// drone d'1 h) i el procés pujava a 2,5 GB. Mateix llindar que el frontend usa per
+// separar cues en memòria i en streaming (60 s). Si les metadades no donen la
+// durada, es decideix per la mida del fitxer (≤ 20 MB).
+#[cfg(feature = "native")]
+const PRELOAD_MAX_SECS: f64 = 60.0;
+#[cfg(feature = "native")]
+fn preload_allowed(path: &str) -> bool {
+    match waveform::probe_duration(path) {
+        Ok(d) => d <= PRELOAD_MAX_SECS,
+        Err(_) => std::fs::metadata(path).map(|m| m.len() <= 20_000_000).unwrap_or(false),
     }
 }
 
