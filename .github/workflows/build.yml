@@ -60,6 +60,11 @@ jobs:
       - name: Instal·la dependències del frontend
         run: npm ci
 
+      # Tests de la lògica pura (routing, dispatch, tecles, playlist...). Si
+      # fallen, no es construeix cap instal·lador.
+      - name: Tests del frontend
+        run: npm test
+
       - name: Build amb Tauri
         uses: tauri-apps/tauri-action@v0
         env:
