@@ -2888,6 +2888,19 @@ pub fn run() {
     }));
 
     tauri::Builder::default()
+        // Instància ÚNICA: ha de ser el PRIMER plugin. Si l'usuari torna a obrir
+        // ezyPlayer (doble clic, drecera...), la segona instància NO arrenca cap
+        // motor (dos motors es barallarien pel driver ASIO / dispositius exclusius):
+        // porta al davant la finestra principal de la que ja corre i surt.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+            log::info!("[app] segona instància bloquejada → es porta al davant la finestra");
+        }))
         // Logs a FITXER rotatiu (C3): el primer plugin, perquè capturi també el que
         // passa durant el setup. L'app empaquetada no té consola; sense això, els
         // avisos del motor (dispositiu perdut, decode fallit...) es perdien.
