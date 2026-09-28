@@ -25,3 +25,12 @@ ReactDOM.createRoot(document.getElementById("root")).render(
     {isOutput ? <VideoOutput /> : <App />}
   </React.StrictMode>,
 );
+
+// Quan React ja ha pintat alguna cosa a #root, el diagnòstic d'arrencada
+// (public/boot-guard.js) deixa de tapar la UI amb errors; a partir d'aquí van al
+// fitxer de log. Si el muntatge peta, #root queda buit i el diagnòstic segueix actiu.
+(function markBooted() {
+  const root = document.getElementById('root');
+  if (root && root.childElementCount > 0) window.__ezyBooted = true;
+  else setTimeout(markBooted, 100);
+})();
