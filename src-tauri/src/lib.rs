@@ -3066,6 +3066,10 @@ pub fn run() {
                     }),
                 ])
                 .level(log::LevelFilter::Info)
+                // Les biblioteques de descodificació (symphonia) emeten molts avisos
+                // interns ("skipping junk", "ignoring stss atom"...) que tapen els
+                // útils: d'elles només en volem els errors.
+                .filter(|m| !m.target().starts_with("symphonia") || m.level() <= log::Level::Error)
                 .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
                 .max_file_size(5_000_000)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))

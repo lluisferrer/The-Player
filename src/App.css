@@ -1024,7 +1024,25 @@ body {
 
 .sound-button.slot-playing {
   border-color: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow), inset 0 0 8px rgba(59, 130, 246, 0.08);
+  box-shadow: 0 0 10px var(--accent-glow), inset 0 0 6px rgba(59, 130, 246, 0.06);
+}
+
+/* Pols del glow: NO s'anima el box-shadow (difuminat repintat a cada fotograma:
+   a WebKitGTK, per software, costava molta CPU mentre sonava un cue). Un
+   pseudo-element porta el glow màxim FIX i només se n'anima l'OPACITAT, que el
+   compositor fa sense repintar. Mateix efecte visual. (top/right/bottom/left en
+   lloc d'`inset` per al WebKit antic.) */
+.sound-button.slot-playing::after,
+.sound-button.slot-arming::after {
+  content: '';
+  position: absolute;
+  top: 0; right: 0; bottom: 0; left: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  will-change: opacity;
+}
+.sound-button.slot-playing::after {
+  box-shadow: 0 0 20px var(--accent-glow), inset 0 0 12px rgba(59, 130, 246, 0.12);
   animation: pulse-glow 1.5s ease-in-out infinite;
 }
 
@@ -1039,8 +1057,8 @@ body {
 }
 
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 10px var(--accent-glow), inset 0 0 6px rgba(59,130,246,0.06); }
-  50%       { box-shadow: 0 0 20px var(--accent-glow), inset 0 0 12px rgba(59,130,246,0.12); }
+  0%, 100% { opacity: 0; }
+  50%       { opacity: 1; }
 }
 
 /* P4-lite: veu de maquinari (ASIO/natiu) disparada però encara NO confirmada per
@@ -1050,13 +1068,16 @@ body {
    d'un cue que sona bé. */
 .sound-button.slot-arming {
   border-color: #eab308;
-  box-shadow: 0 0 12px rgba(234, 179, 8, 0.4), inset 0 0 8px rgba(234, 179, 8, 0.08);
+  box-shadow: 0 0 8px rgba(234, 179, 8, 0.35), inset 0 0 6px rgba(234, 179, 8, 0.06);
+}
+.sound-button.slot-arming::after {
+  box-shadow: 0 0 18px rgba(234, 179, 8, 0.6), inset 0 0 12px rgba(234, 179, 8, 0.12);
   animation: pulse-arming 0.8s ease-in-out infinite;
 }
 
 @keyframes pulse-arming {
-  0%, 100% { box-shadow: 0 0 8px rgba(234,179,8,0.35), inset 0 0 6px rgba(234,179,8,0.06); }
-  50%       { box-shadow: 0 0 18px rgba(234,179,8,0.6), inset 0 0 12px rgba(234,179,8,0.12); }
+  0%, 100% { opacity: 0; }
+  50%       { opacity: 1; }
 }
 
 /* Llenguatge visual d'errors (v1.0): VERMELL = "això no sonarà" (persistent).
