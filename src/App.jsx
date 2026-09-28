@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Maximize, Minimize, Sun, Moon } from 'lucide-react';
@@ -246,6 +247,14 @@ export default function App() {
           const id = e.payload && e.payload.slotId;
           if (id != null) useSoundStore.getState().handleVideoEnded(id);
         });
+  // Pantalla sempre encesa (sense salvapantalles ni repòs de pantalla) en mode
+  // LIVE o amb la sortida de vídeo oberta. El repòs del SISTEMA ja el bloqueja el
+  // Rust mentre l'app és oberta (power.rs).
+  const keepDisplayAwake = isLive || outputOpen;
+  useEffect(() => {
+    invoke('set_keep_display_awake', { on: keepDisplayAwake }).catch(() => {});
+  }, [keepDisplayAwake]);
+
       } catch { /* fora de Tauri */ }
     })();
     return () => { if (un) un(); };

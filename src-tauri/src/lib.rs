@@ -3,8 +3,12 @@ use serde::Serialize;
 
 // Sistema de llicències L1 (offline, Ed25519). Sempre compilat (no depèn de cap
 // feature d'àudio): l'app ha de poder verificar la llicència en qualsevol build.
-// `pub` perquè el bin ezykeygen en comparteixi la canonicalització.
 pub mod license;
+// Canonicalització del payload (compartida amb tools/ezykeygen per ruta).
+mod license_canon;
+
+// Inhibició del repòs del sistema / pantalla durant un show (sempre compilat).
+mod power;
 
 // Descodificació d'àudio a Rust per al render natiu de cues. Part del nucli
 // reutilitzable: disponible amb `native` (i, per implicació, amb `asio`).
@@ -412,25 +416,25 @@ fn play_test_tone(
     std::thread::spawn(move || {
         let host = match select_host(&host) {
             Ok(h) => h,
-            Err(e) => return eprintln!("To de prova: {}", e),
+            Err(e) => return log::warn!("To de prova: {}", e),
         };
         let device = match host.output_devices().map(|mut devs| {
             devs.find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
         }) {
             Ok(Some(d)) => d,
-            Ok(None) => return eprintln!("To de prova: dispositiu no trobat: {}", device_name),
-            Err(e) => return eprintln!("To de prova: {}", e),
+            Ok(None) => return log::warn!("To de prova: dispositiu no trobat: {}", device_name),
+            Err(e) => return log::warn!("To de prova: {}", e),
         };
         let supported = match device.default_output_config() {
             Ok(c) => c,
-            Err(e) => return eprintln!("To de prova: {}", e),
+            Err(e) => return log::warn!("To de prova: {}", e),
         };
         let sample_format = supported.sample_format();
         let config: cpal::StreamConfig = supported.into();
         let channels = config.channels as usize;
         let target = channel as usize;
         if target >= channels {
-            return eprintln!(
+            return log::warn!(
                 "To de prova: el canal {} no existeix (el dispositiu en té {})",
                 channel + 1,
                 channels
@@ -442,7 +446,7 @@ fn play_test_tone(
         let mut phase: f32 = 0.0;
         let step = 2.0 * std::f32::consts::PI * 440.0 / sample_rate;
 
-        let err_fn = |e| eprintln!("Error stream de prova: {}", e);
+        let err_fn = |e| log::warn!("Error stream de prova: {}", e);
 
         // Generador: omple frames interleaved, sinus només al canal `target`
         macro_rules! build {
@@ -475,7 +479,7 @@ fn play_test_tone(
                 build!(u16, |x: f32| ((x * 0.5 + 0.5) * u16::MAX as f32) as u16)
             }
             other => {
-                eprintln!("Format de mostra no suportat: {:?}", other);
+                log::warn!("Format de mostra no suportat: {:?}", other);
                 return;
             }
         };
@@ -483,13 +487,13 @@ fn play_test_tone(
         match stream {
             Ok(s) => {
                 if let Err(e) = s.play() {
-                    eprintln!("No s'ha pogut iniciar el to: {}", e);
+                    log::warn!("No s'ha pogut iniciar el to: {}", e);
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_secs_f32(dur));
                 // en sortir d'aquí, `s` es destrueix i atura el so
             }
-            Err(e) => eprintln!("No s'ha pogut crear l'stream: {}", e),
+            Err(e) => log::warn!("No s'ha pogut crear l'stream: {}", e),
         }
     });
 
@@ -963,7 +967,7 @@ where
                 let _ = tx.send(make_cmd(std::sync::Arc::new(d.data)));
             }
             Err(e) => {
-                eprintln!("[asio-decode] '{}': {}", file_path, e);
+                log::warn!("[asio-decode] '{}': {}", file_path, e);
                 // Descart silenciós si no avisem: notifica la fallada al frontend.
                 if let Some(vid) = voice_id {
                     asio_notify_failed(vid, format!("No s'ha pogut descodificar: {}", e));
@@ -986,7 +990,7 @@ fn asio_build_and_push_voice(
     let mix = match loaded.as_ref().and_then(|l| l.mix.as_ref()) {
         Some(m) => m,
         None => {
-            eprintln!("[asio-voice] voice={} SENSE MIX → descartada", spec.voice_id);
+            log::warn!("[asio-voice] voice={} SENSE MIX → descartada", spec.voice_id);
             // El mix s'ha desmuntat entre la petició i ara: avisa el frontend perquè
             // no deixi el tile blau ni la playlist duckejada.
             asio_notify_failed(spec.voice_id, "El motor ASIO no té cap mix actiu.".into());
@@ -1282,7 +1286,7 @@ fn asio_start_notifier(app: tauri::AppHandle) {
                     stall_ticks += 1;
                     if stall_ticks >= 15 && !lost_reported {
                         lost_reported = true;
-                        eprintln!("[asio] callback congelat ~500ms → dispositiu perdut (device-lost)");
+                        log::error!("[asio] callback congelat ~500ms → dispositiu perdut (device-lost)");
                         let _ = app.emit("asio-device-lost", "");
                     }
                 } else {
@@ -1291,7 +1295,7 @@ fn asio_start_notifier(app: tauri::AppHandle) {
                     // ha tornat: avisa la UI de la recuperació (neteja errors + toast). Si el
                     // mix és inactiu (stop/teardown normal) no és cap recuperació.
                     if lost_reported && mix_active {
-                        eprintln!("[asio] callback reprèn → dispositiu recuperat (device-recovered)");
+                        log::info!("[asio] callback reprèn → dispositiu recuperat (device-recovered)");
                         let _ = app.emit("asio-device-recovered", "");
                     }
                     stall_ticks = 0;
@@ -1901,7 +1905,7 @@ fn asio_play_voice_impl(
             // d'arrencar i avisa el frontend perquè no deixi el tile blau ni la
             // playlist duckejada (simètric al camí natiu de streaming).
             sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            eprintln!("[asio-voice] stream voice={} SENSE MIX → descartada", voice_id);
+            log::warn!("[asio-voice] stream voice={} SENSE MIX → descartada", voice_id);
             asio_notify_failed(voice_id, "El motor ASIO no té cap mix actiu.".into());
         }
         return Ok(());
@@ -2829,6 +2833,19 @@ fn probe_duration(path: String) -> Result<f64, String> {
     }
 }
 
+// Obre la carpeta de logs de l'app a l'explorador (Settings → General). Per a
+// suport: l'operador ens pot enviar el fitxer després d'un bolo amb problemes.
+#[tauri::command]
+fn open_log_dir(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    use tauri_plugin_opener::OpenerExt;
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&dir);
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Panic hook amb log a fitxer. Un panic en un fil de treball (decode, motor,
@@ -2857,6 +2874,9 @@ pub fn run() {
         };
         let thread = std::thread::current();
         let thread_name = thread.name().unwrap_or("<sense nom>");
+        // Al fitxer de log de l'app (si el logger ja està actiu)...
+        log::error!("[PANIC] fil «{}» a {} → {}", thread_name, location, msg);
+        // ...i, per si el logger no hi era, també al fitxer temporal de sempre.
         let path = std::env::temp_dir().join("ezyplayer-panic.log");
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
             let _ = writeln!(
@@ -2868,6 +2888,25 @@ pub fn run() {
     }));
 
     tauri::Builder::default()
+        // Logs a FITXER rotatiu (C3): el primer plugin, perquè capturi també el que
+        // passa durant el setup. L'app empaquetada no té consola; sense això, els
+        // avisos del motor (dispositiu perdut, decode fallit...) es perdien.
+        // Directori: Windows %LOCALAPPDATA%pp.ezyrider.ezyplayer\logs, Mac
+        // ~/Library/Logs/app.ezyrider.ezyplayer, Linux ~/.local/share/app.ezyrider.ezyplayer/logs.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("ezyplayer".into()),
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .max_file_size(5_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -2879,7 +2918,16 @@ pub fn run() {
             }
             // Carrega i verifica la llicència guardada (OFFLINE) a l'arrencada.
             // Fixa l'estat global valid/demo que consulta la degradació demo.
+            log::info!(
+                "ezyPlayer {} · {} {} · motor: {}",
+                app.package_info().version,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                if cfg!(feature = "asio") { "asio+native" } else if cfg!(feature = "native") { "native" } else { "web" }
+            );
             license::load_on_startup(app.handle());
+            // L'equip no s'adorm mentre l'app és oberta (la pantalla, només en LIVE/vídeo).
+            power::start();
             // Fil notificador de finals de veu ASIO → events Tauri cap a la UI.
             #[cfg(feature = "asio")]
             asio_start_notifier(app.handle().clone());
@@ -2923,7 +2971,9 @@ pub fn run() {
             license::license_status,
             license::license_info,
             license::activate_license,
-            license::deactivate_license
+            license::deactivate_license,
+            power::set_keep_display_awake,
+            open_log_dir
         ])
         // Tancament fiable: en tancar la finestra PRINCIPAL, aturem el motor natiu
         // net (drop dels streams cpal al seu fil → WASAPI/CoreAudio no penja) i

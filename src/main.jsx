@@ -5,6 +5,7 @@ import App from "./App";
 import { VideoOutput } from "./components/VideoOutput";
 import { OUTPUT_LABEL } from "./lib/videoOutput";
 import { getInitialTheme, applyTheme } from "./lib/theme";
+import { installLogBridge } from "./lib/logBridge";
 
 // Aplica el tema Dia/Nit desat ABANS del primer render (evita el flash del tema
 // per defecte). La finestra de sortida de vídeo no el necessita, però és inofensiu.
@@ -15,6 +16,9 @@ applyTheme(getInitialTheme());
 let isOutput = false;
 try { isOutput = getCurrentWindow().label === OUTPUT_LABEL; }
 catch { /* fora de Tauri (p. ex. build/preview): app normal */ }
+
+// console.warn/error i errors no capturats → també al fitxer de log de l'app.
+try { installLogBridge(isOutput ? 'output' : 'main'); } catch { /* fora de Tauri */ }
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

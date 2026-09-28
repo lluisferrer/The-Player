@@ -1,12 +1,13 @@
 [package]
-name = "tauri-app"
+name = "ezyplayer"
 version = "0.1.0"
 description = "ezyPlayer — professional live-event audio player"
 authors = ["ezyRider"]
 edition = "2021"
-# Amb dos binaris al crate (l'app + l'eina ezykeygen), `cargo run` sol (el que fa
-# servir `tauri dev`) no sap quin triar. Fixem l'app com a binari per defecte.
-default-run = "tauri-app"
+# El nom del paquet és el del binari de l'app (ezyplayer.exe / ezyplayer).
+# El crate NOMÉS té aquest binari: el bundler de Tauri empaqueta TOTS els [[bin]]
+# del crate (ignora required-features), per això el generador de llicències viu
+# a tools/ezykeygen, fora d'aquí.
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -67,17 +68,19 @@ debug = 1
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# Logs a fitxer rotatiu (directori de logs de l'app) per a postmortem de shows.
+tauri-plugin-log = "2"
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Llicències offline (L1): verificació Ed25519 de la clau + base64 de l'envelope.
 # La clau pública va incrustada al binari; la privada mai hi entra.
-# `rand_core`: habilita SigningKey::generate (només el fa servir ezykeygen).
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = "2"
 base64 = "0.22"
-# Només el generador de claus (bin ezykeygen) el fa servir per crear la parella
-# amb OsRng. És minúscul; l'app no en depèn per verificar.
-rand_core = { version = "0.6", features = ["getrandom"] }
 cpal = "0.15"
+# Evita el repòs del sistema / de la pantalla durant un show (Windows
+# SetThreadExecutionState, macOS IOPMAssertion, Linux inhibit per D-Bus).
+keepawake = "0.6"
 # Accés directe a l'API ASIO de baix nivell (mateixa versió que usa cpal). Ens
 # cal per llistar els drivers SENSE carregar-los (driver_names) i per carregar
 # NOMÉS el driver triat (load_driver) — cpal no exposa cap d'aquestes dues coses.

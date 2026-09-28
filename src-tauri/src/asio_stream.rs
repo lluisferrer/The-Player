@@ -210,7 +210,7 @@ fn decoder_main(
     let file = match std::fs::File::open(&path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[asio-stream] obrir '{}': {}", path, e);
+            log::warn!("[asio-stream] obrir '{}': {}", path, e);
             if let Ok(mut r) = ring.lock() { r.eof = true; }
             return;
         }
@@ -225,7 +225,7 @@ fn decoder_main(
     ) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[asio-stream] probe '{}': {}", path, e);
+            log::warn!("[asio-stream] probe '{}': {}", path, e);
             if let Ok(mut r) = ring.lock() { r.eof = true; }
             return;
         }
@@ -239,7 +239,7 @@ fn decoder_main(
     let codec_params = track.codec_params.clone();
     let mut decoder = match symphonia::default::get_codecs().make(&codec_params, &DecoderOptions::default()) {
         Ok(d) => d,
-        Err(e) => { eprintln!("[asio-stream] decoder: {}", e); if let Ok(mut r) = ring.lock() { r.eof = true; } return; }
+        Err(e) => { log::warn!("[asio-stream] decoder: {}", e); if let Ok(mut r) = ring.lock() { r.eof = true; } return; }
     };
 
     let mut channels = codec_params.channels.map(|c| c.count()).unwrap_or(0);

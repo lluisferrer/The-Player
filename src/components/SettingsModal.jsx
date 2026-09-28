@@ -575,6 +575,18 @@ export function SettingsModal({ onClose, readOnly = false }) {
             </>
           )}
 
+              <div className="settings-subtitle">Diagnostics</div>
+              <div className="settings-note">
+                ezyPlayer keeps a rotating log of engine and device events. If something goes
+                wrong during a show, send us the latest log file.
+              </div>
+              <div className="settings-row">
+                <button className="editor-btn" type="button"
+                  onClick={() => invoke('open_log_dir').catch((e) => console.warn('[logs] open_log_dir:', e))}>
+                  Open logs folder
+                </button>
+              </div>
+
           {tab === 'routing' && (
             <>
               <div className="settings-subtitle">Outputs per bus</div>

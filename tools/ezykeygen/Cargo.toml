@@ -1,0 +1,15 @@
+[package]
+name = "ezykeygen"
+version = "0.1.0"
+edition = "2021"
+description = "Generador de claus de llicència d'ezyPlayer (eina d'autor, NO es distribueix)"
+publish = false
+
+# Crate independent (sense workspace): no forma part del build de l'app.
+[workspace]
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+base64 = "0.22"
+serde_json = "1"
+rand_core = { version = "0.6", features = ["getrandom"] }

@@ -290,7 +290,7 @@ where
                 let _ = tx.send(make_cmd(Arc::new(d.data)));
             }
             Err(e) => {
-                eprintln!("[native-decode] '{}': {}", file_path, e);
+                log::warn!("[native-decode] '{}': {}", file_path, e);
                 // Descart silenciós si no avisem: notifica la fallada al frontend.
                 if let Some(vid) = voice_id {
                     native_notify_failed(vid, format!("No s'ha pogut descodificar: {}", e));
@@ -369,7 +369,7 @@ fn native_notify_device_lost(device_name: String) {
 // traça; si l'error és una pèrdua de dispositiu, avisa la UI perquè ho faci visible.
 fn native_stream_error(device_name: &str, e: cpal::StreamError) {
     let dev = if device_name.is_empty() { "default" } else { device_name };
-    eprintln!("[native] error stream de sortida ({}): {}", dev, e);
+    log::error!("[native] error stream de sortida ({}): {}", dev, e);
     if matches!(e, cpal::StreamError::DeviceNotAvailable) {
         native_notify_device_lost(device_name.to_string());
     }
@@ -900,7 +900,7 @@ fn native_build_backend_stream(
             Ok(s) => { built = Some(s); break; }
             Err(e) => {
                 if is_fixed {
-                    eprintln!("[native] '{}' rebutja buffer fix de {} frames ({}); provo Default", device_name, want, e);
+                    log::warn!("[native] '{}' rebutja buffer fix de {} frames ({}); provo Default", device_name, want, e);
                 }
                 last_err = format!("build_output_stream(): {}", e);
             }
@@ -924,7 +924,7 @@ fn native_build_backend_stream(
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         if cb_calls.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-            eprintln!("[native] '{}' obert però el callback no arrenca (endpoint fantasma) → descartat", device_name);
+            log::warn!("[native] '{}' obert però el callback no arrenca (endpoint fantasma) → descartat", device_name);
             // Drop explícit del stream fantasma abans de retornar (allibera l'endpoint).
             drop(stream);
             return Err("el dispositiu no ha arrencat (endpoint fantasma o desconnectat)".to_string());
@@ -966,7 +966,7 @@ fn native_ensure_backend(
         match native_build_backend_stream(&device, picked, &voices, &stream_voices, &acc, device_name) {
             Ok(v) => v,
             Err(e_multi) => {
-                eprintln!("[native] '{}' amb config multicanal ha fallat ({}); provo la per defecte", dev_label, e_multi);
+                log::warn!("[native] '{}' amb config multicanal ha fallat ({}); provo la per defecte", dev_label, e_multi);
                 let def = device
                     .default_output_config()
                     .map_err(|e| format!("default_output_config(): {}", e))?;
@@ -1104,7 +1104,7 @@ fn native_build_and_push_voice(
 ) {
     let total = data.iter().map(|c| c.len()).max().unwrap_or(0);
     if total == 0 {
-        eprintln!("[native-voice] voice={} sense mostres → descartada", spec.voice_id);
+        log::warn!("[native-voice] voice={} sense mostres → descartada", spec.voice_id);
         // Avisa el frontend: sense això el tile quedaria blau i la playlist duckejada.
         native_notify_failed(spec.voice_id, "El fitxer no té mostres.".into());
         return;
@@ -1158,7 +1158,7 @@ fn native_build_and_push_voice(
             }
         }
         None => {
-            eprintln!("[native-voice] voice={} sense backend → descartada", spec.voice_id);
+            log::warn!("[native-voice] voice={} sense backend → descartada", spec.voice_id);
             // El dispositiu destí s'ha tancat entre la petició i ara: avisa el frontend.
             native_notify_failed(spec.voice_id, "Cap dispositiu de sortida disponible.".into());
         }
@@ -1237,7 +1237,7 @@ fn native_build_and_push_stream_voice(
         None => {
             // El device s'ha tancat entremig: atura el fil que acabem d'arrencar.
             sv.ctrl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            eprintln!("[native-voice] stream voice={} sense backend → descartada", voice_id);
+            log::warn!("[native-voice] stream voice={} sense backend → descartada", voice_id);
             // Avisa el frontend perquè no deixi el tile blau ni la playlist duckejada.
             native_notify_failed(voice_id, "Cap dispositiu de sortida disponible.".into());
         }

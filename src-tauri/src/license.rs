@@ -22,7 +22,7 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // Clau pública Ed25519 (32 bytes) incrustada al binari. Generada amb
-// `cargo run --no-default-features --bin ezykeygen -- genkeys`. La privada
+// `cargo run --manifest-path ../tools/ezykeygen/Cargo.toml -- genkeys`. La privada
 // (private.key) MAI entra al repo ni al binari.
 pub const PUBLIC_KEY: [u8; 32] = [
     233, 134, 50, 44, 79, 90, 71, 242, 181, 231, 223, 7,
@@ -65,32 +65,9 @@ impl LicenseStatus {
 }
 
 // ── Canonicalització determinista ────────────────────────────────────────────
-// Reconstrueix el JSON amb les claus ORDENADES alfabèticament a tots els nivells.
-// Fer-ho explícitament (no confiar en el BTreeMap per defecte de serde_json) ens
-// blinda contra la unificació de features de Cargo: si un altre crate activés
-// `serde_json/preserve_order`, els objectes preservarien l'ordre d'inserció i la
-// signatura deixaria de coincidir. El generador (ezykeygen) crida aquesta MATEIXA
-// funció → bytes idèntics als dos costats.
-pub fn canonicalize(v: &Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            let mut out = serde_json::Map::new();
-            for k in keys {
-                out.insert(k.clone(), canonicalize(&map[k]));
-            }
-            Value::Object(out)
-        }
-        Value::Array(a) => Value::Array(a.iter().map(canonicalize).collect()),
-        other => other.clone(),
-    }
-}
-
-// Bytes canònics d'un payload, els que es signen i es verifiquen.
-pub fn canonical_payload_bytes(payload: &Value) -> Vec<u8> {
-    serde_json::to_vec(&canonicalize(payload)).unwrap_or_default()
-}
+// Viu a license_canon.rs (JSON pur, sense Tauri) perquè l'eina d'autor
+// tools/ezykeygen la inclogui per ruta i signi EXACTAMENT els mateixos bytes.
+pub use crate::license_canon::canonical_payload_bytes;
 
 // ── Verificació ──────────────────────────────────────────────────────────────
 // Descodifica i verifica una clau. Retorna Valid amb les dades del payload o Demo

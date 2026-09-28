@@ -1,17 +1,19 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // ezykeygen — generador de claus de llicència offline d'ezyPlayer (eina d'autor).
 //
-// Comparteix la canonicalització amb l'app (`tauri_app_lib::license`) → els bytes
-// signats són EXACTAMENT els que el verificador reconstrueix. Compila SENSE l'SDK
-// d'ASIO; executa'l així:
+// Crate INDEPENDENT de l'app (no és un [[bin]] de src-tauri): el bundler de Tauri
+// empaqueta tots els binaris del crate de l'app als instal·ladors, i aquest no hi
+// ha de ser mai. Comparteix la canonicalització incloent el MATEIX fitxer
+// src-tauri/src/license_canon.rs → els bytes signats són EXACTAMENT els que el
+// verificador reconstrueix. Executa'l des de src-tauri/ (on viu private.key):
 //
 //   Generar la parella (un sol cop):
-//     cargo run --no-default-features --bin ezykeygen -- genkeys
+//     cargo run --manifest-path ../tools/ezykeygen/Cargo.toml -- genkeys
 //       → escriu ./private.key (SECRET, gitignored) i imprimeix la clau PÚBLICA
 //         llesta per enganxar a `PUBLIC_KEY` de src/license.rs.
 //
 //   Emetre una clau per a un client:
-//     cargo run --no-default-features --bin ezykeygen -- sign \
+//     cargo run --manifest-path ../tools/ezykeygen/Cargo.toml -- sign \
 //       --name "Nom Client" --email client@correu.cat --tier pro --covers 1.x
 //       → imprimeix la clau base64 que l'usuari enganxa a Settings → License.
 //
@@ -22,6 +24,9 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 use std::collections::HashMap;
+
+#[path = "../../../src-tauri/src/license_canon.rs"]
+mod license_canon;
 
 const PRIVATE_FILE: &str = "private.key";
 
@@ -107,7 +112,7 @@ fn sign(args: &[String]) {
     }
 
     // Signa els bytes CANÒNICS (mateixa funció que el verificador).
-    let msg = tauri_app_lib::license::canonical_payload_bytes(&payload);
+    let msg = license_canon::canonical_payload_bytes(&payload);
     let signature = signing_key.sign(&msg);
 
     let envelope = json!({
