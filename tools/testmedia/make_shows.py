@@ -4,6 +4,8 @@ Crea fitxers .ezyshow de prova amb el material de tools/testmedia/generate.py.
 Genera, per a cada plataforma (Windows i Linux), dos shows:
   · Stress 128 cues — les 4 pàgines plenes amb el comptatge (un format d'àudio
     per pàgina) + playlist amb el drone d'1 h i les 5 pistes en repeat.
+  · Stress auto 128 cues — el mateix, però un GO ho dispara tot en cadena
+    (auto-continue, 30 s entre cues, ducking alterna) per a proves de hores.
   · Demo show — pàgina 1: seqüència GO amb tota mena de mèdia (imatge, compte
     enrere AV sync, pad amb fades i ducking, slides, loops, vídeos de tots els
     formats, idents de canals); pàgina 2: cadena d'auto-continue i stop-others.
@@ -67,6 +69,21 @@ def cue(id_, rel, label, media="audio", **opts):
 def stress_cues():
     colors = [RED, ORANGE, YELLOW, GREEN]  # un color per pàgina (= format)
     return [cue(i, count_file(i), f"{i} {words(i)}", color=colors[(i - 1) // 32]) for i in range(1, 129)]
+
+
+def stress_auto_cues(wait=30):
+    """Stress en mode automàtic: un sol GO dispara els 128 cues en cadena
+    (auto-continue, `wait` s de pre-wait entre cues), amb ducking de la playlist un
+    cue sí i un no. El 128 queda en loop perquè, acabada la cadena (~64 min amb
+    30 s), segueixi sonant alguna cosa a més de la playlist."""
+    cues = stress_cues()
+    for c in cues:
+        i = c["id"]
+        c["continueMode"] = "auto" if i < 128 else "none"
+        c["preWait"] = 0 if i == 1 else wait
+        c["duck"] = (i % 2 == 1)
+        c["loop"] = (i == 128)
+    return cues
 
 
 def demo_cues():
@@ -167,6 +184,7 @@ def main():
         shows = {
             f"{tag} - Stress 128 cues.ezyshow": build_show(stress_cues(), stress_tracks, root, pathcls, platform),
             f"{tag} - Demo show.ezyshow": build_show(demo_cues(), PLAYLIST_TRACKS, root, pathcls, platform),
+            f"{tag} - Stress auto 128 cues.ezyshow": build_show(stress_auto_cues(), stress_tracks, root, pathcls, platform),
         }
         for name, data in shows.items():
             (out / name).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
