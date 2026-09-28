@@ -55,6 +55,7 @@ export function createVideoSlice(set, get) {
     },
 
     setSeparateVideoAudio: (on) => { set({ separateVideoAudio: !!on }); get().persistGlobals(); },
+    setTileVideoMirror: (on) => { set({ tileVideoMirror: !!on }); get().persistGlobals(); },
 
     // Botó Black/Bars/Card del transport: "clear screen" respectant el FADE OUT del
     // cue (o el global). Si hi ha cues visuals sonant, els atura amb fade via

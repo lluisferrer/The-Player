@@ -51,6 +51,7 @@ export function SoundButton({ slotId }) {
   const [seeking, setSeeking] = useState(false);
   const [previewProg, setPreviewProg] = useState(0); // progrés del preview (0..1)
   const [thumb, setThumb] = useState(null); // miniatura del cue de vídeo (dataURL)
+  const tileVideoMirror = useSoundStore((s) => s.tileVideoMirror);
   const [vidElapsed, setVidElapsed] = useState(0); // temps de reproducció estimat del vídeo (s)
   const [vidSeeking, setVidSeeking] = useState(false); // arrossegant el playhead del vídeo
   const [previewVidPct, setPreviewVidPct] = useState(0); // playhead del preview de vídeo (0..100, dins el segment)
@@ -217,10 +218,16 @@ export function SoundButton({ slotId }) {
     if (isVideoCue && slot.pausedAt != null) { setVidElapsed(Math.max(0, slot.pausedAt)); return; }
     if (!(isVideoCue && isPlaying)) { setVidElapsed(0); return; }
     let raf;
-    const tick = () => {
-      let e = performance.now() / 1000 - (slot.startedAt || 0);
-      if (segDur > 0) e = slot.loop ? (e % segDur) : Math.min(e, segDur);
-      setVidElapsed(Math.max(0, e));
+    let lastSet = 0;
+    const tick = (now) => {
+      // ~15 fps: prou per al temps i el cursor; a 60 fps re-renderitzava el tile a
+      // cada fotograma (car a WebKitGTK, on el WebView pinta per software).
+      if (now - lastSet >= 66) {
+        lastSet = now;
+        let e = performance.now() / 1000 - (slot.startedAt || 0);
+        if (segDur > 0) e = slot.loop ? (e % segDur) : Math.min(e, segDur);
+        setVidElapsed(Math.max(0, e));
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -630,7 +637,7 @@ export function SoundButton({ slotId }) {
             {/* Mirall de reproducció: vídeo MUT que reflecteix el que sona a la
                 sortida (l'àudio ja surt per la finestra/motor). Es manté en pausa
                 (frame congelat). El preview té prioritat. */}
-            {isVideoCue && (isPlaying || slot.pausedAt != null) && !isPreviewing && (
+            {isVideoCue && tileVideoMirror && (isPlaying || slot.pausedAt != null) && !isPreviewing && (
               <video
                 ref={playVidRef}
                 className="slot-video-preview"

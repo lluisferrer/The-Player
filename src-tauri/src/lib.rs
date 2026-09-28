@@ -2897,49 +2897,100 @@ fn open_log_dir(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-// Linux: desactiva la descodificació de vídeo per MAQUINARI (VA-API) de GStreamer
-// quan la GPU és una Intel antiga (anterior a Broadwell, id PCI < 0x1600: Sandy/Ivy
-// Bridge, Haswell, Bay Trail), que només funciona amb el driver `i965`. Amb aquest
-// driver, WebKitGTK rebia fotogrames corruptes en llegir-los (miniatures amb soroll)
-// i l'assert d'i965 feia petar el gst-plugin-scanner. Per CPU van bé.
-// Override: EZYPLAYER_VIDEO_HWDEC=on (no tocar) / off (desactivar sempre). Si
-// l'usuari ja ha definit GST_PLUGIN_FEATURE_RANK, es respecta. S'ha de fer ABANS
-// de crear el WebView (GStreamer llegeix la variable en inicialitzar-se).
+// Noms dels descodificadors VA de GStreamer (plugins `va` i `vaapi`). Rang 0 =
+// GStreamer no els tria mai → descodificació per CPU. Els inexistents s'ignoren.
+#[cfg(target_os = "linux")]
+fn gst_va_disabled_rank() -> String {
+    const VA_DECODERS: &[&str] = &[
+        "vah264dec", "vah265dec", "vavp8dec", "vavp9dec", "vaav1dec", "vampeg2dec", "vajpegdec", "vavc1dec",
+        "vaapih264dec", "vaapih265dec", "vaapivp8dec", "vaapivp9dec", "vaapiav1dec", "vaapimpeg2dec",
+        "vaapijpegdec", "vaapivc1dec", "vaapidecodebin",
+    ];
+    VA_DECODERS.iter().map(|d| format!("{d}:0")).collect::<Vec<_>>().join(",")
+}
+
+// Linux: la descodificació de vídeo per MAQUINARI (VA-API) de GStreamer es MANTÉ
+// per defecte (reproduir 1080p per CPU en un portàtil antic va a talls i
+// l'escalfa). Amb el driver `i965` (Intel antigues) el que falla és només llegir
+// fotogrames des del WebView (miniatures amb soroll): per això les miniatures a
+// Linux es fan fora del WebView (video_thumbnail, per CPU). Override:
+// EZYPLAYER_VIDEO_HWDEC=off → desactiva el VA a tot el WebView (vídeo per CPU).
+// S'ha de fer ABANS de crear el WebView (GStreamer llegeix l'entorn en iniciar-se).
 #[cfg(target_os = "linux")]
 fn linux_configure_video_decoding() {
     if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_some() {
         return;
     }
-    let mode = std::env::var("EZYPLAYER_VIDEO_HWDEC").unwrap_or_default().to_lowercase();
-    let legacy_intel = || {
-        std::fs::read_dir("/sys/class/drm").ok().map_or(false, |dir| {
-            dir.flatten().any(|e| {
-                let dev = e.path().join("device");
-                let read = |f: &str| {
-                    std::fs::read_to_string(dev.join(f)).ok().and_then(|v| {
-                        u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok()
-                    })
-                };
-                read("vendor") == Some(0x8086) && read("device").map_or(false, |d| d < 0x1600)
-            })
-        })
-    };
-    let disable = match mode.as_str() {
-        "on" => false,
-        "off" => true,
-        _ => legacy_intel(),
-    };
-    if disable {
-        // Noms dels descodificadors VA (plugins `va` i `vaapi`); els que no existeixin
-        // s'ignoren. Rang 0 = GStreamer no els tria mai → descodificació per CPU.
-        const VA_DECODERS: &[&str] = &[
-            "vah264dec", "vah265dec", "vavp8dec", "vavp9dec", "vaav1dec", "vampeg2dec", "vajpegdec", "vavc1dec",
-            "vaapih264dec", "vaapih265dec", "vaapivp8dec", "vaapivp9dec", "vaapiav1dec", "vaapimpeg2dec",
-            "vaapijpegdec", "vaapivc1dec", "vaapidecodebin",
-        ];
-        let rank = VA_DECODERS.iter().map(|d| format!("{d}:0")).collect::<Vec<_>>().join(",");
-        std::env::set_var("GST_PLUGIN_FEATURE_RANK", rank);
-        eprintln!("[video] GPU Intel antiga (i965): descodificació de vídeo per CPU");
+    if std::env::var("EZYPLAYER_VIDEO_HWDEC").map(|v| v.eq_ignore_ascii_case("off")).unwrap_or(false) {
+        std::env::set_var("GST_PLUGIN_FEATURE_RANK", gst_va_disabled_rank());
+        eprintln!("[video] EZYPLAYER_VIDEO_HWDEC=off: descodificació de vídeo per CPU");
+    }
+}
+
+// Miniatura d'un vídeo (JPEG, 240 px d'ample, primer fotograma) generada FORA del
+// WebView amb gst-launch-1.0 i descodificació per CPU. A Linux, llegir fotogrames
+// d'un <video> descodificat per VA (driver i965) dona imatges corruptes; així la
+// reproducció segueix per maquinari i la miniatura surt bé. Err → el frontend cau
+// al mètode del canvas.
+#[tauri::command]
+async fn video_thumbnail(path: String) -> Result<tauri::ipc::Response, String> {
+    // Fora del fil principal: gst-launch pot trigar un parell de segons.
+    tauri::async_runtime::spawn_blocking(move || video_thumbnail_blocking(path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn video_thumbnail_blocking(path: String) -> Result<tauri::ipc::Response, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Err("Només a Linux".into())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let p = std::path::Path::new(&path);
+        let ext = p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();
+        if !p.is_absolute() || !["mp4", "webm", "m4v", "mov"].contains(&ext.as_str()) {
+            return Err("No és un vídeo".into());
+        }
+        let out = std::env::temp_dir().join(format!("ezyplayer-thumb-{}-{}.jpg", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+        let mut child = std::process::Command::new("gst-launch-1.0")
+            .env("GST_PLUGIN_FEATURE_RANK", gst_va_disabled_rank())
+            .args(["-q", "filesrc"])
+            .arg(format!("location={}", path))
+            .args(["!", "decodebin", "!", "videoconvert", "!", "videoscale", "!",
+                   "video/x-raw,width=240,pixel-aspect-ratio=1/1", "!",
+                   "jpegenc", "snapshot=true", "quality=75", "!", "filesink"])
+            .arg(format!("location={}", out.display()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("gst-launch-1.0: {e}"))?;
+        // Límit de temps: un fitxer estrany no pot deixar un procés penjat.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
+                if !st.success() {
+                    let _ = std::fs::remove_file(&out);
+                    return Err("gst-launch ha fallat".into());
+                }
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = std::fs::remove_file(&out);
+                return Err("temps esgotat generant la miniatura".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&out);
+        if bytes.is_empty() {
+            return Err("miniatura buida".into());
+        }
+        Ok(tauri::ipc::Response::new(bytes))
     }
 }
 
@@ -3089,7 +3140,8 @@ pub fn run() {
             license::deactivate_license,
             power::set_keep_display_awake,
             open_log_dir,
-            media_server::media_base_url
+            media_server::media_base_url,
+            video_thumbnail
         ])
         // Tancament fiable: en tancar la finestra PRINCIPAL, aturem el motor natiu
         // net (drop dels streams cpal al seu fil → WASAPI/CoreAudio no penja) i

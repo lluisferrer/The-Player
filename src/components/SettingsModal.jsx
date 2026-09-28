@@ -230,6 +230,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
   const setVideoIdleImageFit = useSoundStore((s) => s.setVideoIdleImageFit);
   const separateVideoAudio = useSoundStore((s) => s.separateVideoAudio);
   const setSeparateVideoAudio = useSoundStore((s) => s.setSeparateVideoAudio);
+  const tileVideoMirror = useSoundStore((s) => s.tileVideoMirror);
+  const setTileVideoMirror = useSoundStore((s) => s.setTileVideoMirror);
   const setVideoIdlePattern = useSoundStore((s) => s.setVideoIdlePattern);
 
   // Tria una imatge de fons personalitzada (patró 'custom') amb el selector natiu.
@@ -786,6 +788,23 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   </div>
                 </>
               )}
+
+              <div className="settings-subtitle">Tiles</div>
+              <div className="editor-options">
+                <label className="editor-check">
+                  <input
+                    type="checkbox"
+                    checked={tileVideoMirror}
+                    onChange={(e) => setTileVideoMirror(e.target.checked)}
+                  />
+                  Live video in tiles
+                </label>
+              </div>
+              <div className="settings-note">
+                While a video cue plays, its tile shows the moving picture (a second decode of the
+                video). Turn it off on slower computers: the tile then shows the still thumbnail with
+                the playhead. Off by default on Linux.
+              </div>
 
               <div className="settings-subtitle">Video audio</div>
               <div className="editor-options">

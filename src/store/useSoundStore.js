@@ -17,7 +17,7 @@ import { createLicenseSlice } from './slices/license';
 // clearAsioTelemetry / asioPosition → moguts al slice de cues (P5)
 // emitVideoPlay / emitVideoStop / emitVideoBlack / emitVideoVolume / startVideoResync / stopVideoResync → moguts al slice de cues (P5)
 import { PREVIEW_VOICE_ID } from '../lib/asioIds';
-import { makeNativeTargetStr, isAsioTarget, isNativeTarget, platformTarget, platformColorOutputs } from '../lib/outputTarget';
+import { makeNativeTargetStr, isAsioTarget, isNativeTarget, platformTarget, platformColorOutputs, IS_LINUX } from '../lib/outputTarget';
 // emitVideoSeek / emitVideoIdlePattern → moguts al slice de vídeo (P5); emitVideoBlack/emitVideoPlay/etc. → slice de cues (P5)
 
 // SLOTS_PER_PAGE / NUM_PAGES / NUM_SLOTS / createEmptySlot → moguts al slice de cues (P5)
@@ -235,6 +235,9 @@ export const useSoundStore = create((set, get) => ({
   // (routing/fades/ducking/multicanal) i la imatge va muda a la sortida, sincronitzada
   // per resync. Default APAGAT.
   separateVideoAudio: savedGlobals.separateVideoAudio ?? false,
+  // Mirall de vídeo en directe als tiles (un segon <video> per cue que sona). A
+  // Linux (WebKitGTK) és car: per defecte desactivat; el tile mostra la miniatura.
+  tileVideoMirror: savedGlobals.tileVideoMirror ?? !IS_LINUX,
 
   // ── Playlist (VLC) ──
   playlist: Array.isArray(savedPlaylist.tracks) ? savedPlaylist.tracks : [],
@@ -335,6 +338,7 @@ export const useSoundStore = create((set, get) => ({
       videoIdleImageFit: state.videoIdleImageFit,
       videoOutputOpen: state.videoOutputOpen,
       separateVideoAudio: state.separateVideoAudio,
+      tileVideoMirror: state.tileVideoMirror,
     };
 
     // Playlist (mirall exacte de persistPlaylist)
@@ -392,6 +396,7 @@ export const useSoundStore = create((set, get) => ({
       // videoOutputOpen s'ignora deliberadament: no volem obrir la sortida de vídeo
       // automàticament en importar (pot sorprendre a l'operador en ple show).
       separateVideoAudio: globals.separateVideoAudio ?? false,
+      tileVideoMirror: globals.tileVideoMirror ?? !IS_LINUX,
     });
     get().persistGlobals();
   },

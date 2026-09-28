@@ -5,7 +5,9 @@
 //
 // Les miniatures JPEG poden ser grans, així que es limita la quantitat
 // d'entrades (FIFO) i, davant de quota plena, es buida la cau i es reintenta.
+import { invoke } from '@tauri-apps/api/core';
 import { mediaSrc } from './mediaSrc';
+import { IS_LINUX } from './outputTarget';
 
 // v2: a Linux amb el driver VA i965 es van desar miniatures corruptes; la clau
 // nova les descarta i es regeneren.
@@ -59,6 +61,25 @@ export async function getVideoThumb(filePath, seekTime = 0.1) {
   if (!filePath) return null;
   const cached = getCachedThumb(filePath);
   if (cached) return cached;
+
+  // Linux: miniatura generada FORA del WebView (Rust + gst-launch, per CPU). Llegir
+  // fotogrames d'un <video> descodificat per maquinari (driver VA i965) dona
+  // imatges corruptes. Si no es pot (sense gst-launch), cau al mètode del canvas.
+  if (IS_LINUX) {
+    try {
+      const bytes = await invoke('video_thumbnail', { path: filePath });
+      const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(new Blob([bytes], { type: 'image/jpeg' }));
+      });
+      putCachedThumb(filePath, dataUrl);
+      return dataUrl;
+    } catch (e) {
+      console.warn('[thumb] video_thumbnail ha fallat, provo el canvas:', String(e));
+    }
+  }
 
   return new Promise((resolve) => {
     const v = document.createElement('video');
