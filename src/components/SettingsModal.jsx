@@ -3,6 +3,7 @@ import { mediaSrc } from '../lib/mediaSrc';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { availableMonitors } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
 import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
@@ -290,6 +291,9 @@ export function SettingsModal({ onClose, readOnly = false }) {
 
   // Plataforma d'àudio: noms dels backends i si hi ha ASIO (null fins que arriba).
   const [platform, setPlatform] = useState(null);
+  // Versió de l'app (tauri.conf.json), per a suport: es mostra a la pestanya License.
+  const [appVersion, setAppVersion] = useState(null);
+  useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
   useEffect(() => { getAudioPlatform().then(setPlatform); }, []);
   const webLabel = webAudioLabel(platform);
   const nativeLabel = platform?.native_host || 'Native';
@@ -933,6 +937,9 @@ export function SettingsModal({ onClose, readOnly = false }) {
 
           {tab === 'license' && (
             <>
+              <div className="settings-note">
+                ezyPlayer {appVersion ? <b>v{appVersion}</b> : null} · {platform?.os || ''} · audio engine: {nativeLabel}{hasAsio ? ' + ASIO' : ''}
+              </div>
               {licenseState?.state === 'valid' ? (
                 <>
                   <div className="settings-subtitle">License active</div>
