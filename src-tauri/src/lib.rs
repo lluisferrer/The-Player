@@ -221,17 +221,7 @@ fn collect_alsa_outputs(out: &mut Vec<AudioOutput>) {
         };
 
         let (probed_channels, rate) = probe_alsa_output(&name);
-        // Un PCM `plug` accepta qualsevol nombre de canals (en reporta milers), i
-        // una targeta ocupada no es pot sondejar: en aquests casos manen els canals
-        // que declara la descripció ("48 ch", "stereo").
-        // El `default` sol ser PulseAudio: estèreo, encara que en reporti més.
-        let channels = if name == "default" {
-            2
-        } else {
-            channels_from_desc(desc.as_deref())
-                .filter(|_| probed_channels == 0 || probed_channels > 64)
-                .unwrap_or(probed_channels.min(64))
-        };
+        let channels = alsa_channels_rule(&name, desc.as_deref(), probed_channels);
 
         out.push(AudioOutput {
             host: "ALSA".to_string(),
@@ -243,6 +233,39 @@ fn collect_alsa_outputs(out: &mut Vec<AudioOutput>) {
             default_sample_rate: rate,
         });
     }
+}
+
+// Canals REALS d'una sortida ALSA (els que mostra Settings i amb què l'obre el motor
+// natiu). Un PCM `plug` accepta qualsevol nombre de canals (en reporta milers), i una
+// targeta ocupada no es pot sondejar: en aquests casos manen els canals que declara
+// la descripció ("48 ch", "stereo"). El `default` sol ser PulseAudio: estèreo,
+// encara que en reporti més.
+#[cfg(target_os = "linux")]
+fn alsa_channels_rule(name: &str, desc: Option<&str>, probed_channels: u16) -> u16 {
+    if name == "default" {
+        2
+    } else {
+        channels_from_desc(desc)
+            .filter(|_| probed_channels == 0 || probed_channels > 64)
+            .unwrap_or(probed_channels.min(64))
+    }
+}
+
+// Mateixa regla per a UN sol PCM pel nom (la fa servir el motor natiu en obrir-lo,
+// perquè cpal 0.15 retalla a 32 i els `plug` en declaren milers). Busca la
+// descripció als hints (instantani) i sondeja el PCM. None = no es pot saber.
+#[cfg(target_os = "linux")]
+pub(crate) fn alsa_output_channels(name: &str) -> Option<u16> {
+    let name = if name.is_empty() { "default" } else { name };
+    let desc = alsa::device_name::HintIter::new_str(None, "pcm").ok().and_then(|hints| {
+        hints
+            .filter(|h| h.name.as_deref() == Some(name))
+            .find_map(|h| h.desc)
+            .and_then(|d| d.lines().next().map(|l| l.trim().to_string()))
+    });
+    let (probed, _) = probe_alsa_output(name);
+    let ch = alsa_channels_rule(name, desc.as_deref(), probed);
+    if ch == 0 { None } else { Some(ch) }
 }
 
 // Obre el PCM en mode no bloquejant i en llegeix els canals màxims i la

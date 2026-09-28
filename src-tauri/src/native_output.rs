@@ -1014,28 +1014,26 @@ fn native_build_backend_stream(
 // per defecte): stream de sortida + llista de veus + callback de mescla. Idempotent:
 // si el device ja és obert, el reutilitza. Retorna la freqüència i el nombre de
 // canals d'aquell dispositiu. En obrir-ne un de nou, republica la telemetria.
-// Linux: si cpal ha retallat els canals a 32, pregunta a ALSA el màxim REAL del PCM
-// i retorna una config ampliada (mateix rate/format/buffer). None = no cal o no es pot
-// saber (PCM ocupat, error...). Obre i tanca el PCM abans que cpal l'obri.
+// Linux: canals REALS del PCM segons la mateixa regla que Settings (descripció del
+// hint / sondeig; vegeu crate::alsa_output_channels). cpal 0.15 retalla l'enumeració
+// a 32 i els PCM `plug` (aes67, ravenna_out) en declaren milers, així que la config
+// que tria native_pick_config no és fiable: ravenna_out sortia a 32 (en té 48) i
+// aes67 a 32 (és estèreo). Retorna la config corregida (mateix rate/format/buffer)
+// o None si ja coincideix o no es pot saber.
 #[cfg(target_os = "linux")]
 fn linux_widen_channels(device_name: &str, picked: &cpal::SupportedStreamConfig) -> Option<cpal::SupportedStreamConfig> {
-    if picked.channels() < 32 {
-        return None; // el límit de cpal no ha actuat
+    let real = crate::alsa_output_channels(device_name)?;
+    if real == picked.channels() {
+        return None;
     }
-    let name = if device_name.is_empty() { "default" } else { device_name };
-    let pcm = alsa::pcm::PCM::new(name, alsa::Direction::Playback, true).ok()?;
-    let max = {
-        let hw = alsa::pcm::HwParams::any(&pcm).ok()?;
-        let max = hw.get_channels_max().ok()?;
-        if max <= picked.channels() as u32 || max > 256 || hw.test_channels(max).is_err() {
-            return None;
-        }
-        max
-    };
-    drop(pcm);
-    log::info!("[native] '{}' exposa {} canals (cpal en llista 32) → obro amb {}", name, max, max);
+    log::info!(
+        "[native] '{}': {} canals (cpal en proposava {})",
+        if device_name.is_empty() { "default" } else { device_name },
+        real,
+        picked.channels()
+    );
     Some(cpal::SupportedStreamConfig::new(
-        max as cpal::ChannelCount,
+        real as cpal::ChannelCount,
         picked.sample_rate(),
         picked.buffer_size().clone(),
         picked.sample_format(),
@@ -1067,10 +1065,8 @@ fn native_ensure_backend(
     // real d'un aparell així és per ASIO.
     let (stream, sample_rate, channels) = {
         let picked = native_pick_config(&device)?;
-        // Linux: cpal 0.15 retalla l'ENUMERACIÓ de configs a 32 canals (TODO del seu
-        // backend ALSA), però en obrir fa set_channels(n) sense límit. Si l'aparell en
-        // té més (p. ex. ravenna_out de l'AES67, 48), provem primer amb tots; si
-        // l'obertura falla, seguim amb la config de cpal (32) com fins ara.
+        // Linux: obre amb els canals REALS del PCM (vegeu linux_widen_channels); si
+        // l'obertura falla, seguim amb la config de cpal com fins ara.
         #[cfg(target_os = "linux")]
         let picked = match linux_widen_channels(device_name, &picked) {
             Some(wide) => match native_build_backend_stream(&device, wide, &voices, &stream_voices, &acc, device_name) {
@@ -1083,7 +1079,7 @@ fn native_ensure_backend(
                     return Ok((v.1, v.2));
                 }
                 Err(e) => {
-                    log::warn!("[native] '{}' amb més de 32 canals ha fallat ({}); provo amb {}", dev_label, e, picked.channels());
+                    log::warn!("[native] '{}' amb els canals reals ha fallat ({}); provo amb {}", dev_label, e, picked.channels());
                     picked
                 }
             },
