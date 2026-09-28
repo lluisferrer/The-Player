@@ -10,6 +10,10 @@ mod license_canon;
 // Inhibició del repòs del sistema / pantalla durant un show (sempre compilat).
 mod power;
 
+// Servidor de mèdia local per HTTP (només s'arrenca a Linux: el <video> de
+// WebKitGTK no reprodueix des del protocol asset://).
+mod media_server;
+
 // Descodificació d'àudio a Rust per al render natiu de cues. Part del nucli
 // reutilitzable: disponible amb `native` (i, per implicació, amb `asio`).
 #[cfg(feature = "native")]
@@ -2987,6 +2991,8 @@ pub fn run() {
             license::load_on_startup(app.handle());
             // L'equip no s'adorm mentre l'app és oberta (la pantalla, només en LIVE/vídeo).
             power::start();
+            #[cfg(target_os = "linux")]
+            media_server::start(ALLOWED_EXTENSIONS);
             // Fil notificador de finals de veu ASIO → events Tauri cap a la UI.
             #[cfg(feature = "asio")]
             asio_start_notifier(app.handle().clone());
@@ -3032,7 +3038,8 @@ pub fn run() {
             license::activate_license,
             license::deactivate_license,
             power::set_keep_display_awake,
-            open_log_dir
+            open_log_dir,
+            media_server::media_base_url
         ])
         // Tancament fiable: en tancar la finestra PRINCIPAL, aturem el motor natiu
         // net (drop dels streams cpal al seu fil → WASAPI/CoreAudio no penja) i

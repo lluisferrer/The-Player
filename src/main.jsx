@@ -6,6 +6,7 @@ import { VideoOutput } from "./components/VideoOutput";
 import { OUTPUT_LABEL } from "./lib/videoOutput";
 import { getInitialTheme, applyTheme } from "./lib/theme";
 import { installLogBridge } from "./lib/logBridge";
+import { initMediaSrc } from "./lib/mediaSrc";
 
 // Aplica el tema Dia/Nit desat ABANS del primer render (evita el flash del tema
 // per defecte). La finestra de sortida de vídeo no el necessita, però és inofensiu.
@@ -20,11 +21,15 @@ catch { /* fora de Tauri (p. ex. build/preview): app normal */ }
 // console.warn/error i errors no capturats → també al fitxer de log de l'app.
 try { installLogBridge(isOutput ? 'output' : 'main'); } catch { /* fora de Tauri */ }
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    {isOutput ? <VideoOutput /> : <App />}
-  </React.StrictMode>,
-);
+// A Linux, la URL del servidor de mèdia local s'ha de saber abans de pintar cap
+// <video>/<img> (vegeu lib/mediaSrc.js). A la resta és immediat.
+initMediaSrc().finally(() => {
+  ReactDOM.createRoot(document.getElementById("root")).render(
+    <React.StrictMode>
+      {isOutput ? <VideoOutput /> : <App />}
+    </React.StrictMode>,
+  );
+});
 
 // Quan React ja ha pintat alguna cosa a #root, el diagnòstic d'arrencada
 // (public/boot-guard.js) deixa de tapar la UI amb errors; a partir d'aquí van al

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { mediaSrc } from '../lib/mediaSrc';
 import { open } from '@tauri-apps/plugin-dialog';
-import { convertFileSrc } from '@tauri-apps/api/core';
 import { useSoundStore } from '../store/useSoundStore';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import { usePlaybackTime, fmtTime } from '../hooks/usePlaybackTime';
@@ -153,7 +153,7 @@ export function SoundButton({ slotId }) {
   useEffect(() => {
     if (!slot.filePath) { setThumb(null); return; }
     // Imatge fixa: la miniatura és la pròpia imatge (sense generar fotograma)
-    if (isImageCue) { setThumb(convertFileSrc(slot.filePath)); return; }
+    if (isImageCue) { setThumb(mediaSrc(slot.filePath)); return; }
     if (!isVideoCue) { setThumb(null); return; }
     let cancel = false;
     const seekAt = Math.max(0.1, slot.startPoint || 0);
@@ -620,7 +620,7 @@ export function SoundButton({ slotId }) {
               <video
                 ref={previewVidRef}
                 className="slot-video-preview"
-                src={convertFileSrc(slot.filePath)}
+                src={mediaSrc(slot.filePath)}
                 onLoadedMetadata={handlePreviewLoaded}
                 onTimeUpdate={handlePreviewTime}
                 onEnded={handlePreviewEnded}
@@ -634,7 +634,7 @@ export function SoundButton({ slotId }) {
               <video
                 ref={playVidRef}
                 className="slot-video-preview"
-                src={convertFileSrc(slot.filePath)}
+                src={mediaSrc(slot.filePath)}
                 muted
                 onLoadedMetadata={handlePlayVidLoaded}
                 onTimeUpdate={handlePlayVidTime}

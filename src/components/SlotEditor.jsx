@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { mediaSrc } from '../lib/mediaSrc';
 import { useSoundStore } from '../store/useSoundStore';
 import { drawWavePathRange } from '../lib/waveformDraw';
 import { observeResize } from '../lib/resizeObserver';
@@ -444,7 +444,7 @@ export function SlotEditor() {
             <video
               ref={videoRef}
               className="editor-video"
-              src={convertFileSrc(slot.filePath)}
+              src={mediaSrc(slot.filePath)}
               preload="auto"
               playsInline
             />

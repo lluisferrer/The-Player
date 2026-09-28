@@ -5,7 +5,7 @@
 //
 // Les miniatures JPEG poden ser grans, així que es limita la quantitat
 // d'entrades (FIFO) i, davant de quota plena, es buida la cau i es reintenta.
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { mediaSrc } from './mediaSrc';
 
 const KEY = 'the-player-thumbs';
 const MAX_ENTRIES = 32;   // sostre d'entrades a la cau (evita inflar localStorage)
@@ -47,7 +47,7 @@ function putCachedThumb(filePath, dataUrl) {
 }
 
 // Genera (o recupera de la cau) la miniatura d'un cue de vídeo.
-//   filePath  — ruta del fitxer (clau de cau i font via convertFileSrc)
+//   filePath  — ruta del fitxer (clau de cau i font via mediaSrc)
 //   seekTime  — segon a capturar (per defecte un punt inicial representatiu)
 // Retorna una promesa amb el dataURL JPEG, o null si no es pot generar.
 // No bloqueja la UI: es crida en segon pla des del component.
@@ -100,6 +100,6 @@ export async function getVideoThumb(filePath, seekTime = 0.1) {
     // Marge de seguretat: si el vídeo no respon, no deixis la promesa penjada
     setTimeout(() => finish(null), 8000);
 
-    v.src = convertFileSrc(filePath);
+    v.src = mediaSrc(filePath);
   });
 }

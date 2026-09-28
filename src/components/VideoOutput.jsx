@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { mediaSrc } from '../lib/mediaSrc';
+import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
 import { pdfjsLib } from '../lib/pdfjs';
 import { ColorBars, TestCard } from './VideoTestPatterns';
@@ -222,7 +223,7 @@ export function VideoOutput() {
         // Opacitat inicial (instantània): si hi ha fade in, comença negre; si no, visible
         setFadeDur(0);
         setOpacity(fadeIn > 0 ? 0 : 1);
-        setSrc(convertFileSrc(p.filePath));
+        setSrc(mediaSrc(p.filePath));
       }));
       unlisteners.push(await listen('video-stop', fadeStop));
       unlisteners.push(await listen('video-black', black));
@@ -546,7 +547,7 @@ export function VideoOutput() {
           : idlePattern === 'custom' && idleImage ? (
             <img
               className="video-output-pattern"
-              src={convertFileSrc(idleImage)}
+              src={mediaSrc(idleImage)}
               alt=""
               style={{ objectFit: idleFit }}
               onError={(e) => console.warn('[output] error de fons personalitzat', e?.currentTarget?.src)}
