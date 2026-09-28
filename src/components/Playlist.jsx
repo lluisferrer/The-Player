@@ -62,8 +62,14 @@ export function Playlist() {
   useEffect(() => {
     let raf;
     const tick = () => {
-      // La posició ve del motor actiu: ASIO, cpal natiu o Web Audio.
-      setPos(plaActive() ? plaPosition() : plnActive() ? plnPosition() : plPosition());
+      // La posició ve del motor actiu: ASIO, cpal natiu o Web Audio. Només es
+      // re-renderitza si ha canviat de debò: abans un objecte nou a cada fotograma
+      // redibuixava la Playlist a 60 fps encara que no sonés res (CPU en repòs).
+      const next = plaActive() ? plaPosition() : plnActive() ? plnPosition() : plPosition();
+      setPos((prev) => (
+        prev.index === next.index && prev.duration === next.duration
+          && Math.abs(prev.elapsed - next.elapsed) < 0.01
+      ) ? prev : next);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

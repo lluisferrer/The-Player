@@ -1261,6 +1261,7 @@ dependencies = [
  "cpal",
  "ed25519-dalek",
  "keepawake",
+ "libc",
  "log",
  "serde",
  "serde_json",

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { asioLevel } from '../lib/asioTelemetry';
+import { observeResize } from '../lib/resizeObserver';
 
 const VU_GREEN  = '#22c55e';
 const VU_YELLOW = '#eab308';
@@ -126,11 +127,30 @@ export function VuMeter({ analyserNode, isPlaying, asioId = null }) {
         }
       }
 
-      rafRef.current = requestAnimationFrame(draw);
+      // Només segueix animant mentre sona o mentre la barra/pic encara baixen. En
+      // silenci, l'últim fotograma queda pintat i el bucle s'ATURA: amb 32 tiles a
+      // 60 fps el WebView cremava CPU en repòs (a Linux, WebKitGTK pinta per
+      // software: ~80% d'un nucli, sobreescalfament i talls d'àudio).
+      if (isPlaying || levelRef.current > 0.001 || peakRef.current > 0.001) {
+        rafRef.current = requestAnimationFrame(draw);
+      } else {
+        rafRef.current = null;
+      }
     };
 
-    rafRef.current = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(rafRef.current);
+    // (Re)arrenca el bucle si està aturat (p. ex. en canviar de mida el tile, per
+    // repintar el canvas a la mida nova encara que no soni res).
+    const kick = () => {
+      if (rafRef.current == null) rafRef.current = requestAnimationFrame(draw);
+    };
+    rafRef.current = null;
+    kick();
+    const unobserve = observeResize(wrap, kick);
+    return () => {
+      unobserve();
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    };
   }, [analyserNode, isPlaying, asioId]);
 
   return (

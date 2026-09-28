@@ -104,4 +104,7 @@ symphonia = { version = "0.5", optional = true, default-features = false, featur
 # `dmix` sobre una targeta ocupada es penja ~25 s (la llista trigava 50 s).
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.9"
+# Prioritat de temps real (SCHED_FIFO) del fil d'àudio de cpal (vegeu
+# native_output::promote_audio_thread).
+libc = "0.2"
 

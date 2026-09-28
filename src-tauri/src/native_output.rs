@@ -916,6 +916,29 @@ fn native_resolve_device(host: &cpal::Host, device_name: &str) -> Result<cpal::D
         .ok_or_else(|| format!("Dispositiu de sortida no trobat: {}", device_name))
 }
 
+// Linux: puja el fil d'àudio de cpal (el que crida el callback) a temps real
+// SCHED_FIFO. cpal 0.15 el deixa en prioritat normal, i qualsevol pic de CPU (la
+// UI, el descodificador, el kernel frenant la CPU per temperatura) el deixava sense
+// temps → underruns que sonen com a distorsió. Es crida UN cop, a la primera crida
+// del callback. Si el sistema no ho permet (sense rtprio a limits.conf / grup
+// audio), s'avisa al log i se segueix en prioritat normal, com abans. A Windows/Mac
+// el sistema ja dona prioritat alta als fils d'àudio.
+#[cfg(target_os = "linux")]
+fn promote_audio_thread() {
+    // 70: per sobre del mescla dels DAW habituals i de la injecció d'inactivitat
+    // tèrmica del kernel (50), per sota dels fils d'IRQ i del kernel crític.
+    let param = libc::sched_param { sched_priority: 70 };
+    let rc = unsafe { libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_FIFO, &param) };
+    if rc != 0 {
+        log::warn!("[native] no s'ha pogut posar el fil d'àudio a temps real (errno {rc}); segueix en prioritat normal");
+    } else {
+        log::info!("[native] fil d'àudio en temps real (SCHED_FIFO 70)");
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn promote_audio_thread() {}
+
+
 // Construeix i arrenca un cpal::Stream de sortida per a una CONFIG concreta d'un
 // dispositiu, amb el callback de mescla (fil RT) i el d'error (avisa la UI si perd
 // el dispositiu). Retorna (stream, sample_rate, canals). Aïllat per poder provar
@@ -953,7 +976,9 @@ fn native_build_backend_stream(
             device.build_output_stream(
                 &config,
                 move |data: &mut [$sample], _: &cpal::OutputCallbackInfo| {
-                    cb_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if cb_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                        promote_audio_thread();
+                    }
                     native_mix_callback(data, channels, &cb_voices, &cb_stream_voices, &cb_acc, &$to);
                 },
                 move |e| native_stream_error(&err_dev, e),
