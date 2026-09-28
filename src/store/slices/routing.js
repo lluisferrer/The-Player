@@ -283,6 +283,21 @@ export function createRoutingSlice(set, get) {
       } catch { /* sense ASIO */ }
     },
 
+    // Marca/desmarca un dispositiu del motor NATIU com a "Use" (curació del pool de
+    // Routing). Mateixa convenció que toggleEnabledOutput (buida = tots), però
+    // `allNames` ve de la llista de Settings (el store no té la llista nativa) i no
+    // es deixa desmarcar l'ÚLTIM (una llista buida tornaria a voler dir "tots").
+    toggleEnabledNativeOutput: (name, allNames) => {
+      set((s) => {
+        let cur = s.enabledNativeOutputs || [];
+        if (cur.length === 0) cur = [...(allNames || [])];
+        const next = cur.includes(name) ? cur.filter((d) => d !== name) : [...cur, name];
+        if (next.length === 0) return {};
+        return { enabledNativeOutputs: next };
+      });
+      get().persistGlobals();
+    },
+
     // Marca/desmarca un dispositiu WASAPI com a "Usar" (curació del pool de Routing).
     // Llista buida = tots actius; en desmarcar el primer, materialitza la llista
     // completa menys aquell (així el comportament per defecte no canvia).

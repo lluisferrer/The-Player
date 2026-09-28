@@ -5,7 +5,7 @@ import { availableMonitors } from '@tauri-apps/api/window';
 import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
-import { makeAsioTargetStr, makeNativeTargetStr, isAsioTarget, isNativeTarget, targetLabel, IS_LINUX, NATIVE_DEFAULT_TARGET } from '../lib/outputTarget';
+import { makeAsioTargetStr, makeNativeTargetStr, isAsioTarget, isNativeTarget, targetLabel, IS_LINUX, NATIVE_DEFAULT_TARGET, parseTarget } from '../lib/outputTarget';
 import { getAudioPlatform, webAudioLabel } from '../lib/audioPlatform';
 
 // A partir de la info dels drivers ASIO carregats ({ [name]: {outs, sample_rate} }),
@@ -116,31 +116,45 @@ const DIAG_LIST_STYLE = { display: 'flex', flexDirection: 'column', gap: 6 };
 // Per ASIO, `info` (present = driver connectat) porta {outs, sample_rate} i mostra
 // els botons de test tone per canal, igual que WASAPI/CoreAudio. La connexió/
 // desconnexió es fa des del desplegable de driver, no des d'aquí.
-function DiagRow({ o, onTone, info }) {
+// `enabled`/`onToggle` (opcionals): casella "Use" de curació (només els marcats
+// surten a Routing). Sense onToggle (driver ASIO), no hi ha casella.
+function DiagRow({ o, onTone, info, enabled = true, onToggle }) {
   const isAsio = o.host === 'ASIO';
+  // Freqüència llegible; 0 = no s'ha pogut llegir (dispositiu exclusiu ocupat per
+  // una altra app) → no en mostrem cap en lloc d'un "0 Hz" enganyós.
+  const rate = o.default_sample_rate > 0
+    ? ` · ${(o.default_sample_rate / 1000).toLocaleString('en', { maximumFractionDigits: 1 })} kHz`
+    : '';
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: 8,
       padding: '10px 12px', border: '1px solid var(--border)',
       borderRadius: 6, background: 'var(--bg-button)',
+      opacity: enabled ? 1 : 0.55,
     }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          {onToggle && (
+            <input type="checkbox" checked={enabled} onChange={onToggle}
+              title="Use this device (only used devices appear in Routing)" style={{ margin: 0 }} />
+          )}
           <span style={{
             display: 'inline-block', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px',
             padding: '1px 5px', marginRight: 6, borderRadius: 3, verticalAlign: 'middle',
             background: isAsio ? 'var(--accent)' : 'var(--bg-button-hover)',
             color: isAsio ? '#fff' : 'var(--text-secondary)',
           }}>{o.host}</span>
-          {o.label || o.name}{o.is_default ? '  (default)' : ''}
+          <span>{o.label || o.name}{o.is_default ? '  (default)' : ''}</span>
+          {o.open && (
+            <span title="ezyPlayer has this device open (playing or preloaded)" style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '1px 5px',
+              borderRadius: 3, background: 'var(--accent)', color: '#fff',
+            }}>OPEN</span>
+          )}
         </span>
         {o.max_channels > 0 && (
-          <span style={{
-            fontSize: 11, whiteSpace: 'nowrap', flexShrink: 0,
-            color: o.max_channels > 2 ? 'var(--vu-green)' : 'var(--text-secondary)',
-            fontWeight: o.max_channels > 2 ? 600 : 400,
-          }}>
-            {o.max_channels} ch · {o.default_sample_rate} Hz
+          <span style={{ fontSize: 11, whiteSpace: 'nowrap', flexShrink: 0, color: 'var(--text-secondary)' }}>
+            {o.max_channels} ch{rate}
           </span>
         )}
       </div>
@@ -186,6 +200,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
   const nativeBufferSize = useSoundStore((s) => s.nativeBufferSize);
   const setNativeBufferSize = useSoundStore((s) => s.setNativeBufferSize);
   const enabledOutputs   = useSoundStore((s) => s.enabledOutputs);
+  const enabledNativeOutputs = useSoundStore((s) => s.enabledNativeOutputs);
+  const toggleEnabledNativeOutput = useSoundStore((s) => s.toggleEnabledNativeOutput);
   const toggleEnabledOutput = useSoundStore((s) => s.toggleEnabledOutput);
 
   const globalFadeIn  = useSoundStore((s) => s.globalFadeIn);
@@ -293,7 +309,18 @@ export function SettingsModal({ onClose, readOnly = false }) {
   // Opcions de routing ASIO (parells de canals) dels drivers ASIO carregats.
   const asioOptions = asioStereoOptions(asioInfo);
   // Opcions de routing del motor natiu cpal (parells de canals per dispositiu).
-  const nativeOptions = nativeStereoOptions(nativeOutputs);
+  // Només els dispositius marcats com a "Use" (Devices), més els que algun bus ja fa
+  // servir (perquè una assignació existent no desaparegui del desplegable).
+  const usedNative = new Set(
+    [cuesDeviceId, playlistDeviceId, previewDeviceId, ...Object.values(colorOutputs || {})]
+      .filter(isNativeTarget)
+      .map((v) => parseTarget(v).device),
+  );
+  const isNativeEnabled = (name) =>
+    !enabledNativeOutputs || enabledNativeOutputs.length === 0 || enabledNativeOutputs.includes(name);
+  const nativeOptions = nativeStereoOptions(
+    (nativeOutputs || []).filter((d) => isNativeEnabled(d.name) || usedNative.has(d.name)),
+  );
 
   // En obrir el modal, refresca quin driver ASIO hi ha carregat ara.
   useEffect(() => { refreshAsioLoaded(); }, [refreshAsioLoaded]);
@@ -566,12 +593,17 @@ export function SettingsModal({ onClose, readOnly = false }) {
               </div>
 
               <div className="settings-subtitle">{nativeLabel} outputs · native (per-channel test tone)</div>
-              <div className="settings-note">Send a tone to check which physical output each channel maps to.</div>
+              <div className="settings-note">
+                Tick the devices you'll use — only those appear in <b>Routing</b>. Send a tone to
+                check which physical output each channel maps to. <b>OPEN</b> = ezyPlayer is using it now.
+              </div>
               {diagError && <div className="diag-error">⚠ {diagError}</div>}
               {!outputs && !diagError && <div className="library-empty">Loading devices…</div>}
               <div style={DIAG_LIST_STYLE}>
                 {outputs && outputs.map((o, i) => (
-                  <DiagRow key={i} o={o} onTone={tone} />
+                  <DiagRow key={i} o={o} onTone={tone}
+                    enabled={isNativeEnabled(o.name)}
+                    onToggle={() => toggleEnabledNativeOutput(o.name, outputs.map((x) => x.name))} />
                 ))}
               </div>
 

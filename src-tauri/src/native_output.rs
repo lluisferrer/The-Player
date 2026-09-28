@@ -389,6 +389,8 @@ fn native_stream_error(device_name: &str, e: cpal::StreamError) {
 // sobre totes. S'actualitza cada cop que el conjunt de backends canvia. Anàleg a
 // `AsioMeterShared`/`ASIO_METER` del motor ASIO.
 struct NativeMeterDevice {
+    // Clau del backend (nom de cpal; buit = per defecte). La fa servir open_devices.
+    name: String,
     voices: Arc<Mutex<Vec<Voice>>>,
     stream_voices: Arc<Mutex<Vec<StreamVoice>>>,
     sample_rate: u32,
@@ -401,13 +403,25 @@ fn native_meter_slot() -> &'static Mutex<Vec<NativeMeterDevice>> {
     NATIVE_METER.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+// Dispositius que el motor té oberts ara mateix: (nom de cpal, freqüència). Per a
+// Settings → Devices (marca "open" i dona la freqüència real dels exclusius que el
+// sondeig no pot obrir perquè ja els tenim nosaltres). Llegeix la taula de
+// telemetria, sense passar pel fil del motor.
+pub fn open_devices() -> Vec<(String, u32)> {
+    native_meter_slot()
+        .lock()
+        .map(|g| g.iter().map(|d| (d.name.clone(), d.sample_rate)).collect())
+        .unwrap_or_default()
+}
+
 // Reconstrueix la taula de telemetria a partir del mapa de backends. Es crida cada
 // cop que s'obre un dispositiu nou (poc freqüent), MAI des del callback RT.
 fn native_publish_meter(backends: &NativeBackends) {
     if let Ok(mut g) = native_meter_slot().lock() {
         *g = backends
-            .values()
-            .map(|b| NativeMeterDevice {
+            .iter()
+            .map(|(name, b)| NativeMeterDevice {
+                name: name.clone(),
                 voices: b.voices.clone(),
                 stream_voices: b.stream_voices.clone(),
                 sample_rate: b.sample_rate,

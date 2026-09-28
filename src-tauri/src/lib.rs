@@ -74,6 +74,9 @@ struct AudioOutput {
     default_channels: u16,
     default_sample_rate: u32,
     is_default: bool,
+    // El motor natiu el té OBERT ara mateix (sonant o precarregat). Un dispositiu
+    // exclusiu obert no es pot sondejar; en aquest cas la freqüència ve del motor.
+    open: bool,
 }
 
 // Info d'un driver ASIO un cop carregat (sortides reals i freqüència).
@@ -157,6 +160,7 @@ fn collect_outputs(host: &cpal::Host, host_label: &str, out: &mut Vec<AudioOutpu
             default_channels,
             default_sample_rate,
             is_default,
+            open: false,
         });
     }
 }
@@ -226,6 +230,7 @@ fn collect_alsa_outputs(out: &mut Vec<AudioOutput>) {
         out.push(AudioOutput {
             host: "ALSA".to_string(),
             is_default: name == "default",
+            open: false,
             label,
             name,
             max_channels: channels,
@@ -367,6 +372,23 @@ fn list_audio_outputs() -> Result<Vec<AudioOutput>, String> {
                 let default = cpal::default_host();
                 collect_outputs(&default, default.id().name(), &mut out);
             }
+            // Marca els dispositius que el motor natiu té oberts i, si el sondeig no
+            // n'ha pogut llegir la freqüència (exclusiu i ocupat per nosaltres, p. ex.
+            // RAVENNA), fes servir la del stream obert.
+            #[cfg(feature = "native")]
+            for (name, rate) in native_output::open_devices() {
+                for o in out.iter_mut() {
+                    let same = o.name == name
+                        || (name.is_empty() && o.is_default)
+                        || (cfg!(target_os = "linux") && name == "default" && o.is_default);
+                    if same {
+                        o.open = true;
+                        if o.default_sample_rate == 0 {
+                            o.default_sample_rate = rate;
+                        }
+                    }
+                }
+            }
             out
         }))
         .map_err(|_| "Pànic enumerant els dispositius d'àudio.".to_string());
@@ -413,6 +435,7 @@ fn detect_asio() -> Result<Vec<AudioOutput>, String> {
                     default_channels: 0,
                     default_sample_rate: 0,
                     is_default: false,
+                    open: false,
                 })
                 .collect()),
             Ok(Err(e)) => Err(e),

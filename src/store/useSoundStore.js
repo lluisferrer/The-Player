@@ -198,6 +198,9 @@ export const useSoundStore = create((set, get) => ({
   // Dispositius WASAPI marcats com a "Usar" (curats a Dispositius). El Routing
   // només n'ofereix aquests; llista BUIDA = mostra'ls tots (compatibilitat).
   enabledOutputs: Array.isArray(savedGlobals.enabledOutputs) ? savedGlobals.enabledOutputs : [],
+  // Igual per als dispositius del motor NATIU (noms de cpal): els marcats com a "Use"
+  // a Settings → Devices són els únics que ofereix Routing. BUIDA = tots.
+  enabledNativeOutputs: Array.isArray(savedGlobals.enabledNativeOutputs) ? savedGlobals.enabledNativeOutputs : [],
   asioInfo: {},            // driver ASIO carregat ara: { [name]: {outs, sample_rate} } (sessió)
   audioContext: null,      // context dels cues
   playlistCtx: null,       // context de la playlist
@@ -325,6 +328,7 @@ export const useSoundStore = create((set, get) => ({
       asioMasterGain: state.asioMasterGain,
       nativeBufferSize: state.nativeBufferSize,
       enabledOutputs: state.enabledOutputs,
+      enabledNativeOutputs: state.enabledNativeOutputs,
       videoMonitorName: state.videoMonitorName,
       videoIdlePattern: state.videoIdlePattern,
       videoIdleImage: state.videoIdleImage,
@@ -380,6 +384,7 @@ export const useSoundStore = create((set, get) => ({
       asioMasterGain: globals.asioMasterGain ?? 1.0,
       nativeBufferSize: globals.nativeBufferSize ?? 0,
       enabledOutputs: Array.isArray(globals.enabledOutputs) ? globals.enabledOutputs : [],
+      enabledNativeOutputs: Array.isArray(globals.enabledNativeOutputs) ? globals.enabledNativeOutputs : [],
       videoMonitorName: globals.videoMonitorName ?? null,
       videoIdlePattern: globals.videoIdlePattern ?? 'black',
       videoIdleImage: globals.videoIdleImage ?? null,
