@@ -92,7 +92,8 @@ function probeVideoDuration(src) {
 }
 
 export function useAudioEngine() {
-  const initAudioContext = useSoundStore((s) => s.initAudioContext);
+  // Context per descodificar: a Linux és offline (no obre PulseAudio); vegeu routing.js.
+  const decodeContext = useSoundStore((s) => s.decodeContext);
   const loadAudio = useSoundStore((s) => s.loadAudio);
   const setSlotLoading = useSoundStore((s) => s.setSlotLoading);
   const setSlotPeaks = useSoundStore((s) => s.setSlotPeaks);
@@ -141,7 +142,7 @@ export function useAudioEngine() {
       // Fallback JS (decodeAudioData): drag&drop web sense ruta, o si la comanda
       // Rust falla. Descodifica tot el buffer → només apte per fitxers no gegants.
       try {
-        const ctx = initAudioContext();
+        const ctx = decodeContext();
         let arrayBuffer = bytes;
         if (!arrayBuffer) {
           if (path) arrayBuffer = await invoke('read_file_bytes', { path });
@@ -199,7 +200,7 @@ export function useAudioEngine() {
         buildPeaksBackground(slotId, { url, duration: dur }); // forma d'ona en segon pla
         return;
       }
-      const ctx = initAudioContext();
+      const ctx = decodeContext();
       const arrayBuffer = await file.arrayBuffer();
       const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
       loadAudio(slotId, file, audioBuffer, url, null);
@@ -251,7 +252,7 @@ export function useAudioEngine() {
         return;
       }
       // Cue curt: descodifica a AudioBuffer (precís)
-      const ctx = initAudioContext();
+      const ctx = decodeContext();
       const buffer = await invoke('read_file_bytes', { path }); // ArrayBuffer
       const audioBuffer = await ctx.decodeAudioData(buffer);
       loadAudio(slotId, { name: basename(path) }, audioBuffer, null, path);

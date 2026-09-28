@@ -5,7 +5,7 @@ import { availableMonitors } from '@tauri-apps/api/window';
 import { useSoundStore } from '../store/useSoundStore';
 import { CUE_COLORS } from '../lib/colors';
 import { PlaylistActionToggle } from './PlaylistActionToggle';
-import { makeAsioTargetStr, makeNativeTargetStr, isAsioTarget, isNativeTarget, targetLabel } from '../lib/outputTarget';
+import { makeAsioTargetStr, makeNativeTargetStr, isAsioTarget, isNativeTarget, targetLabel, IS_LINUX, NATIVE_DEFAULT_TARGET } from '../lib/outputTarget';
 import { getAudioPlatform, webAudioLabel } from '../lib/audioPlatform';
 
 // A partir de la info dels drivers ASIO carregats ({ [name]: {outs, sample_rate} }),
@@ -58,6 +58,9 @@ function nativeStereoOptions(nativeOutputs) {
 // `defaultLabel` és l'opció de capçalera (p. ex. "Bus Cues (per defecte)").
 // `webLabel`/`nativeLabel` són els noms dels backends segons el SO.
 function OutputSelect({ id, value, onChange, audioDevices, asioOptions, nativeOptions = [], defaultValue, defaultLabel, webLabel, nativeLabel }) {
+  // A Linux no hi ha camí Web Audio (vegeu IS_LINUX a outputTarget.js): el
+  // "Default" d'un bus és el dispositiu per defecte del motor natiu.
+  const defVal = IS_LINUX && defaultValue === 'default' ? NATIVE_DEFAULT_TARGET : defaultValue;
   // Si el valor desat és un target ASIO/natiu que no surt a les opcions (driver no
   // carregat o dispositiu absent en aquesta sessió), l'afegim com a opció "fantasma"
   // perquè el select el mostri i no es perdi en re-renderitzar (React deixaria el
@@ -67,14 +70,14 @@ function OutputSelect({ id, value, onChange, audioDevices, asioOptions, nativeOp
       ? { value, label: `${targetLabel(value)} (driver not loaded)` }
       : null;
   const orphanNative =
-    isNativeTarget(value) && !nativeOptions.some((o) => o.value === value)
+    isNativeTarget(value) && value !== defVal && !nativeOptions.some((o) => o.value === value)
       ? { value, label: `${targetLabel(value)} (device not found)` }
       : null;
 
   return (
     <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value={defaultValue}>{defaultLabel}</option>
-      {audioDevices.length > 0 && (
+      <option value={defVal}>{defaultLabel}</option>
+      {!IS_LINUX && audioDevices.length > 0 && (
         <optgroup label={`${webLabel} (Web Audio · stereo)`}>
           {audioDevices.map((d) => (
             <option key={d.deviceId} value={d.deviceId}>{d.label || `Device ${d.deviceId.slice(0, 8)}`}</option>
@@ -439,9 +442,9 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   </>
                 ) : isLinux ? (
                   <>
-                    <b>PulseAudio</b> is the system mixer (stereo, shared with other apps).
-                    <b> ALSA</b> opens a sound card directly with all its channels — exclusive
-                    access while ezyPlayer uses it, like a DAW.
+                    All audio goes through the native <b>ALSA</b> engine. <b>Default</b> plays
+                    through the system mixer (shared with other apps); a sound card opens directly
+                    with all its channels — exclusive access while ezyPlayer uses it, like a DAW.
                   </>
                 ) : (
                   <>
@@ -451,6 +454,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
                 )}
               </div>
 
+              {/* A Linux no hi ha camí Web Audio (vegeu IS_LINUX a outputTarget.js). */}
+              {!isLinux && (<>
               <div className="settings-subtitle">{webLabel} outputs (Web Audio · stereo)</div>
               <div style={DIAG_LIST_STYLE}>
                 {audioDevices.map((d) => (
@@ -467,13 +472,10 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   </label>
                 ))}
                 {audioDevices.length === 0 && (
-                  <div className="library-empty">
-                    {isLinux
-                      ? 'Web Audio plays through the system default output (PulseAudio) — change it in the system sound settings. For a specific card or multichannel, use ALSA below.'
-                      : `No ${webLabel} devices.`}
-                  </div>
+                  <div className="library-empty">{`No ${webLabel} devices.`}</div>
                 )}
               </div>
+              </>)}
 
               {hasAsio && (<>
               <div className="settings-subtitle">ASIO driver (low latency)</div>
@@ -572,8 +574,6 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   <DiagRow key={i} o={o} onTone={tone} />
                 ))}
               </div>
-            </>
-          )}
 
               <div className="settings-subtitle">Diagnostics</div>
               <div className="settings-note">
@@ -586,13 +586,17 @@ export function SettingsModal({ onClose, readOnly = false }) {
                   Open logs folder
                 </button>
               </div>
+            </>
+          )}
 
           {tab === 'routing' && (
             <>
               <div className="settings-subtitle">Outputs per bus</div>
               <div className="settings-note">
-                One output per bus. <b>{webLabel}</b> is stereo via Web Audio; <b>{nativeLabel}</b>
-                {hasAsio ? <> and <b>ASIO</b> give</> : ' gives'} real multichannel routing.
+                {IS_LINUX
+                  ? <>One output per bus, all through the native engine (<b>{nativeLabel}</b>) with real multichannel routing.</>
+                  : <>One output per bus. <b>{webLabel}</b> is stereo via Web Audio; <b>{nativeLabel}</b>
+                    {hasAsio ? <> and <b>ASIO</b> give</> : ' gives'} real multichannel routing.</>}
                 {hasAsio && ' Connect an ASIO driver in Devices to see its channels.'}
               </div>
 

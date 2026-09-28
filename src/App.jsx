@@ -4,6 +4,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Maximize, Minimize, Sun, Moon } from 'lucide-react';
 import { useSoundStore } from './store/useSoundStore';
+import { IS_LINUX } from './lib/outputTarget';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { SoundBoard } from './components/SoundBoard';
 import { CueTransport } from './components/CueTransport';
@@ -88,11 +89,18 @@ export default function App() {
     // `navigator.mediaDevices` no existeix al WKWebView de macOS Mojave (Safari 12)
     // ni en contextos no segurs: a Mac la selecció de dispositius va pel motor natiu
     // (Rust list_audio_outputs), així que aquí simplement ho ometem si no hi és.
-    const md = (typeof navigator !== 'undefined') ? navigator.mediaDevices : null;
+    // A Linux no hi ha camí Web Audio (tot va pel motor natiu, vegeu IS_LINUX a
+    // outputTarget.js): no demanem micròfon ni creem cap AudioContext, que obriria
+    // PulseAudio (i, amb RAVENNA com a sortida per defecte, a un rate incorrecte).
+    const md = (typeof navigator !== 'undefined' && !IS_LINUX) ? navigator.mediaDevices : null;
     const loadDevices = async () => {
       if (!md) return;
       try {
-        await md.getUserMedia({ audio: true }).catch(() => {});
+        // getUserMedia només per desbloquejar les ETIQUETES dels dispositius: aturem
+        // el stream de seguida (si no, el micròfon quedava capturant tota la sessió).
+        await md.getUserMedia({ audio: true })
+          .then((stream) => stream.getTracks().forEach((t) => t.stop()))
+          .catch(() => {});
         const devices = await md.enumerateDevices();
         const outputs = devices.filter((d) => d.kind === 'audiooutput');
         setAudioDevices(outputs);
@@ -101,6 +109,7 @@ export default function App() {
       }
     };
 
+    if (!md) return;
     loadDevices().then(() => useSoundStore.getState().detectOutputChannels());
     if (md && md.addEventListener) {
       md.addEventListener('devicechange', loadDevices);
@@ -238,6 +247,14 @@ export default function App() {
     return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, [outputOpen]);
 
+  // Pantalla sempre encesa (sense salvapantalles ni repòs de pantalla) en mode
+  // LIVE o amb la sortida de vídeo oberta. El repòs del SISTEMA ja el bloqueja el
+  // Rust mentre l'app és oberta (power.rs).
+  const keepDisplayAwake = isLive || outputOpen;
+  useEffect(() => {
+    invoke('set_keep_display_awake', { on: keepDisplayAwake }).catch(() => {});
+  }, [keepDisplayAwake]);
+
   // La finestra de sortida informa quan un vídeo acaba sol → reseteja el cue
   useEffect(() => {
     let un;
@@ -247,14 +264,6 @@ export default function App() {
           const id = e.payload && e.payload.slotId;
           if (id != null) useSoundStore.getState().handleVideoEnded(id);
         });
-  // Pantalla sempre encesa (sense salvapantalles ni repòs de pantalla) en mode
-  // LIVE o amb la sortida de vídeo oberta. El repòs del SISTEMA ja el bloqueja el
-  // Rust mentre l'app és oberta (power.rs).
-  const keepDisplayAwake = isLive || outputOpen;
-  useEffect(() => {
-    invoke('set_keep_display_awake', { on: keepDisplayAwake }).catch(() => {});
-  }, [keepDisplayAwake]);
-
       } catch { /* fora de Tauri */ }
     })();
     return () => { if (un) un(); };

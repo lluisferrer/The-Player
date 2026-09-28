@@ -14,7 +14,7 @@
 
 import { AudioCtx } from '../audioCtx';
 import { invoke } from '@tauri-apps/api/core';
-import { isAsioTarget, isNativeTarget, isHardwareEngineTarget, parseTarget, resolveCueTargetStr } from '../../lib/outputTarget';
+import { isAsioTarget, isNativeTarget, isHardwareEngineTarget, parseTarget, resolveCueTargetStr, platformTarget, IS_LINUX } from '../../lib/outputTarget';
 import { dispatchCue } from '../../lib/cueDispatch';
 import { isVisual, hasClip } from '../../lib/slotAudio';
 import {
@@ -30,6 +30,8 @@ import {
 // Registre de contextos Web Audio per als busos de color dels cues:
 // deviceId → AudioContext. Només el fan servir ctxForDevice i setAudioDevices.
 const cueCtxRegistry = new Map();
+// Context offline de descodificació (només Linux; vegeu decodeContext).
+let decodeCtx = null;
 
 export function createRoutingSlice(set, get) {
   return {
@@ -40,6 +42,20 @@ export function createRoutingSlice(set, get) {
       const ctx = new AudioCtx();
       set({ audioContext: ctx });
       return ctx;
+    },
+
+    // Context NOMÉS per descodificar (decodeAudioData). A Linux és un
+    // OfflineAudioContext: no obre cap stream de PulseAudio (el so hi surt sempre
+    // pel motor natiu). A la resta, el context principal de sempre.
+    decodeContext: () => {
+      if (IS_LINUX) {
+        const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+        if (Offline) {
+          if (!decodeCtx) decodeCtx = new Offline(2, 1, 48000);
+          return decodeCtx;
+        }
+      }
+      return get().audioContext || get().initAudioContext();
     },
 
     // Retorna (o crea) el context d'un dispositiu de sortida per als cues.
@@ -118,6 +134,7 @@ export function createRoutingSlice(set, get) {
 
     // Canvia el dispositiu de sortida del bus de Cues (WASAPI o ASIO).
     setSelectedDevice: async (deviceId) => {
+      deviceId = platformTarget(deviceId);
       const { audioContext } = get();
       set({ selectedDeviceId: deviceId });
       // Si el bus de Cues s'assigna a un target ASIO (string "asio:…"), NO és un
@@ -140,6 +157,7 @@ export function createRoutingSlice(set, get) {
 
     // Canvia el dispositiu de la Playlist (WASAPI o ASIO). Si sona, migra en calent.
     setPlaylistDevice: (deviceId) => {
+      deviceId = platformTarget(deviceId);
       const oldDev = get().playlistDeviceId;
       if (oldDev === deviceId) return;
       const oldHw = isHardwareEngineTarget(oldDev);   // ASIO o natiu cpal
@@ -178,6 +196,7 @@ export function createRoutingSlice(set, get) {
 
     // Canvia el dispositiu del bus de Preview. Atura qualsevol preview en curs.
     setPreviewDevice: async (deviceId) => {
+      deviceId = platformTarget(deviceId);
       // En canviar de dispositiu, atura qualsevol preview en curs (no es pot
       // migrar en calent entre WASAPI i ASIO).
       if (get().previewingSlot != null) get().stopPreview();
@@ -196,7 +215,7 @@ export function createRoutingSlice(set, get) {
       set((state) => {
         const colorOutputs = { ...state.colorOutputs };
         if (!deviceId || deviceId === 'cues') delete colorOutputs[color];
-        else colorOutputs[color] = deviceId;
+        else colorOutputs[color] = platformTarget(deviceId);
         return { colorOutputs };
       });
       get().persistGlobals();

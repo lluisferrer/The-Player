@@ -104,6 +104,40 @@ export function targetLabel(value) {
   return t.deviceId === 'default' ? 'Per defecte' : t.deviceId;
 }
 
+// ── Linux: tot pel motor natiu ─────────────────────────────────────────────
+// A Linux el WebView (WebKitGTK) no té setSinkId i el seu Web Audio surt per
+// PulseAudio, que obre el dispositiu per defecte al rate que vol (p. ex. RAVENNA
+// a 44,1 kHz, que trenca el SDP de l'AES67). Per això a Linux NO oferim el camí
+// Web Audio: qualsevol target que no sigui d'un motor de maquinari es normalitza
+// al dispositiu per defecte del motor natiu (ALSA via cpal), canals 1-2.
+// Detecció síncrona per user agent (WebKitGTK diu "X11; Linux ..."), perquè es
+// necessita en inicialitzar el store, abans de cap invoke.
+export const IS_LINUX =
+  typeof navigator !== 'undefined' &&
+  /Linux/.test(navigator.userAgent || '') &&
+  !/Android/.test(navigator.userAgent || '');
+
+// Target natiu del dispositiu per defecte del sistema, canals 1-2.
+export const NATIVE_DEFAULT_TARGET = makeNativeTargetStr('', [0, 1]);
+
+// Adapta un valor de routing d'un BUS a la plataforma (a Linux, Web Audio → natiu
+// per defecte). Fora de Linux, o si ja és ASIO/natiu, el retorna igual.
+export function platformTarget(value) {
+  if (!IS_LINUX || isHardwareEngineTarget(value)) return value;
+  return NATIVE_DEFAULT_TARGET;
+}
+
+// Igual per al routing per COLOR: 'cues'/buit vol dir "segueix el bus de Cues" i
+// es respecta; la resta passa per platformTarget.
+export function platformColorOutputs(colorOutputs) {
+  if (!IS_LINUX || !colorOutputs) return colorOutputs || {};
+  const out = {};
+  for (const [color, v] of Object.entries(colorOutputs)) {
+    if (v && v !== 'cues') out[color] = platformTarget(v);
+  }
+  return out;
+}
+
 // Resol el target de SORTIDA efectiu d'un cue (slot), aplicant el routing per
 // COLOR per damunt del bus de Cues per defecte. Centralitza la regla que avui
 // està repetida (playSlot buffer/vídeo, cueStreamEngine.buildGraph):

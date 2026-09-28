@@ -17,7 +17,7 @@ import { createLicenseSlice } from './slices/license';
 // clearAsioTelemetry / asioPosition → moguts al slice de cues (P5)
 // emitVideoPlay / emitVideoStop / emitVideoBlack / emitVideoVolume / startVideoResync / stopVideoResync → moguts al slice de cues (P5)
 import { PREVIEW_VOICE_ID } from '../lib/asioIds';
-import { makeNativeTargetStr, isAsioTarget, isNativeTarget } from '../lib/outputTarget';
+import { makeNativeTargetStr, isAsioTarget, isNativeTarget, platformTarget, platformColorOutputs } from '../lib/outputTarget';
 // emitVideoSeek / emitVideoIdlePattern → moguts al slice de vídeo (P5); emitVideoBlack/emitVideoPlay/etc. → slice de cues (P5)
 
 // SLOTS_PER_PAGE / NUM_PAGES / NUM_SLOTS / createEmptySlot → moguts al slice de cues (P5)
@@ -187,9 +187,10 @@ export const useSoundStore = create((set, get) => ({
   activeSlot: null,
   audioDevices: [],
   // Tres busos de sortida (cada un a un dispositiu estèreo)
-  selectedDeviceId: savedGlobals.cuesDeviceId ?? 'default',  // sortida dels CUES
-  playlistDeviceId: savedGlobals.playlistDeviceId ?? 'default',
-  previewDeviceId: savedGlobals.previewDeviceId ?? 'default',
+  // platformTarget: a Linux, Web Audio → motor natiu per defecte (vegeu outputTarget.js).
+  selectedDeviceId: platformTarget(savedGlobals.cuesDeviceId ?? 'default'),  // sortida dels CUES
+  playlistDeviceId: platformTarget(savedGlobals.playlistDeviceId ?? 'default'),
+  previewDeviceId: platformTarget(savedGlobals.previewDeviceId ?? 'default'),
   asioMasterGain: savedGlobals.asioMasterGain ?? 1,  // gain mestre del bus ASIO (0..1)
   // Mida de buffer del motor natiu cpal (frames per callback). 0 = Auto (període del
   // driver). Puja-la si hi ha clics/microtalls per underrun sota càrrega de CPU.
@@ -206,7 +207,7 @@ export const useSoundStore = create((set, get) => ({
   previewingSlot: null,    // slot que sona ara pel bus de preview
   previewVoiceId: PREVIEW_VOICE_ID, // id de la veu ASIO del preview actual (rotatiu)
   previewStartedAt: 0,     // instant (previewCtx) en què va començar el preview
-  colorOutputs: savedGlobals.colorOutputs || {}, // { color: deviceId } routing per grup
+  colorOutputs: platformColorOutputs(savedGlobals.colorOutputs), // { color: deviceId } routing per grup
   // P3: el motor de cada bus (WASAPI/ASIO/natiu) es codifica al seu propi target
   // (selectedDeviceId/playlistDeviceId/previewDeviceId/colorOutputs). Ja no hi ha un
   // flag global useNativeCueEngine ni camps nativeCue*/nativePlaylist*/nativePreview*
@@ -367,10 +368,10 @@ export const useSoundStore = create((set, get) => ({
       cuesCrossfade: g.cuesCrossfade ?? 0,
       cuesDuck: g.cuesDuck ?? false,
       cuesStopPlaylist: g.cuesStopPlaylist ?? false,
-      selectedDeviceId: g.cuesDeviceId ?? '',
-      playlistDeviceId: g.playlistDeviceId ?? '',
-      previewDeviceId: g.previewDeviceId ?? '',
-      colorOutputs: globals.colorOutputs ?? {},
+      selectedDeviceId: platformTarget(g.cuesDeviceId ?? ''),
+      playlistDeviceId: platformTarget(g.playlistDeviceId ?? ''),
+      previewDeviceId: platformTarget(g.previewDeviceId ?? ''),
+      colorOutputs: platformColorOutputs(globals.colorOutputs),
       duckEnabled: globals.duckEnabled ?? false,
       duckAmount: globals.duckAmount ?? 0.3,
       duckAttack: globals.duckAttack ?? 0.3,
