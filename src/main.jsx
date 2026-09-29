@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import "./fonts";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import { VideoOutput } from "./components/VideoOutput";

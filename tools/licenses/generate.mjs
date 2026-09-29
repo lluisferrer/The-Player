@@ -112,7 +112,8 @@ Symphonia (MPL-2.0)
   https://github.com/pdeljanov/Symphonia.
 
 Fonts: Inter and JetBrains Mono
-  Licensed under the SIL Open Font License 1.1 (https://openfontlicense.org).
+  Bundled with the application (via the @fontsource packages listed below) and
+  licensed under the SIL Open Font License 1.1 (https://openfontlicense.org).
   Inter: https://github.com/rsms/inter
   JetBrains Mono: https://github.com/JetBrains/JetBrainsMono
 `;
