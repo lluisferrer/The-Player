@@ -60,6 +60,11 @@
     "shortDescription": "Live-event audio & video cue player",
     "longDescription": "ezyPlayer is a professional cue player for live events: a QLab-style cue grid with GO sequencing, a playlist with crossfades and ducking, video and slides output to a second screen, and a native low-latency audio engine with multichannel routing (ASIO on Windows).",
     "homepage": "https://ezyplayer.app",
+    "licenseFile": "../legal/EULA.txt",
+    "resources": {
+      "../legal/EULA.txt": "EULA.txt",
+      "../legal/THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt"
+    },
     "windows": {
       "nsis": {
         "installMode": "both",

@@ -1,0 +1,171 @@
+DRAFT - PENDING LEGAL REVIEW - Version 1.0-draft, 29 September 2026
+
+ezyPlayer END USER LICENSE AGREEMENT
+
+Please read this agreement carefully. By installing, activating or using
+ezyPlayer you agree to it. If you do not agree, do not install or use the
+Software.
+
+LICENSOR
+Lluís Ferrer Prats, trading as "ezyApps"
+NIF 40534791M
+C/ Ciutadans 3, 17004 Girona, Spain
+Contact: [CONTACT EMAIL]
+("we", "us")
+
+1. DEFINITIONS
+"Software" means ezyPlayer, including its installer, documentation and any
+updates we provide to you.
+"You" means the person or organisation that acquires a licence and, where
+applicable, its employees and contractors who operate the Software for it.
+"License Key" means the key we issue to you that activates a licence.
+"Computer" means one physical or virtual machine.
+"Update Period" means the 12 months that follow the date your License Key is
+issued.
+"Covered Versions" means every version of the Software we release during the
+Update Period.
+
+2. LICENCE GRANT
+2.1 Subject to this agreement and to payment of the applicable price, we grant
+you a perpetual, non-exclusive, worldwide licence to install and use the
+Covered Versions on up to two (2) Computers owned or controlled by you, for
+example a show computer and a backup or programming computer. Both Computers
+may run the Software at the same time.
+2.2 A Covered Version keeps working indefinitely after the Update Period ends.
+Versions released after the Update Period are not included; you may acquire
+them under the terms we offer at that time.
+2.3 We do not undertake to release updates, or any particular feature, during
+the Update Period.
+2.4 All rights not expressly granted are reserved by us. You are granted a
+licence; the Software is not sold to you.
+
+3. EVALUATION (DEMO) MODE
+Without a valid License Key the Software runs in evaluation mode, with all
+features available but with periodic audio dips and a watermark on video
+output. Evaluation mode is provided free of charge, only for you to decide
+whether to acquire a licence, and without any warranty.
+
+4. TRANSFER
+4.1 You may transfer your licence to another person or organisation,
+provided that (a) you transfer the entire licence, (b) you remove the
+Software from, and deactivate it on, all your Computers, (c) the recipient
+accepts this agreement, and (d) you notify us so that we can issue a new
+License Key in the recipient's name.
+4.2 The previous License Key stops being valid once the new key is issued.
+The Update Period does not restart on transfer.
+
+5. RESTRICTIONS
+Except as expressly permitted by this agreement or by applicable law, you
+may not:
+(a) share, publish, sell or otherwise distribute your License Key, or use it
+on more Computers than your licence allows;
+(b) circumvent, disable or tamper with the licence verification, the
+evaluation mode or any other protection mechanism;
+(c) copy, modify, translate or create derivative works of the Software,
+except for backup copies necessary for its use;
+(d) decompile, disassemble or reverse engineer the Software, except to the
+extent that applicable law (including Articles 5 and 6 of Directive
+2009/24/EC) permits it notwithstanding this restriction;
+(e) rent, lease or lend the Software, or provide it to third parties as a
+hosted service;
+(f) remove or alter any copyright, trademark or licence notice.
+Operating the Software to provide services to your own clients (for
+example, running audio and video playback at an event) is permitted.
+
+6. LICENSE KEYS, ACTIVATION AND PERSONAL DATA
+6.1 Your License Key contains the name and email address you provided at
+purchase. Keep it confidential; you are responsible for any use of it.
+6.2 The Software does not need an internet connection to run. Future
+versions may offer, or require once per Computer, an online activation that
+sends your License Key and a technical identifier of the Computer to our
+servers in order to register and count your Computers.
+6.3 The Software writes diagnostic log files to your Computer. They are not
+sent to us unless you choose to send them.
+6.4 We process personal data in accordance with our Privacy Policy
+[PRIVACY POLICY URL] and the General Data Protection Regulation.
+
+7. OWNERSHIP AND THIRD-PARTY COMPONENTS
+7.1 The Software, its code, design and trademarks, including "ezyPlayer" and
+"ezyApps", are the property of the Licensor.
+7.2 The Software includes third-party components distributed under their own
+licences, listed in the file THIRD-PARTY-NOTICES.txt installed with the
+Software. Those licences govern the respective components, and nothing in
+this agreement limits the rights they grant you.
+7.3 ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+
+8. YOUR CONTENT AND PERFORMANCE RIGHTS
+The Software plays audio, video, images and documents that you choose. This
+agreement grants you no rights in that content. You are solely responsible
+for holding every licence needed to reproduce and publicly perform or
+communicate it (including licences from collective management organisations
+such as SGAE in Spain) and for complying with applicable law.
+
+9. LIVE USE AND OPERATOR RESPONSIBILITY
+The Software is designed for live events, but no software can be guaranteed
+free of faults, and hardware, drivers, operating systems and networks can
+fail. You are responsible for testing your show before use, for keeping
+backups of your media and show files, and for providing a level of
+redundancy (for example a backup Computer or playback source) appropriate to
+the importance of each event.
+
+10. WARRANTY
+10.1 If you are a consumer, you have the statutory rights of conformity for
+digital content provided by applicable law (in Spain, the Real Decreto
+Legislativo 1/2007), and nothing in this agreement limits them.
+10.2 If you are not a consumer, and to the maximum extent permitted by law,
+the Software is provided "as is", without warranties of any kind, express or
+implied, including warranties of merchantability, fitness for a particular
+purpose, uninterrupted or error-free operation, and non-infringement.
+
+11. LIMITATION OF LIABILITY
+11.1 To the maximum extent permitted by law, we shall not be liable for any
+indirect or consequential loss, including loss of revenue or profit,
+cancelled or disrupted events, loss of data, or damage to reputation.
+11.2 To the maximum extent permitted by law, our total liability arising out
+of or in connection with the Software or this agreement is limited to the
+amount you paid for your licence.
+11.3 Nothing in this agreement limits or excludes liability for fraud, wilful
+misconduct or gross negligence, for death or personal injury, or any other
+liability that cannot be limited or excluded by law. If you are a consumer,
+sections 11.1 and 11.2 apply only to the extent that the law allows.
+
+12. REFUNDS AND RIGHT OF WITHDRAWAL
+12.1 Refunds are provided in the cases required by law. Because a fully
+functional evaluation mode is available, the purchase process asks you to
+request immediate delivery of your License Key and to acknowledge that, as a
+consumer, you thereby lose the 14-day right of withdrawal for digital content
+once delivery has begun, as permitted by applicable law.
+12.2 Beyond those cases, you may ask us to review your situation. We will
+consider each request individually and may, at our discretion, grant a full
+or partial refund.
+12.3 When a payment is refunded or reversed, the corresponding licence ends
+and its License Key is revoked.
+
+13. TERMINATION
+13.1 This agreement remains in force until terminated. It terminates
+automatically if you materially breach it and, where the breach can be
+remedied, you fail to remedy it within 15 days of our notice.
+13.2 On termination you must stop using the Software and remove it from all
+your Computers. Sections 7, 8, 11 and 14 survive termination.
+
+14. GOVERNING LAW AND JURISDICTION
+14.1 This agreement is governed by the laws of Spain.
+14.2 If you are not a consumer, the courts of Girona (Spain) have exclusive
+jurisdiction over any dispute arising from it.
+14.3 If you are a consumer, you may bring proceedings in the courts of your
+place of residence, and you keep the protection of the mandatory consumer
+laws of your country of residence.
+
+15. GENERAL
+15.1 This agreement, together with the terms of sale accepted at purchase,
+is the entire agreement between you and us regarding the Software.
+15.2 If any provision is held invalid, the remaining provisions remain in
+effect and the invalid provision is replaced by a valid one that comes as
+close as possible to its purpose.
+15.3 We may publish revised versions of this agreement for future versions
+of the Software. The version you accepted continues to govern the versions
+you already have.
+15.4 Translations of this agreement may be provided for convenience. For
+non-consumers the English version prevails.
+
+(c) 2026 Lluís Ferrer Prats (ezyApps). All rights reserved.

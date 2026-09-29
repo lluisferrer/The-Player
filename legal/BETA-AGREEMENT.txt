@@ -1,0 +1,116 @@
+﻿DRAFT - PENDING LEGAL REVIEW - Version 1.0-draft, 29 September 2026
+
+ezyPlayer BETA TEST AGREEMENT
+
+This agreement is between:
+
+Lluís Ferrer Prats, trading as "ezyApps", NIF 40534791M,
+C/ Ciutadans 3, 17004 Girona, Spain ("we", "us"), and
+
+Tester name: ________________________________________
+Organisation (if any): ______________________________
+ID / VAT number: ____________________________________
+Email: ______________________________________________
+("you").
+
+1. PURPOSE
+We invite you to test pre-release versions of ezyPlayer (the "Beta
+Software") in real working conditions and to tell us about the problems you
+find, so that we can improve it before its commercial release.
+
+2. BETA LICENCE
+2.1 We grant you a free, personal, non-exclusive, non-transferable licence to
+install and use the Beta Software on up to two (2) Computers owned or
+controlled by you, during the Beta Period.
+2.2 The "Beta Period" starts when you sign this agreement and ends on
+[END DATE], or earlier when either party ends it under section 9. Beta
+License Keys may stop working at the end of the Beta Period.
+2.3 Unless stated otherwise here, the ezyPlayer End User License Agreement
+supplied with the Beta Software applies, in particular its restrictions
+(section 5), ownership and third-party components (section 7) and content
+and performance rights (section 8). If it conflicts with this agreement,
+this agreement prevails during the Beta Period.
+2.4 You may use the Beta Software at real events, including paid work for
+your clients, at your own risk as described in section 4.
+
+3. WHAT WE ASK OF YOU
+3.1 Use the Beta Software reasonably often and report the problems you find
+(what happened, what you expected, and if possible the steps to reproduce
+it), using the channel we indicate.
+3.2 When you report a problem, you may attach the log files from the
+Software's logs folder (Settings > Open logs folder). Logs may contain file
+names and paths of your media; review them before sending if that matters to
+you. Sending logs is always your choice.
+3.3 Do not share the Beta Software, its installers or your Beta License Key
+with anyone outside your organisation.
+
+4. PRE-RELEASE SOFTWARE - YOUR RISK
+4.1 The Beta Software is unfinished. It may contain errors, stop working,
+lose data, or behave differently from the final version, and it may change
+or be withdrawn at any time.
+4.2 Before using it at an event you must test your show with it, keep
+backups of your media and show files, and have a fallback playback system
+ready that you can switch to without the Beta Software.
+4.3 To the maximum extent permitted by law, the Beta Software is provided
+"as is", without warranties of any kind.
+
+5. LIABILITY
+5.1 Because the Beta Software is provided free of charge for testing, and to
+the maximum extent permitted by law, we shall not be liable for any loss
+arising from its use, including loss of revenue or profit, cancelled or
+disrupted events, loss of data, or damage to reputation.
+5.2 Nothing in this agreement limits or excludes liability for fraud, wilful
+misconduct or gross negligence, for death or personal injury, or any other
+liability that cannot be limited or excluded by law.
+
+6. FEEDBACK
+6.1 "Feedback" means the reports, suggestions, ideas and comments you give us
+about the Software.
+6.2 You grant us a free, perpetual, irrevocable, worldwide licence to use,
+modify and incorporate your Feedback into our products, without any
+obligation or compensation to you. You are not obliged to give Feedback on
+any particular topic.
+6.3 We will not publish your name, or attribute Feedback to you publicly,
+without your permission.
+
+7. CONFIDENTIALITY
+7.1 Until we publicly release the corresponding version, you agree not to
+publish reviews, screenshots, videos, performance measurements or
+descriptions of unreleased features of the Beta Software without our
+permission.
+7.2 You may say that you take part in the ezyPlayer beta, and you may
+operate the Beta Software in front of your clients and audiences as part of
+your normal work.
+7.3 This section does not apply to information that is or becomes public
+through no fault of yours.
+
+8. PERSONAL DATA
+We use your contact details and the logs you choose to send only to run the
+beta programme and fix problems, and we delete them when they are no longer
+needed for that purpose. You may exercise your data protection rights
+(access, rectification, erasure, objection, restriction and portability) by
+writing to [CONTACT EMAIL], and you may lodge a complaint with the Spanish
+Data Protection Agency (www.aepd.es).
+
+9. TERM AND END
+9.1 Either party may end this agreement at any time by email.
+9.2 When the agreement ends, you must stop using the Beta Software once
+your Beta License Key expires and remove it if we ask you to. Sections 4, 5,
+6, 7 and 10 survive the end of the agreement.
+
+10. GOVERNING LAW AND JURISDICTION
+This agreement is governed by the laws of Spain. The courts of Girona
+(Spain) have jurisdiction over any dispute arising from it, except where
+mandatory law gives you the right to bring proceedings elsewhere.
+
+[OPTIONAL - delete if not offered]
+11. THANK-YOU LICENCE
+If you take part actively until the end of the Beta Period, we will give you
+a full ezyPlayer licence [free of charge / with a __% discount].
+
+Signed in ______________, on ____ / ____ / ________
+
+For ezyApps:                         The tester:
+
+
+Lluís Ferrer Prats                   ________________________

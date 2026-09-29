@@ -12,3 +12,6 @@
 *.mp3 binary
 *.flac binary
 *.ogg binary
+
+# Textos legals: CRLF (es mostren en diàlegs de Windows i Bloc de notes)
+legal/*.txt text eol=crlf
