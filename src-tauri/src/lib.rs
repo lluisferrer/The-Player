@@ -10,6 +10,9 @@ mod license_canon;
 // Inhibició del repòs del sistema / pantalla durant un show (sempre compilat).
 mod power;
 
+// Shows com a carpeta autocontinguda (crear carpeta, copiar mèdia a Media/).
+mod show;
+
 // Servidor de mèdia local per HTTP (només s'arrenca a Linux: el <video> de
 // WebKitGTK no reprodueix des del protocol asset://).
 mod media_server;
@@ -2822,6 +2825,44 @@ fn native_stop() -> Result<(), String> {
     }
 }
 
+// ── Tancament de l'app ───────────────────────────────────────────────────────
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// La UI té canvis sense desar al show: en clicar la X, preguntar abans de sortir.
+static CLOSE_GUARD: AtomicBool = AtomicBool::new(false);
+// S'ha avisat la UI d'un tancament i encara no ha respost (close_ack).
+static CLOSE_PENDING: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn set_close_guard(on: bool) {
+    CLOSE_GUARD.store(on, Ordering::SeqCst);
+}
+
+// La UI ha rebut `app-close-requested` i està preguntant a l'usuari.
+#[tauri::command]
+fn close_ack() {
+    CLOSE_PENDING.store(false, Ordering::SeqCst);
+}
+
+// Surt de l'app alliberant els motors d'àudio.
+fn quit_app(app: &tauri::AppHandle) {
+    // Allibera també el driver ASIO (ASIOExit) abans de sortir: amb drivers USB
+    // delicats, sortir sense alliberar pot deixar el dispositiu segrestat o penjar
+    // el teardown. Espera acotada a 2 s.
+    #[cfg(feature = "asio")]
+    asio_release_on_close();
+    #[cfg(feature = "native")]
+    let _ = native_output::shutdown();
+    app.exit(0);
+}
+
+// La UI confirma el tancament (desat fet o "Don't save").
+#[tauri::command]
+fn app_quit(app: tauri::AppHandle) {
+    quit_app(&app);
+}
+
 // ── Fitxers de sessió (.ezyshow / .json) ─────────────────────────────────────
 //
 // `read_file_bytes` és restringit a extensions de MÈDIA (A3), de manera que no
@@ -2849,8 +2890,29 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
         ));
     }
 
-    std::fs::write(&path, contents.as_bytes())
-        .map_err(|e| format!("No s'ha pogut escriure {}: {}", path, e))
+    // Escriptura ATÒMICA: primer a un fitxer temporal al costat i després
+    // reanomenat. Si l'app o l'ordinador cauen a mig desar, el show anterior queda
+    // intacte (mai un .ezyshow a mitges).
+    let tmp = format!("{path}.tmp");
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(contents.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, &path)
+    };
+    match write() {
+        Ok(()) => {
+            log::info!("[show] desat {path}");
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            log::warn!("[show] no s'ha pogut desar {path}: {e}");
+            Err(format!("No s'ha pogut escriure {}: {}", path, e))
+        }
+    }
 }
 
 // Llegeix un fitxer de text (contingut JSON) des de la ruta absoluta indicada.
@@ -3161,6 +3223,12 @@ pub fn run() {
             probe_duration,
             write_text_file,
             read_text_file,
+            show::show_create,
+            show::show_import_media,
+            show::show_exists,
+            set_close_guard,
+            close_ack,
+            app_quit,
             license::license_status,
             license::license_info,
             license::activate_license,
@@ -3174,18 +3242,22 @@ pub fn run() {
         // net (drop dels streams cpal al seu fil → WASAPI/CoreAudio no penja) i
         // sortim de TOTA l'app. Sense això, si quedava oberta la finestra de sortida
         // de vídeo o algun stream actiu, el procés no acabava de tancar-se.
+        //
+        // Si el show té canvis sense desar (la UI activa CLOSE_GUARD), no es tanca:
+        // s'avisa la UI (`app-close-requested`), que pregunta i després crida
+        // `app_quit`. Si la UI no respon (no fa `close_ack`), una segona X tanca igual.
         .on_window_event(|window, event| {
-            use tauri::Manager;
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            use tauri::{Emitter, Manager};
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
-                    // Allibera també el driver ASIO (ASIOExit) abans de sortir: amb
-                    // drivers USB delicats, sortir sense alliberar pot deixar el
-                    // dispositiu segrestat o penjar el teardown. Espera acotada a 2 s.
-                    #[cfg(feature = "asio")]
-                    asio_release_on_close();
-                    #[cfg(feature = "native")]
-                    let _ = native_output::shutdown();
-                    window.app_handle().exit(0);
+                    let guard = CLOSE_GUARD.load(Ordering::SeqCst);
+                    let unanswered = CLOSE_PENDING.swap(true, Ordering::SeqCst);
+                    if guard && !unanswered {
+                        api.prevent_close();
+                        let _ = window.emit("app-close-requested", ());
+                        return;
+                    }
+                    quit_app(window.app_handle());
                 }
             }
         })

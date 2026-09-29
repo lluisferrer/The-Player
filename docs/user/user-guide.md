@@ -9,20 +9,22 @@
 - [Playlist](#playlist)
 - [Audio outputs and routing](#audio-outputs-and-routing)
 - [EDIT and LIVE mode](#edit-and-live-mode)
-- [Show files and backups](#show-files-and-backups)
+- [Shows and files](#shows-and-files)
 - [Settings reference](#settings-reference)
 - [Licence](#licence)
 
 ## The main window
 
-The header contains, from left to right:
+The header shows the name of the open show, with a dot (●) when it has unsaved
+changes, and the progress while files are being copied into the show folder.
+Then, from left to right:
 
 | Control | What it does |
 |---|---|
 | **CUES / PLAYLIST** | Switches between the cue grid and the playlist (keys **9** and **0**). |
 | **EDIT / ● LIVE** | Locks the show for performance. See [EDIT and LIVE mode](#edit-and-live-mode). |
 | **VIDEO** | Opens or closes the video output window on the second screen. |
-| **FILES** | Saved cue sets, saved playlists and show files. |
+| **FILES** | New, open, save and recent shows. |
 | **SETTINGS** | Devices, routing, video, cue and playlist defaults, licence. |
 | Sun / moon | Day (light) or night (dark) theme. |
 | Full screen | Full-screen main window (**F11**). |
@@ -51,8 +53,9 @@ Z X C V B N M ,
   the end of the page.
 - **Right-click** an empty or loaded cue to choose a file.
 
-A cue remembers the **path** of its file, not a copy of it. If you move or rename
-the file, the cue shows **FILE MISSING · click to reload**: put the file back and
+Every file you add is **copied into the show folder** (`Media`), in the background:
+the cue can be played straight away. If a file cannot be found when a show is
+opened, the cue shows **FILE MISSING · click to reload**: put the file back and
 click the cue.
 
 Very long audio files (DJ sets, ambiences of an hour or more) are played by
@@ -200,7 +203,7 @@ The ducked level, attack, release and hold time are in **Settings → Playlist**
 
 Stop All in the cue view does not stop the playlist: use the playlist's own stop.
 
-Save and load playlists from **FILES** while in the playlist view.
+The playlist is part of the show: its tracks are copied into the show folder too.
 
 ## Audio outputs and routing
 
@@ -245,21 +248,45 @@ Leaving LIVE asks for confirmation.
 While LIVE mode is on, or the video output is open, ezyPlayer keeps the screen
 awake. It always prevents the computer from going to sleep while it runs.
 
-## Show files and backups
+## Shows and files
 
-ezyPlayer saves the session automatically: when you reopen it, your cues, playlist
-and settings are back.
+A **show** is a folder that contains everything it needs:
 
-In **FILES** (cue view):
+```
+Gala 2026/
+├── Gala 2026.ezyshow     cues, playlist and show settings
+└── Media/                a copy of every file the show uses
+```
 
-- **Saved cue sets**: name and save the current grid, and load it later.
-- **Export show… / Import show…**: the whole session (cues, playlist and settings)
-  as a `.ezyshow` file, for backups and for moving a show to another computer.
+Every file you add (cues, playlist tracks, the blackout image) is copied into
+`Media` when you add it. The show refers to its files relative to its folder, so
+you can copy the whole folder to a USB drive or another computer (Windows or
+Linux) and open it there.
 
-A show file contains the **paths** to your media, not the media itself. To move a
-show to another computer, copy the media too and keep the same folder path (for
-example `D:\Shows\MyShow\` on both computers). Cues whose files are not found show
-FILE MISSING.
+In **FILES**:
+
+| Button | What it does |
+|---|---|
+| **New show…** | Creates an empty show in a new folder. You choose its name and location (by default `Documents\ezyPlayer Shows`). |
+| **Open show…** | Opens a `.ezyshow` file. |
+| **Save** | Saves the open show. If files are still being copied, it waits for them. |
+| **Save as…** | Saves the show in a new folder, copying all its files there. Useful to make a variation of a show. |
+| **Recent shows** | Opens a show you used recently. |
+
+ezyPlayer reopens the last show when it starts, and asks before closing, creating
+or opening another show if there are unsaved changes. There are no keyboard
+shortcuts for these commands, so a show cannot be saved or replaced by accident
+during a performance.
+
+**What is stored in the show, and what is not.** The show contains the cues, the
+playlist, fades, crossfades, ducking and the blackout screen. The settings of the
+computer are not in the show and do not change when you open one: audio devices,
+routing (including the output of each colour), ASIO, buffer size, video monitor and
+video audio routing. Set them once on each computer.
+
+**Shows from older versions.** ezyPlayer 0.9 and earlier saved shows as a single
+file with references to the original media. When you open one, ezyPlayer asks you
+to save it as a show folder and copies its files into it.
 
 ## Settings reference
 

@@ -86,6 +86,8 @@ export function Playlist() {
       if (!sel) return;
       const paths = Array.isArray(sel) ? sel : [sel];
       addPlaylistTracks(paths.map((p) => ({ filePath: p, label: basename(p) })));
+      // Còpia a la carpeta Media/ del show, en segon pla (les pistes ja sonen des de l'original).
+      for (const p of paths) useSoundStore.getState().adoptMedia(p);
     } catch (e) {
       console.warn('No s\'han pogut afegir pistes:', e);
     }

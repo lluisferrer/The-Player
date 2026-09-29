@@ -398,7 +398,11 @@ export function SoundButton({ slotId }) {
         multiple: false,
         filters: [{ name: 'Media', extensions: ['mp3', 'mpeg', 'mpg', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'mp4', 'webm', 'm4v', 'mov', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'pdf'] }],
       });
-      if (path) await loadFromPath(slotId, path);
+      if (path) {
+        await loadFromPath(slotId, path);
+        // Còpia a la carpeta Media/ del show, en segon pla.
+        useSoundStore.getState().adoptMedia(path);
+      }
     } catch (err) {
       console.warn('No s\'ha pogut obrir el fitxer:', err);
     }

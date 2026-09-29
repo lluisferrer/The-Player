@@ -244,6 +244,8 @@ export function SettingsModal({ onClose, readOnly = false }) {
       });
       if (path) {
         setVideoIdleImage(path);
+        // Forma part del show: còpia a la carpeta Media/ (en segon pla).
+        useSoundStore.getState().adoptMedia(path);
         // En triar imatge, passa directament al mode 'custom' (comoditat).
         if (videoIdlePattern !== 'custom') setVideoIdlePattern('custom');
       }

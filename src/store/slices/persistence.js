@@ -1,8 +1,9 @@
 // Slice de PERSISTÈNCIA (P5 — divisió del store en slices).
 //
 // Concentra en un sol lloc tota l'escriptura a localStorage de la sessió, com
-// demanava l'auditoria. És una FACTORY que rep get(): aquestes accions només
-// LLEGEIXEN l'estat i escriuen a disc (no criden set()). S'incorpora al store amb
+// demanava l'auditoria. És una FACTORY que rep get(): aquestes accions LLEGEIXEN
+// l'estat i escriuen a disc; després demanen al slice de show que recalculi si hi
+// ha canvis sense desar (refreshShowDirty). S'incorpora al store amb
 // `...createPersistenceSlice(get)`. La LECTURA inicial (loaders) es manté a
 // useSoundStore.js perquè s'executa a l'inici del mòdul, abans de crear el store.
 
@@ -26,6 +27,7 @@ export function createPersistenceSlice(get) {
         duckEnabled, duckAmount, duckAttack, duckRelease, duckHold, asioMasterGain, nativeBufferSize, enabledOutputs, enabledNativeOutputs, videoMonitorName, videoIdlePattern, videoIdleImage, videoIdleImageFit, videoOutputOpen,
         separateVideoAudio, tileVideoMirror,
       }));
+      get().refreshShowDirty();
     },
 
     persistPlaylist: () => {
@@ -33,6 +35,7 @@ export function createPersistenceSlice(get) {
       localStorage.setItem('the-player-playlist', JSON.stringify({
         tracks: playlist, crossfade, repeatMode: playlistRepeatMode, shuffle: playlistShuffle, volume: playlistVolume,
       }));
+      get().refreshShowDirty();
     },
 
     persistSlots: () => {
@@ -57,6 +60,7 @@ export function createPersistenceSlice(get) {
         continueMode: s.continueMode,
       }));
       localStorage.setItem('the-player-slots', JSON.stringify({ v: SLOTS_SCHEMA, slots: data }));
+      get().refreshShowDirty();
     },
   };
 }

@@ -12,10 +12,22 @@
 
 ## A cue shows FILE MISSING
 
-The file is not at the path the cue remembers: it was moved, renamed, or is on a
-drive that is not connected. Put the file back at the same path (or connect the
-drive) and click the cue to reload it. Otherwise load the file again by dragging it
-onto the cue or with right-click.
+The file is not where the show expects it: usually it was deleted or renamed
+inside the show's `Media` folder, or the show was copied without that folder. Put
+the file back (or copy the complete show folder again) and click the cue to reload
+it. Otherwise load the file again by dragging it onto the cue or with right-click.
+
+## "Could not copy … into the show folder"
+
+The file could not be copied into the show's `Media` folder, usually because the
+disk is full or the folder is read-only. The cue still works from the file's
+original location, but the show is not complete: free some space and add the
+file again.
+
+## "The last show was not found"
+
+The show that was open last time has been moved, renamed or deleted, or is on a
+drive that is not connected. Use **Open show…** to open it from its new location.
 
 ## A cue shows ERROR, or stays amber
 

@@ -30,7 +30,15 @@ sound briefly mutes every few minutes and the video output shows a watermark.
 The licence is stored on the computer and works offline from then on. You do not
 need internet to start a show.
 
-## 3. Choose your audio outputs
+## 3. Create a show
+
+The first time you open ezyPlayer, choose **New show…** and give it a name. ezyPlayer
+creates a folder for it (by default in `Documents\ezyPlayer Shows`). Every file you
+add to the show is copied into that folder, so the show is always complete.
+
+Next time, ezyPlayer reopens your last show.
+
+## 4. Choose your audio outputs
 
 1. Click **SETTINGS → Devices**. Tick the sound cards you will use. Use the
    numbered **Test tone** buttons to check which physical output each channel is.
@@ -44,7 +52,7 @@ need internet to start a show.
 If you are unsure, leave everything on **Default**: ezyPlayer plays through the
 computer's default output.
 
-## 4. Load some cues
+## 5. Load some cues
 
 The **CUES** view shows a grid of 32 cues (8 × 4). Each cue has a keyboard key:
 
@@ -56,13 +64,14 @@ Z X C V B N M ,
 ```
 
 - **Drag** audio, video, image or PDF files from your file explorer onto a cue.
-  Dropping several files fills the following cues in order.
+  Dropping several files fills the following cues in order. The cue plays at once;
+  meanwhile the file is copied into the show folder (the header shows the progress).
 - Or **right-click** a cue to choose a file.
 
 Supported files: MP3, WAV, FLAC, OGG, M4A/AAC · MP4, MOV, M4V, WebM · JPG, PNG,
 WebP, GIF, BMP · PDF.
 
-## 5. Play
+## 6. Play
 
 - **Click** a cue to start it; click it again to stop it with a fade.
 - Press its **key** to start it from the beginning.
@@ -70,17 +79,17 @@ WebP, GIF, BMP · PDF.
   the following cue. This is how you run a show in order.
 - Press **Esc** to **stop all cues** (panic).
 
-## 6. Video and slides
+## 7. Video and slides
 
 Connect a second screen (projector, LED processor) and click **VIDEO** in the
 header. The output window opens full screen on the second monitor. Video, image
 and PDF cues now appear there when fired.
 
-## 7. Save your work
+## 8. Save your work
 
-ezyPlayer saves your session automatically and restores it the next time it
-opens. To keep a copy or move a show to another computer, use **FILES → Export
-show…** (see [Show files](user-guide.md#show-files-and-backups)).
+Click **FILES → Save**. The show name in the header shows a dot (●) while there
+are unsaved changes, and ezyPlayer asks before closing if you have not saved.
+See [Shows and files](user-guide.md#shows-and-files).
 
 ## Next steps
 

@@ -9,6 +9,7 @@ import { createRoutingSlice } from './slices/routing';
 import { createPlaylistSlice, savedPlaylist, consumePlNextId } from './slices/playlist';
 import { createCuesSlice, createEmptySlot, NUM_PAGES, NUM_SLOTS } from './slices/cues';
 import { createLicenseSlice } from './slices/license';
+import { createShowSlice } from './slices/show';
 // AudioCtx → mogut al slice de routing (P5); ja no cal aquí
 // duckAdd/duckRemove/duckReset/duckRefresh → moguts al slice de cues (P5)
 // csPlay/csStop/csPause/csResume/csSeek/csSetVolume → moguts al slice de cues (P5)
@@ -136,6 +137,8 @@ export const useSoundStore = create((set, get) => ({
   ...createCuesSlice(set, get),
   // Slice de llicència L1 (licenseState/refreshLicense/activateLicense/deactivateLicense).
   ...createLicenseSlice(set, get),
+  // Show com a document (carpeta amb Media/): show obert, canvis, recents, còpia de mèdia.
+  ...createShowSlice(set, get),
   slots: initialSlots,
 
   // ── Notificacions efímeres (P1: contracte d'errors motor→UI) ──
@@ -282,124 +285,7 @@ export const useSoundStore = create((set, get) => ({
   // playlistNext / playlistPrev / playlistPlayIndex / setPlaylistSelected /
   // movePlaylistSelection / playlistPlaySelected / playlistSeek → slice de playlist (P5).
 
-  // ── Exportació / importació de sessió completa (P2 — Show file) ─────────────
-
-  // Retorna un objecte JS serialitzable amb tota la sessió (cues + globals + playlist).
-  // Utilitza els mateixos camps que persistGlobals, persistPlaylist i saveSet per no divergir.
-  exportSessionData: () => {
-    const state = get();
-
-    // Camps de cada slot (mirall exacte de saveSet de useLibrary)
-    const slots = state.slots
-      .map((s) => ({
-        id: s.id,
-        filePath: s.filePath,
-        label: s.label,
-        mediaType: s.mediaType,
-        volume: s.volume,
-        startPoint: s.startPoint,
-        stopPoint: s.stopPoint,
-        fadeIn: s.fadeIn,
-        fadeOut: s.fadeOut,
-        loop: s.loop,
-        color: s.color,
-        stopOthers: s.stopOthers,
-        duck: s.duck,
-        stopPlaylist: s.stopPlaylist,
-        preWait: s.preWait,
-        continueMode: s.continueMode,
-      }))
-      .filter((s) => s.filePath || s.label); // només slots ocupats
-
-    // Globals (mirall exacte de persistGlobals)
-    const globals = {
-      globalFadeIn: state.globalFadeIn,
-      globalFadeOut: state.globalFadeOut,
-      cuesStopOthers: state.cuesStopOthers,
-      cuesCrossfade: state.cuesCrossfade,
-      cuesDuck: state.cuesDuck,
-      cuesStopPlaylist: state.cuesStopPlaylist,
-      cuesDeviceId: state.selectedDeviceId,
-      playlistDeviceId: state.playlistDeviceId,
-      previewDeviceId: state.previewDeviceId,
-      colorOutputs: state.colorOutputs,
-      duckEnabled: state.duckEnabled,
-      duckAmount: state.duckAmount,
-      duckAttack: state.duckAttack,
-      duckRelease: state.duckRelease,
-      duckHold: state.duckHold,
-      asioMasterGain: state.asioMasterGain,
-      nativeBufferSize: state.nativeBufferSize,
-      enabledOutputs: state.enabledOutputs,
-      enabledNativeOutputs: state.enabledNativeOutputs,
-      videoMonitorName: state.videoMonitorName,
-      videoIdlePattern: state.videoIdlePattern,
-      videoIdleImage: state.videoIdleImage,
-      videoIdleImageFit: state.videoIdleImageFit,
-      videoOutputOpen: state.videoOutputOpen,
-      separateVideoAudio: state.separateVideoAudio,
-      tileVideoMirror: state.tileVideoMirror,
-    };
-
-    // Playlist (mirall exacte de persistPlaylist)
-    const playlist = {
-      tracks: state.playlist,
-      crossfade: state.crossfade,
-      repeatMode: state.playlistRepeatMode,
-      shuffle: state.playlistShuffle,
-      volume: state.playlistVolume,
-    };
-
-    return {
-      app: 'ezyPlayer',
-      kind: 'show',
-      version: 1,
-      savedAt: Date.now(),
-      slots,
-      globals,
-      playlist,
-    };
-  },
-
-  // Aplica els camps de globals rebuts (importació). Usa defaults segurs per als
-  // camps que no existeixin al fitxer (compatibilitat amb versions anteriors).
-  importSessionGlobals: (globals) => {
-    if (!globals || typeof globals !== 'object') return;
-    // Migra el routing d'un motor natiu global (format antic) a targets "native:…"
-    // per bus, igual que a l'arrencada (vegeu migrateGlobals).
-    const g = migrateGlobals(globals);
-    // Apliquem només els camps coneguts; cap camp desconegut no entra a l'estat
-    set({
-      globalFadeIn: g.globalFadeIn ?? 0,
-      globalFadeOut: g.globalFadeOut ?? 0,
-      cuesStopOthers: g.cuesStopOthers ?? false,
-      cuesCrossfade: g.cuesCrossfade ?? 0,
-      cuesDuck: g.cuesDuck ?? false,
-      cuesStopPlaylist: g.cuesStopPlaylist ?? false,
-      selectedDeviceId: platformTarget(g.cuesDeviceId ?? ''),
-      playlistDeviceId: platformTarget(g.playlistDeviceId ?? ''),
-      previewDeviceId: platformTarget(g.previewDeviceId ?? ''),
-      colorOutputs: platformColorOutputs(globals.colorOutputs),
-      duckEnabled: globals.duckEnabled ?? false,
-      duckAmount: globals.duckAmount ?? 0.3,
-      duckAttack: globals.duckAttack ?? 0.3,
-      duckRelease: globals.duckRelease ?? 1.0,
-      duckHold: globals.duckHold ?? 0.5,
-      asioMasterGain: globals.asioMasterGain ?? 1.0,
-      nativeBufferSize: globals.nativeBufferSize ?? 0,
-      enabledOutputs: Array.isArray(globals.enabledOutputs) ? globals.enabledOutputs : [],
-      enabledNativeOutputs: Array.isArray(globals.enabledNativeOutputs) ? globals.enabledNativeOutputs : [],
-      videoMonitorName: globals.videoMonitorName ?? null,
-      videoIdlePattern: globals.videoIdlePattern ?? 'black',
-      videoIdleImage: globals.videoIdleImage ?? null,
-      videoIdleImageFit: globals.videoIdleImageFit ?? 'cover',
-      // videoOutputOpen s'ignora deliberadament: no volem obrir la sortida de vídeo
-      // automàticament en importar (pot sorprendre a l'operador en ple show).
-      separateVideoAudio: globals.separateVideoAudio ?? false,
-      tileVideoMirror: globals.tileVideoMirror ?? !IS_LINUX,
-    });
-    get().persistGlobals();
-  },
+  // ── Show file: el format viu a lib/showFile.js i l'estat al slice de show. ──
 
   // Substitueix la playlist completa amb les pistes del fitxer importat.
   // Atura l'engine de playlist primer (evita sons orfes). Cada pista nova

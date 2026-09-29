@@ -8,10 +8,12 @@ recover fast.
 
 - [ ] **Licence activated** on the show computer and on the backup computer
       (Settings → License). Demo mode mutes the sound briefly every few minutes.
-- [ ] **Media on a local drive**, not on a network share or a cloud-synced folder
-      that could go offline or re-sync during the show.
-- [ ] **Show exported** (FILES → Export show…) and copied, with the media folder,
-      to the **backup computer** at the same path.
+- [ ] **Show folder on a local drive**, not on a network share or a cloud-synced
+      folder that could go offline or re-sync during the show.
+- [ ] **Show saved** (FILES → Save) and the **whole show folder** copied to the
+      **backup computer**. Open it there once and check there is no FILE MISSING.
+- [ ] Audio and video settings checked on the backup computer too: they belong to
+      each computer, not to the show.
 - [ ] Operating system and driver **updates done or postponed**: never let a
       computer update itself on show day.
 - [ ] Notifications, antivirus scans and automatic backups **paused** for the show.

@@ -4,6 +4,22 @@ All notable changes to ezyPlayer are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Shows
+- A show is now a self-contained folder: `Name.ezyshow` plus a `Media` folder with a
+  copy of every file it uses, referenced by relative paths. Copy the folder to
+  another computer, drive or operating system and it opens complete.
+- Files are copied into the show when you add them (cues, playlist tracks, blackout
+  image), in the background with progress in the header.
+- New / Open / Save / Save as / Recent shows in FILES; the last show reopens at
+  start-up; unsaved changes are shown in the header and confirmed before closing.
+- Computer settings (devices, routing, ASIO, video monitor) are no longer stored in
+  the show, so opening a show on another computer keeps that computer's setup.
+- Shows from 0.9 open and are converted to a show folder with Save as.
+- Removed "Saved cue sets" and "Saved playlists" (replaced by shows).
+- Show files are written atomically.
+
 ## [0.9.0] — 2026-09-28 · Beta
 
 First feature-complete beta, ahead of the 1.0 release on Windows.

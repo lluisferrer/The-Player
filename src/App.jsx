@@ -10,14 +10,13 @@ import { SoundBoard } from './components/SoundBoard';
 import { CueTransport } from './components/CueTransport';
 import { Playlist } from './components/Playlist';
 import { SlotEditor } from './components/SlotEditor';
-import { Library } from './components/Library';
-import { PlaylistSave } from './components/PlaylistSave';
+import { ShowUI, ShowTitle } from './components/ShowUI';
 import { SettingsModal } from './components/SettingsModal';
 import { Toast } from './components/Toast';
 import { slotForKey } from './lib/keyMap';
 import { getInitialTheme, applyTheme } from './lib/theme';
 import { hasClip, isVideo } from './lib/slotAudio';
-import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, closeOutputWindow, resolveTargetMonitorName, monitorIsPresent, reassertOutputFullscreen } from './lib/videoOutput';
+import { toggleOutputWindow, isOutputOpen, getOutputWindow, openOutputWindow, resolveTargetMonitorName, monitorIsPresent, reassertOutputFullscreen } from './lib/videoOutput';
 import { listen, emit } from '@tauri-apps/api/event';
 import { applyAsioTelemetry, asioPosition } from './lib/asioTelemetry';
 import { setMirrorTime } from './lib/videoMirror';
@@ -59,7 +58,9 @@ export default function App() {
   // Tema Dia/Nit (botó manual a la capçalera; es recorda entre sessions).
   const [theme, setTheme] = useState(getInitialTheme);
   const toggleTheme = () => setTheme(applyTheme(theme === 'dark' ? 'light' : 'dark'));
-  const [showSave, setShowSave] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
+  // L'usuari vol tancar l'app amb canvis sense desar al show (ShowUI pregunta).
+  const [closeAsk, setCloseAsk] = useState(false);
   // EDIT ↔ LIVE. Entrar a Live és directe; SORTIR de Live demana confirmació amb un
   // diàleg PROPI (a Tauri v2, window.confirm està interceptat pel plugin dialog i
   // no està habilitat → "dialog.confirm not allowed").
@@ -153,25 +154,37 @@ export default function App() {
     })();
   }, []);
 
-  // En tancar la finestra principal, tanca també la de sortida de vídeo (si no,
-  // quedaria orfe i l'app no acabaria de tancar-se).
+  // Tanca l'app de debò (després de preguntar pels canvis sense desar). El Rust
+  // allibera els motors d'àudio i surt; la sortida de vídeo es tanca amb l'app.
+  const closeApp = async () => {
+    appClosingRef.current = true; // no esborris la preferència de sortida oberta
+    try { await invoke('app_quit'); } catch { /* fora de Tauri */ }
+  };
+
+  // Clicar la X amb canvis sense desar: el Rust atura el tancament i ho avisa
+  // (vegeu CLOSE_GUARD a lib.rs). Confirmem la recepció i preguntem a l'usuari.
   useEffect(() => {
-    let unlisten;
+    let un;
     (async () => {
       try {
-        unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
-          if (appClosingRef.current) return; // ja estem tancant
-          appClosingRef.current = true;      // no esborris la preferència en sortir
-          // Tanca primer la sortida de vídeo (si no, quedaria orfe i el procés no
-          // acabaria). Aturem el tancament per fer-ho de forma determinista i
-          // després destruïm la finestra principal.
-          event.preventDefault();
-          try { await closeOutputWindow(); } catch { /* res */ }
-          try { await getCurrentWindow().destroy(); } catch { /* res */ }
+        un = await listen('app-close-requested', () => {
+          invoke('close_ack').catch(() => {});
+          setCloseAsk(true);
         });
       } catch { /* fora de Tauri */ }
     })();
-    return () => { if (unlisten) unlisten(); };
+    return () => { if (un) un(); };
+  }, []);
+
+  // Manté el Rust al corrent de si cal preguntar abans de tancar.
+  useEffect(() => {
+    const guardOf = (st) => !!(st.currentShowPath && st.showDirty);
+    let last = guardOf(useSoundStore.getState());
+    invoke('set_close_guard', { on: last }).catch(() => {});
+    return useSoundStore.subscribe((st) => {
+      const on = guardOf(st);
+      if (on !== last) { last = on; invoke('set_close_guard', { on }).catch(() => {}); }
+    });
   }, []);
 
   // F11: commuta pantalla completa real de la finestra principal (amaga la barra
@@ -487,6 +500,37 @@ export default function App() {
     return () => { if (un) un(); };
   }, []);
 
+  // Progrés de les còpies de mèdia a la carpeta del show (show_import_media).
+  useEffect(() => {
+    let un;
+    (async () => {
+      try {
+        un = await listen('show-media-progress', (e) => {
+          if (e.payload) useSoundStore.getState().setMediaProgress(e.payload);
+        });
+      } catch { /* fora de Tauri */ }
+    })();
+    return () => { if (un) un(); };
+  }, []);
+
+  // En arrencar: el show que estava obert encara existeix? Si s'ha mogut o
+  // esborrat, es deixa sense show (pantalla d'inici) i s'avisa.
+  useEffect(() => {
+    const st = useSoundStore.getState();
+    const path = st.currentShowPath;
+    if (!path) return;
+    invoke('show_exists', { path })
+      .then((ok) => {
+        if (ok) { useSoundStore.getState().refreshShowDirty(); return; }
+        useSoundStore.getState().detachShow();
+        useSoundStore.getState().pushNotification({
+          type: 'warning',
+          message: `The last show was not found (${path}). Open it from its new location or save the current cues as a show.`,
+        });
+      })
+      .catch(() => {});
+  }, []);
+
   // C2: el motor ASIO informa que el dispositiu ha TORNAT (callback reprèn) → neteja
   // l'estat d'error dels cues ASIO i avisa (sense tornar a sonar res sol).
   useEffect(() => {
@@ -589,6 +633,8 @@ export default function App() {
       if (e.repeat) return;
       const store = useSoundStore.getState();
       if (store.editingSlot) return;
+      // Sense show obert es mostra la pantalla d'inici: res de disparar cues d'amagat.
+      if (!store.currentShowPath) return;
       const el = document.activeElement;
       const tag = el && el.tagName;
       const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
@@ -698,7 +744,11 @@ export default function App() {
             const paths = (p.paths || []).filter((p2) => MEDIA_EXT.test(p2));
             const pageEnd = (Math.floor((startSlot - 1) / 32) + 1) * 32; // no vessar de pàgina
             for (let i = 0; i < paths.length && startSlot + i <= pageEnd; i++) {
-              try { await loadFromPath(startSlot + i, paths[i]); }
+              try {
+                await loadFromPath(startSlot + i, paths[i]);
+                // El cue ja sona des de l'original; la còpia a Media/ va en segon pla.
+                useSoundStore.getState().adoptMedia(paths[i]);
+              }
               catch (err) {
                 console.warn('Error carregant', paths[i], err);
                 // Fes l'error visible (abans només anava a consola): en un show ningú
@@ -729,6 +779,7 @@ export default function App() {
           <img src={logo} alt="ezyPlayer logo" className="brand-logo" />
           <span className="brand-name"><span className="brand-ezy">ezy</span><span className="brand-app">Player</span></span>
         </h1>
+        <ShowTitle />
 
         {/* Centered view switcher */}
         <div className="mode-toggle">
@@ -764,7 +815,7 @@ export default function App() {
             VIDEO
           </button>
 
-          <button className="library-btn" onClick={() => setShowSave(true)} disabled={isLive} title={isLive ? 'Locked in LIVE' : 'Files'}>FILES</button>
+          <button className="library-btn" onClick={() => setFilesOpen(true)} disabled={isLive} title={isLive ? 'Locked in LIVE' : 'Show: new, open, save'}>FILES</button>
           <button className="library-btn" onClick={() => setShowSettings(true)}>SETTINGS</button>
           <button
             className="library-btn icon-btn"
@@ -808,11 +859,13 @@ export default function App() {
       </main>
 
       <SlotEditor />
-      {showSave && (
-        viewMode === 'list'
-          ? <PlaylistSave onClose={() => setShowSave(false)} />
-          : <Library onClose={() => setShowSave(false)} />
-      )}
+      <ShowUI
+        filesOpen={filesOpen}
+        onCloseFiles={() => setFilesOpen(false)}
+        closeAsk={closeAsk}
+        onCloseCancel={() => setCloseAsk(false)}
+        onCloseConfirm={closeApp}
+      />
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} readOnly={isLive} />}
 
       {/* Confirmació per SORTIR de LIVE (diàleg propi; window.confirm no va a Tauri) */}
